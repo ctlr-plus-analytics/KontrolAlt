@@ -1,0 +1,778 @@
+"""BitChuteScraper — full Patchright scraper for BitChute channel pages."""
+
+import logging
+import re
+from datetime import datetime, timedelta
+
+from bs4 import BeautifulSoup
+
+from patchright.async_api import Error as PlaywrightError
+
+from core.browser import BrowserTelemetry, human_delay, launch_browser, wait_for_content
+from core.exceptions import ScraperBlockedError, ScraperClassifiedError
+from scrapers.base import BaseScraper
+from utils.contact_extractor import extract_emails, extract_urls
+from utils.keyword_matcher import (
+    compute_channel_demographic,
+    compute_comment_tier,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class BitChuteScraper(BaseScraper):
+    """Scraper for BitChute channels using Patchright."""
+
+    async def scrape(self, channel_url: str) -> dict[str, object]:
+        """Scrape a single BitChute channel.
+
+        Extracts: channel name, subscriber count, last 20 videos
+        (title, views, comments, date), description, external links,
+        and contact emails.
+
+        Args:
+            channel_url: Full URL of the BitChute channel.
+
+        Returns:
+            Scraped channel data dict with all computed fields.
+        """
+        try:
+            telemetry = BrowserTelemetry()
+            async with launch_browser(session_key=channel_url, telemetry=telemetry) as context:
+                page = await context.new_page()
+
+                # Navigate — use domcontentloaded then actively wait for
+                # Cloudflare's JS challenge to resolve.
+                response = await page.goto(
+                    channel_url, wait_until="domcontentloaded", timeout=90000
+                )
+                await human_delay(3.0, 6.0)
+
+                # Wait up to 20 s for real content to appear
+                content_ok = await wait_for_content(page, min_bytes=5000, timeout_s=20.0)
+                if not content_ok:
+                    logger.warning(
+                        "BitChute: CF challenge not resolved after 20 s, reloading %s",
+                        channel_url,
+                    )
+                    await page.reload(wait_until="domcontentloaded", timeout=90000)
+                    await human_delay(5.0, 8.0)
+                    content_ok = await wait_for_content(page, min_bytes=5000, timeout_s=20.0)
+
+                await self.ensure_not_blocked(page, channel_url)
+
+                if not content_ok:
+                    raise ScraperBlockedError(
+                        f"BitChute page still empty after reload — CF block persists: {channel_url}"
+                    )
+
+                # Wait for at least one video card to render
+                try:
+                    await page.wait_for_selector(".video-card-title, a[href*='/video/']", timeout=20000)
+                    # Scroll deeper to trigger hydration
+                    await page.mouse.wheel(0, 1500)
+                    await human_delay(3.0, 5.0)
+                    await page.mouse.wheel(0, -1000)
+                    await human_delay(2.0, 3.0)
+                except Exception:
+                    logger.warning("BitChute: Video content not found on landing page for %s", channel_url)
+
+                # Load more video cards before snapshot parsing.
+                for _ in range(3):
+                    await page.mouse.wheel(0, 2600)
+                    await human_delay(1.5, 3.0)
+
+                # --- Step 1: Extract videos and summary (Live Extraction) ---
+                video_data_map = {}
+                # Wait for at least one card to have views or title text (hydration check)
+                try:
+                    await page.wait_for_function(
+                        "() => [...document.querySelectorAll('.video-card-title')].some(el => el.innerText.length > 5)",
+                        timeout=10000
+                    )
+                except Exception:
+                    logger.debug("BitChute: Hydration wait timed out for %s", channel_url)
+
+                cards = await page.locator("#video-card, .q-card").all()
+                
+                # Fallback: If no cards found on Home tab, try Clicking "Videos" tab
+                if not cards or len(cards) < 2:
+                    logger.info("BitChute: No cards on Home tab, trying 'Videos' tab for %s", channel_url)
+                    try:
+                        videos_selectors = [
+                            ".q-tab:has-text('Videos')",
+                            "[role='tab']:has-text('Videos')",
+                            "text='Videos'",
+                        ]
+                        for selector in videos_selectors:
+                            videos_tab = page.locator(selector).first
+                            if await videos_tab.is_visible(timeout=5000):
+                                await videos_tab.click()
+                                await page.wait_for_selector(".video-card-title, a[href*='/video/']", timeout=15000)
+                                await page.mouse.wheel(0, 1500)
+                                await human_delay(3.0, 5.0)
+                                cards = await page.locator("#video-card, .q-card").all()
+                                break
+                    except Exception as e:
+                        logger.warning("BitChute: Videos tab fallback failed for %s: %s", channel_url, e)
+
+                logger.info("BitChute: Found %d cards live for %s", len(cards), channel_url)
+                
+                for i, card in enumerate(cards):
+                    if i >= 20: break
+                    try:
+                        # Extract Video ID from link
+                        link_el = card.locator("a[href*='/video/']").first
+                        href = await link_el.get_attribute("href") or ""
+                        video_id = href.rstrip("/").split("/")[-1]
+                        if not video_id: continue
+                        video_url = self._to_absolute_url(href)
+                        
+                        # Extract Title
+                        title = ""
+                        # Try to find the first link that isn't empty
+                        all_links = await card.locator("a").all()
+                        for link in all_links:
+                            link_text = await link.inner_text()
+                            if len(link_text) > 10:
+                                title = link_text.strip()
+                                break
+                        
+                        # Fallback to specific title selectors if above failed
+                        if not title:
+                            title_selectors = [".video-card-title", ".q-item__label", "a.text-bold", ".text-h6"]
+                            for sel in title_selectors:
+                                title_el = card.locator(sel).first
+                                if await title_el.count() > 0:
+                                    title = await title_el.inner_text()
+                                    if title: break
+                        
+                        # Extract Views & Date by scanning all text in the card
+                        views: int | None = None
+                        comments: int | None = None
+                        date_val = None
+                        
+                        # Get all spans and labels in the card
+                        info_elements = await card.locator("span, .q-item__label--caption, .video-card-info").all()
+                        card_full_text = (await card.inner_text()).lower()
+                        
+                        # Strategy A: Regex match on full card text for "visibility\n123" or "123 views"
+                        view_match = re.search(r"(?:visibility|views)\s+([\d\.,]+)\s*([km])?", card_full_text)
+                        if view_match:
+                            views = self._parse_bitchute_count(view_match.group(0))
+                        
+                        # Strategy B: Individual element scan (fallback)
+                        if views is None:
+                            for el in info_elements:
+                                text = (await el.inner_text()).lower()
+                                if "views" in text or "visibility" in text:
+                                    parsed_views = self._parse_bitchute_count(text)
+                                    if parsed_views is not None:
+                                        views = parsed_views
+                                        break
+                        
+                        # Strategy C: Pure numeric fallback if still 0
+                        if views is None:
+                            for el in info_elements:
+                                text = (await el.inner_text()).lower()
+                                if re.search(r"^\s*[\d\.]+[km]?\s*$", text):
+                                    parsed_views = self._parse_bitchute_count(text)
+                                    if parsed_views is not None:
+                                        views = parsed_views
+                                        break
+
+                        # Extract comments
+                        comments = await self._extract_comments_from_card(card)
+
+                        # Extract Date
+                        for el in info_elements:
+                            text = (await el.inner_text()).lower()
+                            if "ago" in text or "yesterday" in text or "published" in text:
+                                date_val = self._parse_relative_date(text)
+                                if date_val: break
+                        
+                        if video_id:
+                            video_data_map[video_id] = {
+                                "title": title or "Unknown Title",
+                                "views": views,
+                                "comments": comments,
+                                "comments_source": "card" if comments is not None else None,
+                                "date": date_val,
+                                "url": video_url,
+                            }
+                    except Exception as e:
+                        logger.debug("Error extracting card %d: %s", i, e)
+
+                # Summary details (Subscribers, Name) from static soup (still fine for header)
+                soup_main = BeautifulSoup(await page.content(), "html.parser")
+                page_title = await page.title() or ""
+                response_status = response.status if response is not None else None
+                body_text = soup_main.get_text(" ", strip=True).lower()
+                self.classify_terminal_page_state(
+                    channel_url=channel_url,
+                    page_title=page_title,
+                    current_url=page.url,
+                    body_text=body_text,
+                    response_status=response_status,
+                )
+                subscriber_count = self._extract_subscribers(soup_main)
+                name = self._extract_name(soup_main, channel_url)
+
+                # Prefer static full-page parse for modern BitChute card markup.
+                # Collect in a bounded scroll loop to reach up to 20 unique videos.
+                await self._open_videos_tab_if_available(page, channel_url)
+                parsed_map = await self._collect_videos_with_scroll(page)
+                if parsed_map:
+                    video_data_map = parsed_map
+
+                # Comments and publish dates are most reliable on video pages
+                # when channel-card metadata is partial.
+                for item in list(video_data_map.values())[:20]:
+                    existing_comments = item.get("comments")
+                    existing_date = item.get("date")
+                    needs_comment = not (
+                        isinstance(existing_comments, (int, float)) and existing_comments > 0
+                    )
+                    needs_date = existing_date is None
+                    if not needs_comment and not needs_date:
+                        continue
+                    video_url = str(item.get("url") or "")
+                    if not video_url:
+                        continue
+                    comment_count, publish_date = await self._extract_video_page_signals(
+                        context, video_url
+                    )
+                    self._merge_video_page_signals(
+                        item=item,
+                        needs_comment=needs_comment,
+                        needs_date=needs_date,
+                        comment_count=comment_count,
+                        publish_date=publish_date,
+                    )
+
+                # --- Step 2: Click 'About' tab ---
+                # (Keep existing About tab logic...)
+                description = ""
+                external_links = []
+                
+                try:
+                    # BitChute uses Quasar tabs. Text is "About"
+                    # Try several selectors for the About tab
+                    about_selectors = [
+                        ".q-tab:has-text('About')",
+                        "text='About'",
+                        ".q-tab__label:text-is('About')",
+                        "[role='tab']:has-text('About')"
+                    ]
+                    about_clicked = False
+                    for sel in about_selectors:
+                        try:
+                            # Use locator for better visibility check
+                            about_tab = page.locator(sel).first
+                            if await about_tab.is_visible(timeout=3000):
+                                logger.info("BitChute: Clicking About tab for %s", channel_url)
+                                await about_tab.click()
+                                await human_delay(2.0, 4.0)
+                                about_clicked = True
+                                break
+                        except Exception:
+                            continue
+                    
+                    if about_clicked:
+                        html_about = await page.content()
+                        soup_about = BeautifulSoup(html_about, "html.parser")
+                        description = self._extract_description(soup_about)
+                        external_links = self._extract_external_links(soup_about)
+                    else:
+                        logger.warning("BitChute: Could not find About tab for %s, using main page fallback", channel_url)
+                        description = self._extract_description(soup_main)
+                        external_links = self._extract_external_links(soup_main)
+
+                except Exception as exc:
+                    logger.warning("BitChute: Error during About tab extraction for %s: %s", channel_url, exc)
+                    description = self._extract_description(soup_main)
+                    external_links = self._extract_external_links(soup_main)
+
+                # --- Extract emails and URLs from description ---
+                emails = extract_emails(description + " " + " ".join(external_links))
+                all_urls = extract_urls(description)
+                contact_info = sorted(set(emails + all_urls + external_links))
+
+                # --- Compute derived fields ---
+                video_titles = [v["title"] for v in video_data_map.values() if v["title"]][:20]
+                view_counts = [
+                    float(v["views"])
+                    for v in video_data_map.values()
+                    if v.get("views") is not None
+                ][:20]
+                comment_counts = [
+                    float(v["comments"])
+                    for v in video_data_map.values()
+                    if v.get("comments") is not None
+                ][:20]
+                upload_dates = [v["date"] for v in video_data_map.values() if v["date"]][:20]
+
+                avg_views = self.compute_avg(view_counts)
+                avg_comments = self.compute_avg(comment_counts)
+                comment_tier = compute_comment_tier(avg_comments)
+                demographic = compute_channel_demographic(name, description, video_titles)
+                posts_per_week = self.compute_posting_cadence(upload_dates)
+                last_active = max(upload_dates) if upload_dates else None
+                total_videos_considered = min(20, len(video_data_map))
+                comments_extracted = len(comment_counts)
+                views_extracted = len(view_counts)
+                dates_extracted = len(upload_dates)
+                logger.info(
+                    "BitChute extraction quality for %s: videos=%d views=%d comments=%d dates=%d",
+                    channel_url,
+                    total_videos_considered,
+                    views_extracted,
+                    comments_extracted,
+                    dates_extracted,
+                )
+
+                # --- Build channel data ---
+                missing_fields: list[str] = []
+                if subscriber_count is None:
+                    missing_fields.append("subscriber_count")
+                if not video_titles:
+                    missing_fields.append("video_titles")
+                if avg_views is None:
+                    missing_fields.append("avg_views")
+                if avg_comments is None:
+                    missing_fields.append("avg_comments")
+
+                channel_data: dict[str, object] = {
+                    "platform": "bitchute",
+                    "channel_url": channel_url,
+                    "name": name,
+                    "description": description,
+                    "subscriber_count": subscriber_count,
+                    "avg_views": int(avg_views) if avg_views is not None else None,
+                    "avg_comments": int(avg_comments) if avg_comments is not None else None,
+                    "comment_tier": comment_tier,
+                    "posts_per_week": posts_per_week,
+                    "last_active_date": last_active.date().isoformat() if last_active else None,
+                    "contact_info": contact_info,
+                    "niche_tags": demographic["niche_tags"],
+                    "video_titles": video_titles,
+                    "is_55_plus": demographic["is_55_plus"],
+                    "secondary_urls": external_links,
+                }
+
+                # --- Persist ---
+                channel_id = await self.save_to_supabase(channel_data)
+                if channel_id is not None:
+                    reason_prefix = (
+                        "reason=empty_channel_no_videos; terminal=false; retryable=false; detail=channel exists but has no videos"
+                        if not video_titles
+                        else None
+                    )
+                    warning = (
+                        f"{reason_prefix}; Missing fields: {', '.join(missing_fields)}"
+                        if reason_prefix and missing_fields
+                        else reason_prefix
+                        if reason_prefix
+                        else f"reason=parse_partial_data; terminal=false; retryable=false; detail=Missing fields: {', '.join(missing_fields)}"
+                        if missing_fields
+                        else None
+                    )
+                    await self.log_scrape_attempt(channel_id, "success", warning)
+
+                logger.info("BitChute scrape complete for %s (%s)", name, channel_url)
+                logger.info(
+                    "BitChute transfer estimate for %s: responses=%d bytes_est=%d",
+                    channel_url,
+                    telemetry.response_count,
+                    telemetry.total_bytes_est,
+                )
+                channel_data["_scrape_metrics"] = {
+                    "bytes_est": telemetry.total_bytes_est,
+                    "responses": telemetry.response_count,
+                }
+                return channel_data
+
+        except (PlaywrightError, ScraperBlockedError, ScraperClassifiedError) as exc:
+            logger.error(
+                "BitChute scrape failed for %s: %s",
+                channel_url, exc, exc_info=True,
+            )
+            raise
+
+    def _extract_name(self, soup, channel_url: str) -> str:
+        """Extract channel name from DOM or meta tags."""
+        name = ""
+        name_el = soup.select_one("div.text-bold.text-h4")
+        if name_el:
+            name = name_el.get_text(strip=True)
+        
+        if not name:
+            og_title = soup.find("meta", property="og:title")
+            if og_title:
+                name = og_title.get("content", "").strip()
+        
+        if not name:
+            name = channel_url.rstrip("/").split("/")[-1]
+        return name
+
+    def _extract_subscribers(self, soup) -> int | None:
+        """Extract subscriber count from the caption text."""
+        subscriber_count: int | None = None
+        sub_text_el = soup.select_one(".text-caption.text-grey-8")
+        if sub_text_el:
+            text = sub_text_el.get_text(strip=True)
+            # text like "18.3K subscribers • 7,550 videos"
+            parts = re.split(r"[^a-zA-Z\d\.\,KM\s]", text)
+            for part in parts:
+                part = part.strip()
+                if "subscriber" in part.lower():
+                    subscriber_count = self._parse_bitchute_count(part)
+                    break
+        return subscriber_count
+
+    def _extract_description(self, soup) -> str:
+        """Extract full description from DOM or meta fallback."""
+        description = ""
+        desc_el = soup.select_one("div.bc-text-break")
+        if desc_el:
+            description = desc_el.get_text(separator="\n", strip=True)
+        
+        # Fallback to meta description if DOM is empty or looks like a summary
+        if not description or len(description) < 50:
+            meta_desc = soup.find("meta", attrs={"name": "description"})
+            if meta_desc:
+                meta_content = meta_desc.get("content", "").strip()
+                if len(meta_content) > len(description):
+                    description = meta_content
+        return description
+
+    def _extract_external_links(self, soup) -> list[str]:
+        """Extract all external http(s) links that aren't bitchute.com."""
+        external_links: list[str] = []
+        all_links = soup.select("a[href]")
+        for link in all_links:
+            href = link.get("href", "")
+            if href.startswith("http") and "bitchute.com" not in href:
+                external_links.append(href)
+        return sorted(list(set(external_links)))
+
+    async def _extract_comments_from_card(self, card) -> int | None:
+        """Extract comment count from a BitChute video card using multiple fallbacks."""
+        # Selector-first strategy: common Quasar and card metadata nodes.
+        selectors = [
+            ".video-card-comments",
+            ".q-item__label--caption",
+            ".video-card-info",
+            "span",
+        ]
+        for sel in selectors:
+            try:
+                nodes = await card.locator(sel).all()
+            except Exception:
+                nodes = []
+            for node in nodes:
+                try:
+                    text = (await node.inner_text()).strip().lower()
+                except Exception:
+                    continue
+                if "comment" in text:
+                    parsed = self._parse_bitchute_count(text)
+                    if parsed is not None:
+                        return parsed
+
+        # Full-card regex fallback for patterns like:
+        # "12 comments", "comment 12", or icon-label style text near numbers.
+        try:
+            card_text = (await card.inner_text()).strip().lower()
+        except Exception:
+            return None
+
+        patterns = [
+            r"([\d\.,]+)\s*([km])?\s+comments?\b",
+            r"\bcomments?\s+([\d\.,]+)\s*([km])?",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, card_text)
+            if match:
+                number = match.group(1)
+                suffix = match.group(2) or ""
+                return self._parse_bitchute_count(f"{number}{suffix}")
+
+        return None
+
+    def _extract_videos(self, soup) -> dict[str, dict[str, object]]:
+        """Extract last 20 videos from modern channel-card markup."""
+        video_data_map: dict[str, dict[str, object]] = {}
+        video_cards = soup.select("#video-card")
+        for card in video_cards[:20]:
+            link_el = card.select_one("a[href*='/video/']")
+            if link_el is None:
+                continue
+            href = str(link_el.get("href") or "").strip()
+            if "/video/" not in href:
+                continue
+            video_id = href.rstrip("/").split("/")[-1]
+            if not video_id:
+                continue
+
+            title = ""
+            title_el = card.select_one(".q-item__label.bc-text-break")
+            if title_el is not None:
+                title = title_el.get_text(strip=True)
+            if not title:
+                img_el = card.select_one(".q-img[aria-label]")
+                if img_el is not None:
+                    title = str(img_el.get("aria-label") or "").strip()
+
+            views: int | None = None
+            date_val: datetime | None = None
+            for label in card.select(".q-item__label.q-item__label--caption.text-caption"):
+                text = " ".join(label.get_text(" ", strip=True).split())
+                if "view" in text.lower():
+                    views = self._parse_bitchute_count(text)
+                    # Example: "651 Views - 6 months ago" or "651 Views – 6 months ago"
+                    date_match = re.search(r"(?:-|–|â€“)\s*(.+)$", text)
+                    if date_match:
+                        date_val = self._parse_relative_date(date_match.group(1))
+                # Some cards show date in a separate caption line.
+                if date_val is None and (
+                    "ago" in text.lower()
+                    or "yesterday" in text.lower()
+                    or "published" in text.lower()
+                    or "just now" in text.lower()
+                ):
+                    date_val = self._parse_relative_date(text)
+
+            # Fallback: overlay chip format with visibility icon and numeric caption.
+            if views is None:
+                for icon in card.select(".q-chip .q-icon"):
+                    icon_text = icon.get_text(strip=True).lower()
+                    if icon_text != "visibility":
+                        continue
+                    chip = icon.find_parent(class_="q-chip")
+                    if chip is None:
+                        continue
+                    value_el = chip.select_one(".text-caption")
+                    if value_el is None:
+                        continue
+                    views = self._parse_bitchute_count(value_el.get_text(" ", strip=True))
+                    if views is not None:
+                        break
+
+            video_data_map[video_id] = {
+                "title": title or "Unknown Title",
+                "views": views,
+                "comments": None,
+                "comments_source": None,
+                "date": date_val,
+                "url": self._to_absolute_url(href),
+            }
+        return video_data_map
+
+    async def _collect_videos_with_scroll(self, page) -> dict[str, dict[str, object]]:
+        """Collect up to 20 unique videos by repeatedly snapshotting page HTML."""
+        collected: dict[str, dict[str, object]] = {}
+        stagnant_rounds = 0
+        max_rounds = 8
+
+        for _ in range(max_rounds):
+            html = await page.content()
+            soup = BeautifulSoup(html, "html.parser")
+            parsed = self._extract_videos(soup)
+            before = len(collected)
+            for video_id, payload in parsed.items():
+                if video_id not in collected:
+                    collected[video_id] = payload
+            after = len(collected)
+
+            if after >= 20:
+                break
+
+            if after == before:
+                stagnant_rounds += 1
+            else:
+                stagnant_rounds = 0
+
+            if stagnant_rounds >= 2:
+                break
+
+            await page.mouse.wheel(0, 3200)
+            await human_delay(1.2, 2.5)
+
+        if len(collected) > 20:
+            trimmed: dict[str, dict[str, object]] = {}
+            for idx, (video_id, payload) in enumerate(collected.items()):
+                if idx >= 20:
+                    break
+                trimmed[video_id] = payload
+            return trimmed
+        return collected
+
+    async def _open_videos_tab_if_available(self, page, channel_url: str) -> None:
+        """Switch to the Videos tab when available to avoid featured-card duplicates."""
+        selectors = [
+            ".q-tab:has-text('Videos')",
+            "text='Videos'",
+            "[role='tab']:has-text('Videos')",
+        ]
+        for sel in selectors:
+            try:
+                tab = page.locator(sel).first
+                if await tab.is_visible(timeout=2500):
+                    await tab.click()
+                    await human_delay(1.5, 3.0)
+                    await page.wait_for_selector("#video-card, a[href*='/video/']", timeout=10000)
+                    return
+            except Exception:
+                continue
+        logger.debug("BitChute: Videos tab not found for %s", channel_url)
+
+    def _to_absolute_url(self, href: str) -> str:
+        """Normalize BitChute relative/absolute URLs."""
+        if href.startswith("http://") or href.startswith("https://"):
+            return href
+        return f"https://www.bitchute.com{href if href.startswith('/') else '/' + href}"
+
+    def _merge_video_page_signals(
+        self,
+        item: dict[str, object],
+        needs_comment: bool,
+        needs_date: bool,
+        comment_count: int | None,
+        publish_date: datetime | None,
+    ) -> None:
+        """Merge fallback video-page signals into a video item."""
+        if needs_comment and comment_count is not None:
+            item["comments"] = comment_count
+            item["comments_source"] = "video_page"
+        if needs_date and publish_date is not None:
+            item["date"] = publish_date
+
+    async def _extract_video_page_signals(
+        self, context, video_url: str
+    ) -> tuple[int | None, datetime | None]:
+        """Open a video page and extract comment count + publish date."""
+        page = await context.new_page()
+        try:
+            await human_delay(2.0, 4.0)
+            await page.goto(video_url, wait_until="domcontentloaded", timeout=90000)
+            await human_delay(3.0, 5.0)
+            await wait_for_content(page, min_bytes=5000, timeout_s=20.0)
+            await page.mouse.wheel(0, 2800)
+            await human_delay(2.0, 4.0)
+
+            comment_count: int | None = None
+            count_locator = page.locator("#comments-container .navigation .count .value").first
+            if await count_locator.count() > 0:
+                count_text = (await count_locator.inner_text()).strip()
+                parsed = self._parse_bitchute_count(count_text)
+                if parsed is not None:
+                    comment_count = parsed
+
+            comment_text = await page.locator("#comments-container").first.inner_text()
+            reply_match = re.search(r"Reply[^\d]*(\d+)", comment_text)
+            if comment_count is None and reply_match:
+                try:
+                    comment_count = int(reply_match.group(1))
+                except ValueError:
+                    comment_count = None
+
+            publish_date: datetime | None = None
+            for sel in [".q-item__label.q-item__label--caption.text-caption", "time"]:
+                nodes = await page.locator(sel).all()
+                for node in nodes:
+                    text = (await node.inner_text()).strip()
+                    parsed_date = self._parse_relative_date(text)
+                    if parsed_date is not None:
+                        publish_date = parsed_date
+                        break
+                if publish_date is not None:
+                    break
+
+            if publish_date is None:
+                body_text = await page.locator("body").first.inner_text()
+                date_match = re.search(
+                    r"(\d+\s+(?:second|minute|hour|day|week|month|year|sec|min|hr|wk|mo|yr)s?\s+ago|yesterday|just now)",
+                    body_text,
+                    flags=re.IGNORECASE,
+                )
+                if date_match:
+                    publish_date = self._parse_relative_date(date_match.group(1))
+
+            return comment_count, publish_date
+        except Exception as exc:
+            logger.debug("BitChute: Could not extract video signals from %s: %s", video_url, exc)
+            return None, None
+        finally:
+            await page.close()
+
+    def _parse_bitchute_count(self, text: str) -> int | None:
+        """Parse counts like '18.3K', '1,445', '12.9K views' with extreme resilience."""
+        if not text:
+            return None
+        
+        # Clean text: keep only digits, dots, and k/m
+        clean_text = text.lower().strip()
+        
+        # Extract numeric-ish part using regex that finds numbers potentially followed by K or M
+        match = re.search(r"([\d\.,]+)\s*([km])?", clean_text)
+        if not match:
+            return None
+        
+        try:
+            # Remove commas from the numeric part
+            num_str = match.group(1).replace(",", "")
+            suffix = match.group(2)
+            
+            val = float(num_str)
+            if suffix == "k":
+                return int(val * 1000)
+            if suffix == "m":
+                return int(val * 1000000)
+            return int(val)
+        except (ValueError, TypeError):
+            return None
+
+    def _parse_relative_date(self, text: str) -> datetime | None:
+        """Parse '2 hours ago', '3 days ago', etc."""
+        if not text:
+            return None
+        
+        now = datetime.now()
+        # Clean up icon labels and noise
+        text = text.lower().replace("event", "").replace("published", "").strip()
+        
+        if "yesterday" in text:
+            return now - timedelta(days=1)
+        if "just now" in text or "seconds ago" in text:
+            return now
+            
+        match = re.search(
+            r"(\d+)\s+("
+            r"second|minute|hour|day|week|month|year|"
+            r"sec|min|hr|wk|mo|yr"
+            r")s?",
+            text,
+        )
+        if not match:
+            return None
+            
+        val = int(match.group(1))
+        unit = match.group(2)
+        
+        if unit in {"second", "sec"}:
+            return now - timedelta(seconds=val)
+        if unit in {"minute", "min"}:
+            return now - timedelta(minutes=val)
+        if unit in {"hour", "hr"}:
+            return now - timedelta(hours=val)
+        if "day" in unit:
+            return now - timedelta(days=val)
+        if unit in {"week", "wk"}:
+            return now - timedelta(weeks=val)
+        if unit in {"month", "mo"}:
+            return now - timedelta(days=val * 30)
+        if unit in {"year", "yr"}:
+            return now - timedelta(days=val * 365)
+        
+        return None

@@ -1,0 +1,221 @@
+"""Pydantic models for Channel entities."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from enum import Enum
+from uuid import UUID
+
+from pydantic import BaseModel, Field, field_validator
+from pydantic import model_validator
+
+from models.gate0 import Gate0Result
+from models.scrape import ScrapeLog
+from models.velocity import VelocityScore
+
+
+class Platform(str, Enum):
+    """Supported scraping platforms."""
+
+    rumble = "rumble"
+    bitchute = "bitchute"
+
+
+class CommentTier(str, Enum):
+    """Engagement tier based on average comment count."""
+
+    active = "active"
+    sweet_spot = "sweet_spot"
+    whale = "whale"
+
+
+class Gate0Status(str, Enum):
+    """Gate 0 compliance check status."""
+
+    clean = "clean"
+    dirty = "dirty"
+    pending = "pending"
+    unchecked = "unchecked"
+
+
+class Channel(BaseModel):
+    """Full channel representation from the database."""
+
+    id: UUID
+    platform: Platform
+    channel_url: str
+    name: str
+    description: str = ""
+    subscriber_count: int | None = None
+    avg_views: float | None = None
+    avg_comments: float | None = None
+    comment_tier: CommentTier | None = None
+    posts_per_week: float | None = None
+    last_active_date: date | None = None
+    contact_info: list[str] = Field(default_factory=list)
+    niche_tags: list[str] = Field(default_factory=list)
+    video_titles: list[str] = Field(default_factory=list)
+    is_active: bool = True
+    is_55_plus: bool = False
+    gate0_status: Gate0Status = Gate0Status.unchecked
+    gate0_checked_at: datetime | None = None
+    secondary_urls: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ChannelWithMetrics(Channel):
+    """Channel enriched with joined velocity and Gate 0 data."""
+
+    velocity: VelocityScore | None = None
+    gate0: Gate0Result | None = None
+    scrape_logs: list[ScrapeLog] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
+class ChannelFilters(BaseModel):
+    """Query parameters for filtering the channel discovery table."""
+
+    platform: Platform | None = None
+    comment_tier: CommentTier | None = None
+    gate0_status: Gate0Status | None = None
+    is_55_plus: bool | None = None
+    niche_tag: str | None = None
+    search_query: str | None = None
+    min_subscriber_count: int | None = None
+    max_subscriber_count: int | None = None
+    min_avg_views: float | None = None
+    max_avg_views: float | None = None
+    min_avg_comments: float | None = None
+    max_avg_comments: float | None = None
+    inactive_filter: bool = False
+    last_active_from: date | None = None
+    last_active_to: date | None = None
+    sort_by: str = "view_velocity_30d"
+    sort_order: str = "desc"
+    page: int = 1
+    page_size: int = 50
+
+    @field_validator("sort_by")
+    @classmethod
+    def validate_sort_by(cls, v: str) -> str:
+        allowed = {
+            "subscriber_count",
+            "avg_views",
+            "avg_comments",
+            "view_velocity_30d",
+            "view_velocity_90d",
+            "last_active_date",
+        }
+        if v not in allowed:
+            raise ValueError(f"sort_by must be one of {allowed}")
+        return v
+
+    @field_validator("sort_order")
+    @classmethod
+    def validate_sort_order(cls, v: str) -> str:
+        if v not in {"asc", "desc"}:
+            raise ValueError("sort_order must be asc or desc")
+        return v
+
+    @field_validator("page_size")
+    @classmethod
+    def validate_page_size(cls, v: int) -> int:
+        if v > 100:
+            raise ValueError("page_size cannot exceed 100")
+        if v < 1:
+            raise ValueError("page_size must be at least 1")
+        return v
+
+    @field_validator("page")
+    @classmethod
+    def validate_page(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("page must be at least 1")
+        return v
+
+    @field_validator("search_query")
+    @classmethod
+    def validate_search_query(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        cleaned = v.strip()
+        return cleaned or None
+
+    @field_validator(
+        "min_subscriber_count",
+        "max_subscriber_count",
+        mode="before",
+    )
+    @classmethod
+    def validate_non_negative_int_bounds(
+        cls, v: int | str | None
+    ) -> int | None:
+        if v in (None, ""):
+            return None
+        numeric = int(v)
+        if numeric < 0:
+            raise ValueError("metric bounds must be non-negative")
+        return numeric
+
+    @field_validator(
+        "min_avg_views",
+        "max_avg_views",
+        "min_avg_comments",
+        "max_avg_comments",
+        mode="before",
+    )
+    @classmethod
+    def validate_non_negative_float_bounds(
+        cls, v: float | str | None
+    ) -> float | None:
+        if v in (None, ""):
+            return None
+        numeric = float(v)
+        if numeric < 0:
+            raise ValueError("metric bounds must be non-negative")
+        return numeric
+
+    @model_validator(mode="after")
+    def validate_metric_ranges(self) -> "ChannelFilters":
+        if (
+            self.min_subscriber_count is not None
+            and self.max_subscriber_count is not None
+            and self.min_subscriber_count > self.max_subscriber_count
+        ):
+            raise ValueError(
+                "min_subscriber_count cannot exceed max_subscriber_count"
+            )
+        if (
+            self.min_avg_views is not None
+            and self.max_avg_views is not None
+            and self.min_avg_views > self.max_avg_views
+        ):
+            raise ValueError("min_avg_views cannot exceed max_avg_views")
+        if (
+            self.min_avg_comments is not None
+            and self.max_avg_comments is not None
+            and self.min_avg_comments > self.max_avg_comments
+        ):
+            raise ValueError(
+                "min_avg_comments cannot exceed max_avg_comments"
+            )
+        return self
+
+
+class PaginatedChannels(BaseModel):
+    """Paginated response wrapper for channel listings."""
+
+    data: list[ChannelWithMetrics]
+    total: int
+    page: int
+    page_size: int
+
+
+class NicheTagListResponse(BaseModel):
+    """Distinct niche tag values used for filter options."""
+
+    tags: list[str]

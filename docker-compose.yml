@@ -1,0 +1,64 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    volumes:
+      - ./backend:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./scraper
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://redis:6379/0
+      - BROWSER_HEADLESS=true
+    working_dir: /app
+    depends_on:
+      - redis
+    volumes:
+      - ./scraper:/app
+    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --concurrency=1 --prefetch-multiplier=1
+    restart: unless-stopped
+
+  beat:
+    build:
+      context: ./scraper
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://redis:6379/0
+      - BROWSER_HEADLESS=true
+    working_dir: /app
+    depends_on:
+      - redis
+    volumes:
+      - ./scraper:/app
+    command: /opt/venv/bin/celery -A worker.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    restart: unless-stopped
+
+volumes:
+  redis_data:
