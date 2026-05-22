@@ -36,6 +36,18 @@ BITCHUTE_PATH_MENTION_PATTERN = re.compile(
     r"\bbitchute\s+(?:com\s+)?(?:/)?channel\s*/?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{1,127})\b",
     re.IGNORECASE,
 )
+RUMBLE_CONTEXT_HANDLE_PATTERN = re.compile(
+    r"\brumble\b(?:\s+(?:channel|profile|page|handle))?\s+"
+    r"(?:at|as|under|handle|profile|channel|page)\s+@?"
+    r"([a-zA-Z0-9][a-zA-Z0-9_-]{1,127})\b",
+    re.IGNORECASE,
+)
+BITCHUTE_CONTEXT_HANDLE_PATTERN = re.compile(
+    r"\bbitchute\b(?:\s+(?:channel|profile|page|handle))?\s+"
+    r"(?:at|as|under|handle|profile|channel|page)\s+@?"
+    r"([a-zA-Z0-9][a-zA-Z0-9_-]{1,127})\b",
+    re.IGNORECASE,
+)
 
 _RUMBLE_SYSTEM_PATHS = {
     "about",
@@ -168,9 +180,17 @@ def extract_supported_channel_urls(text: str) -> list[ChannelUrlCandidate]:
         slug = match.group(1)
         if slug.lower() not in _RUMBLE_SYSTEM_PATHS:
             raw_urls.add(f"https://rumble.com/{slug}")
+    for match in RUMBLE_CONTEXT_HANDLE_PATTERN.finditer(text):
+        slug = match.group(1)
+        if slug.lower() not in _RUMBLE_SYSTEM_PATHS:
+            raw_urls.add(f"https://rumble.com/{slug}")
     for match in BITCHUTE_PATH_MENTION_PATTERN.finditer(text):
         raw_urls.add(f"https://bitchute.com/channel/{match.group(1)}")
     for match in BITCHUTE_HANDLE_PATTERN.finditer(text):
+        slug = match.group(1)
+        if slug.lower() not in _BITCHUTE_SYSTEM_PATHS:
+            raw_urls.add(f"https://bitchute.com/channel/{slug}")
+    for match in BITCHUTE_CONTEXT_HANDLE_PATTERN.finditer(text):
         slug = match.group(1)
         if slug.lower() not in _BITCHUTE_SYSTEM_PATHS:
             raw_urls.add(f"https://bitchute.com/channel/{slug}")

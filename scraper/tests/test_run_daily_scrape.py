@@ -17,8 +17,46 @@ from tasks.run_daily_scrape import (  # noqa: E402
     _passes_weekly_velocity_threshold,
     _prioritize_channels_for_scrape,
     _select_weekly_velocity_channels,
+    _stage_scrape_signatures,
 )
 from core.system_settings import RuntimeSettings  # noqa: E402
+
+
+class FakeSignature:
+    def __init__(self) -> None:
+        self.options: dict[str, int] = {}
+
+    def set(self, **options: int) -> "FakeSignature":
+        self.options.update(options)
+        return self
+
+
+def test_stage_scrape_signatures_batches_by_runtime_settings(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "tasks.run_daily_scrape.get_runtime_settings",
+        lambda: RuntimeSettings(
+            scrape_dispatch_batch_size=4,
+            scrape_dispatch_pause_seconds=2.0,
+        ),
+    )
+
+    signatures = [FakeSignature() for _ in range(9)]
+    staged = _stage_scrape_signatures(signatures)
+
+    assert staged == signatures
+    assert [sig.options["countdown"] for sig in signatures] == [
+        0,
+        0,
+        0,
+        0,
+        2,
+        2,
+        2,
+        2,
+        4,
+    ]
 
 
 def test_daily_prioritization_keeps_only_new_or_missing_metrics(

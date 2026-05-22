@@ -1,10 +1,25 @@
 """Pydantic models for admin control-plane settings and actions."""
 
 from datetime import datetime, time
+import re
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+_HOSTNAME_PATTERN = re.compile(
+    r"^(?=.{1,253}$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
+)
+_GENERIC_GATE0_BRAND_TERMS = {
+    "gold",
+    "ira",
+    "silver",
+    "coin",
+    "coins",
+    "bullion",
+    "precious",
+    "metals",
+}
 
 
 class AdminMeResponse(BaseModel):
@@ -14,6 +29,43 @@ class AdminMeResponse(BaseModel):
     email: str | None = None
     roles: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
+
+
+class Gate0Competitor(BaseModel):
+    """Editable competitor definition used by Gate 0 checks."""
+
+    brand: str = Field(min_length=1, max_length=120)
+    domains: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("brand")
+    @classmethod
+    def normalize_brand(cls, value: str) -> str:
+        normalized = " ".join(value.strip().split())
+        terms = {
+            term
+            for term in re.findall(r"[a-z0-9]+", normalized.lower())
+            if term
+        }
+        if terms and terms.issubset(_GENERIC_GATE0_BRAND_TERMS):
+            raise ValueError("brand is too generic for reliable Gate 0 matching")
+        return normalized
+
+    @field_validator("domains")
+    @classmethod
+    def normalize_domains(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_domain in value:
+            domain = raw_domain.strip().lower()
+            domain = domain.removeprefix("https://").removeprefix("http://")
+            domain = domain.split("/", 1)[0]
+            if not domain or domain in seen:
+                continue
+            if not _HOSTNAME_PATTERN.match(domain):
+                raise ValueError("domains must be valid hostnames like example.com")
+            seen.add(domain)
+            normalized.append(domain)
+        return normalized
 
 
 class SystemSettingsResponse(BaseModel):
@@ -45,6 +97,7 @@ class SystemSettingsResponse(BaseModel):
     scrape_circuit_breaker_cooldown_seconds: int
     gate0_daily_queue_limit: int
     gate0_clean_recheck_days: int
+    gate0_competitors: list[Gate0Competitor]
     scraper_human_delay_min_seconds: float
     scraper_human_delay_max_seconds: float
     scraper_content_wait_min_bytes: int
@@ -94,6 +147,7 @@ class SystemSettingsPatchRequest(BaseModel):
     scrape_circuit_breaker_cooldown_seconds: int | None = None
     gate0_daily_queue_limit: int | None = None
     gate0_clean_recheck_days: int | None = None
+    gate0_competitors: list[Gate0Competitor] | None = None
     scraper_human_delay_min_seconds: float | None = None
     scraper_human_delay_max_seconds: float | None = None
     scraper_content_wait_min_bytes: int | None = None
@@ -206,8 +260,9 @@ class SystemSettingsPatchRequest(BaseModel):
             > self.scraper_human_delay_max_seconds
         ):
             raise ValueError("human delay min cannot exceed max")
+        if self.gate0_competitors is not None and len(self.gate0_competitors) == 0:
+            raise ValueError("at least one Gate 0 competitor is required")
         return self
-
 
 class AdminTaskTriggerRequest(BaseModel):
     """Optional metadata for manual task triggers."""

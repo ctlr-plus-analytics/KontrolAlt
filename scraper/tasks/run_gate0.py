@@ -1,6 +1,7 @@
 """Celery task: run Gate 0 compliance check for a channel."""
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -10,25 +11,24 @@ from postgrest.exceptions import APIError
 from worker import celery_app
 from core.config import scraper_settings
 from core.supabase import get_supabase_client
-from core.system_settings import get_runtime_settings
+from core.system_settings import Gate0CompetitorSetting, get_runtime_settings
 from models import Gate0TaskResult
 
 logger = logging.getLogger(__name__)
 
-COMPETITOR_BRANDS: list[str] = [
-    "Noble Gold",
-    "Birch Gold",
-    "Patriot Gold",
-    "Kirk Elliot",
-]
-COMPETITOR_DOMAINS: list[str] = [
-    "noblegold.com",
-    "birchgold.com",
-    "patriotgold.com",
-    "kirkelliot.com",
-]
+DEFAULT_COMPETITORS: tuple[Gate0CompetitorSetting, ...] = (
+    Gate0CompetitorSetting("Noble Gold", ("noblegold.com",)),
+    Gate0CompetitorSetting("Birch Gold", ("birchgold.com",)),
+    Gate0CompetitorSetting("Patriot Gold", ("patriotgold.com",)),
+    Gate0CompetitorSetting("Kirk Elliot", ("kirkelliot.com",)),
+)
 _SERPER_SEARCH_URL = "https://google.serper.dev/search"
 _SERPER_QUOTA_STATUS_CODES = {402, 429}
+_URLISH_PATTERN = re.compile(
+    r"https?://[^\s<>\"{}|\\^`\[\]]+|(?<!@)\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s<>\"{}|\\^`\[\]]*)?",
+    re.IGNORECASE,
+)
+_TRAILING_PUNCTUATION = ".,;:!?)\"]}'"
 
 
 def _parse_datetime(value: object) -> datetime | None:
@@ -45,7 +45,9 @@ def _parse_datetime(value: object) -> datetime | None:
 
 
 def _should_run_gate0_check(
-    channel: dict[str, object], manual: bool = False
+    channel: dict[str, object],
+    manual: bool = False,
+    clean_recheck_days: int = 7,
 ) -> tuple[bool, str | None]:
     """Return whether a Gate 0 task should consume search quota."""
     if manual:
@@ -59,8 +61,11 @@ def _should_run_gate0_check(
         checked_at = _parse_datetime(channel.get("gate0_checked_at"))
         if checked_at is not None:
             age = datetime.now(timezone.utc) - checked_at
-            if age < timedelta(days=7):
-                return False, "clean channel checked within the last 7 days"
+            if age < timedelta(days=clean_recheck_days):
+                return (
+                    False,
+                    f"clean channel checked within the last {clean_recheck_days} days",
+                )
 
     return True, None
 
@@ -87,7 +92,8 @@ def _iter_scan_values(channel: dict[str, object]) -> list[str]:
 
 
 def _scan_channel_text_for_competitors(
-    channel: dict[str, object]
+    channel: dict[str, object],
+    competitors: tuple[Gate0CompetitorSetting, ...] = DEFAULT_COMPETITORS,
 ) -> tuple[str | None, str | None]:
     """Scan stored channel text and URLs for competitor references."""
     channel_url = str(channel.get("channel_url") or "")
@@ -100,19 +106,70 @@ def _scan_channel_text_for_competitors(
             else channel_url
         )
 
-        for domain in COMPETITOR_DOMAINS:
-            if domain in text_lower:
-                return domain, source_url
+        match, matched_source_url = _scan_text_for_competitors(
+            text,
+            competitors,
+            source_url,
+        )
+        if match is not None:
+            return match, matched_source_url
 
-        for brand in COMPETITOR_BRANDS:
-            if brand.lower() in text_lower:
-                return brand, source_url
+    return None, None
+
+
+def _contains_domain(text_lower: str, domain: str) -> bool:
+    """Match a hostname or subdomain without matching unrelated longer words."""
+    pattern = rf"(?<![a-z0-9-]){re.escape(domain.lower())}(?![a-z0-9-])"
+    return re.search(pattern, text_lower) is not None
+
+
+def _contains_brand(text_lower: str, brand: str) -> bool:
+    """Match brand phrases on word boundaries."""
+    pattern = rf"(?<![a-z0-9]){re.escape(brand.lower())}(?![a-z0-9])"
+    return re.search(pattern, text_lower) is not None
+
+
+def _normalize_evidence_url(raw_url: str) -> str:
+    cleaned = raw_url.strip().strip(_TRAILING_PUNCTUATION)
+    if not cleaned.lower().startswith(("http://", "https://")):
+        cleaned = f"https://{cleaned}"
+    return cleaned
+
+
+def _source_url_for_domain(text: str, fallback_url: str | None, domain: str) -> str:
+    """Return the most specific URL containing the matched competitor domain."""
+    if fallback_url and _contains_domain(fallback_url.lower(), domain):
+        return fallback_url
+
+    for candidate in _URLISH_PATTERN.findall(text):
+        normalized = _normalize_evidence_url(candidate)
+        if _contains_domain(normalized.lower(), domain):
+            return normalized
+
+    return f"https://{domain}"
+
+
+def _scan_text_for_competitors(
+    text: str,
+    competitors: tuple[Gate0CompetitorSetting, ...],
+    source_url: str | None,
+) -> tuple[str | None, str | None]:
+    """Return the first competitor reference in a text blob."""
+    text_lower = text.lower()
+    for competitor in competitors:
+        for domain in competitor.domains:
+            if _contains_domain(text_lower, domain):
+                return domain, _source_url_for_domain(text, source_url, domain)
+
+        if _contains_brand(text_lower, competitor.brand):
+            return competitor.brand, None
 
     return None, None
 
 
 def _scan_serper_results(
     organic_results: object,
+    competitors: tuple[Gate0CompetitorSetting, ...] = DEFAULT_COMPETITORS,
 ) -> tuple[str | None, str | None]:
     """Scan top Serper organic results for competitor brands/domains."""
     if not isinstance(organic_results, list):
@@ -124,20 +181,21 @@ def _scan_serper_results(
         title = str(item.get("title") or "")
         snippet = str(item.get("snippet") or "")
         link = str(item.get("link") or "")
-        combined = f"{title} {snippet} {link}".lower()
-
-        for domain in COMPETITOR_DOMAINS:
-            if domain in combined:
-                return domain, link
-
-        for brand in COMPETITOR_BRANDS:
-            if brand.lower() in combined:
-                return brand, link
+        match, source_url = _scan_text_for_competitors(
+            f"{title} {snippet} {link}",
+            competitors,
+            link,
+        )
+        if match is not None:
+            return match, source_url
 
     return None, None
 
 
-def _run_serper_search(search_query: str) -> tuple[str | None, str | None]:
+def _run_serper_search(
+    search_query: str,
+    competitors: tuple[Gate0CompetitorSetting, ...],
+) -> tuple[str | None, str | None]:
     """Run the Serper portion of Gate 0 and return any competitor hit."""
     with httpx.Client(timeout=15.0) as http:
         response = http.post(
@@ -157,7 +215,7 @@ def _run_serper_search(search_query: str) -> tuple[str | None, str | None]:
         response.raise_for_status()
         data = response.json()
         organic_results = data.get("organic", []) if isinstance(data, dict) else []
-        return _scan_serper_results(organic_results)
+        return _scan_serper_results(organic_results, competitors)
 
 
 def _persist_gate0_result(
@@ -207,13 +265,34 @@ def _persist_gate0_result(
     return gate0_record
 
 
+def _mark_gate0_unchecked(channel_id: str, reason: str) -> None:
+    """Clear a stuck pending status so the channel can be retried later."""
+    now = datetime.now(timezone.utc).isoformat()
+    get_supabase_client().table("channels").update(
+        {
+            "gate0_status": "unchecked",
+            "updated_at": now,
+        }
+    ).eq("id", channel_id).execute()
+    logger.warning("Gate 0 marked unchecked for %s: %s", channel_id, reason)
+
+
 def _run_gate0_sync(
     channel_id: str,
     manual: bool = False,
 ) -> dict[str, object]:
     """Synchronous Gate 0 check implementation."""
     runtime = get_runtime_settings()
+    if not runtime.settings_loaded:
+        _mark_gate0_unchecked(channel_id, "runtime settings unavailable")
+        return Gate0TaskResult(
+            channel_id=channel_id,
+            skipped=True,
+            reason="runtime_settings_unavailable",
+        ).model_dump(mode="json")
+
     if not runtime.gate0_enabled:
+        _mark_gate0_unchecked(channel_id, "gate0 disabled")
         return Gate0TaskResult(
             channel_id=channel_id,
             skipped=True,
@@ -232,7 +311,11 @@ def _run_gate0_sync(
         raise ValueError(f"Channel {channel_id} not found")
 
     channel = ch_result.data
-    should_run, skip_reason = _should_run_gate0_check(channel, manual=manual)
+    should_run, skip_reason = _should_run_gate0_check(
+        channel,
+        manual=manual,
+        clean_recheck_days=runtime.gate0_clean_recheck_days,
+    )
     if not should_run:
         logger.info("Gate 0 skipped for %s: %s", channel_id, skip_reason)
         return Gate0TaskResult(
@@ -243,10 +326,21 @@ def _run_gate0_sync(
 
     channel_name = str(channel.get("name") or "")
     search_query = f'"{channel_name}" "gold IRA"'
+    competitors = runtime.gate0_competitors
+    if not competitors:
+        _mark_gate0_unchecked(channel_id, "no gate0 competitors configured")
+        return Gate0TaskResult(
+            channel_id=channel_id,
+            skipped=True,
+            reason="no_gate0_competitors_configured",
+        ).model_dump(mode="json")
 
-    flagged_brand, source_url = _scan_channel_text_for_competitors(channel)
+    flagged_brand, source_url = _scan_channel_text_for_competitors(
+        channel,
+        competitors,
+    )
     if flagged_brand is None:
-        flagged_brand, source_url = _run_serper_search(search_query)
+        flagged_brand, source_url = _run_serper_search(search_query, competitors)
 
     gate0_record = _persist_gate0_result(
         channel,
@@ -281,4 +375,18 @@ def run_gate0(
         )
     except (APIError, httpx.HTTPError, RuntimeError, ValueError) as exc:
         logger.error("Gate 0 failed for %s: %s", channel_id, exc, exc_info=True)
+        if self.request.retries >= self.max_retries:
+            try:
+                _mark_gate0_unchecked(channel_id, str(exc))
+            except APIError:
+                logger.error(
+                    "Failed to clear Gate 0 pending status for %s",
+                    channel_id,
+                    exc_info=True,
+                )
+            return Gate0TaskResult(
+                channel_id=channel_id,
+                skipped=True,
+                reason=f"gate0_failed: {exc}",
+            ).model_dump(mode="json")
         raise self.retry(exc=exc, countdown=30)

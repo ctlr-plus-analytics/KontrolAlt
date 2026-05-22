@@ -45,3 +45,13 @@ def test_extract_supported_channel_urls_does_not_invent_aliases() -> None:
     assert "https://rumble.com/c/GoldTalk" in urls
     assert "https://rumble.com/user/GoldTalk" not in urls
     assert "https://bitchute.com/channel/SignalRoom" in urls
+
+
+def test_extract_supported_channel_urls_reads_contextual_platform_mentions() -> None:
+    candidates = extract_supported_channel_urls(
+        "Find us on Rumble channel LibertyDesk and BitChute profile SignalRoom."
+    )
+
+    urls = {candidate.channel_url for candidate in candidates}
+    assert "https://rumble.com/LibertyDesk" in urls
+    assert "https://bitchute.com/channel/SignalRoom" in urls

@@ -76,3 +76,54 @@ def test_extract_videos_falls_back_to_text_labels() -> None:
     assert parsed["v6xyz-fallback.html"]["views"] == 12500
     assert parsed["v6xyz-fallback.html"]["comments"] == 7
     assert parsed["v6xyz-fallback.html"]["date"] is not None
+
+
+def test_extract_videos_ignores_non_video_nav_links() -> None:
+    from bs4 import BeautifulSoup
+
+    scraper = RumbleScraper.__new__(RumbleScraper)
+    html = """
+    <nav>
+      <a href="/videos">Videos</a>
+      <a href="/viewer-license">License</a>
+    </nav>
+    <article>
+      <a href="/v6xyz-real-video.html" title="Real Video"></a>
+      <div>1,000 views</div>
+    </article>
+    """
+
+    parsed = scraper._extract_videos(BeautifulSoup(html, "html.parser"))
+    assert list(parsed) == ["v6xyz-real-video.html"]
+
+
+def test_extract_next_page_url_normalizes_rumble_pagination() -> None:
+    from bs4 import BeautifulSoup
+
+    scraper = RumbleScraper.__new__(RumbleScraper)
+    html = '<a href="?page=2" rel="next">Next</a>'
+
+    assert (
+        scraper._extract_next_page_url(
+            BeautifulSoup(html, "html.parser"),
+            "https://rumble.com/c/example",
+        )
+        == "https://rumble.com/c/example?page=2"
+    )
+
+
+def test_extract_page_count_ignores_unlabeled_numeric_nodes() -> None:
+    from bs4 import BeautifulSoup
+
+    scraper = RumbleScraper.__new__(RumbleScraper)
+    soup = BeautifulSoup('<span class="duration">12:45</span>', "html.parser")
+
+    assert (
+        scraper._extract_page_count(
+            soup=soup,
+            selectors=["span"],
+            metric_label="view",
+            label_pattern=r"(\d[\d,]*)\s+views?\b",
+        )
+        is None
+    )

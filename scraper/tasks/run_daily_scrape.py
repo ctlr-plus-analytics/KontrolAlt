@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Protocol
 from uuid import UUID
 
 from celery import chord
@@ -15,10 +16,28 @@ from tasks.compute_velocity import compute_velocity_all
 from tasks.discover_channels import discover_channels_now
 from tasks.run_gate0 import run_gate0
 from tasks.scrape_bitchute import scrape_bitchute_channel
-from tasks.scrape_helpers import daily_budget_bytes, get_daily_bytes_used
 from tasks.scrape_rumble import scrape_rumble_channel
 
 logger = logging.getLogger(__name__)
+
+
+class _ScrapeSignature(Protocol):
+    def set(self, **options: int) -> "_ScrapeSignature": ...
+
+
+def _stage_scrape_signatures(
+    scrape_signatures: list[_ScrapeSignature],
+) -> list[_ScrapeSignature]:
+    """Apply configured dispatch pacing to a scrape signature list."""
+    runtime = get_runtime_settings()
+    batch_size = max(1, runtime.scrape_dispatch_batch_size)
+    pause_s = max(0.0, runtime.scrape_dispatch_pause_seconds)
+    staged: list[object] = []
+    for idx, sig in enumerate(scrape_signatures):
+        stage = idx // batch_size
+        delay = int(stage * pause_s)
+        staged.append(sig.set(countdown=delay))
+    return staged
 
 
 def _parse_datetime(value: object) -> datetime | None:
@@ -348,14 +367,7 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
             "velocity_task_id": velocity_task.id,
         }
 
-    runtime = get_runtime_settings()
-    batch_size = max(1, runtime.scrape_dispatch_batch_size)
-    pause_s = max(0.0, runtime.scrape_dispatch_pause_seconds)
-    staged: list[object] = []
-    for idx, sig in enumerate(scrape_signatures):
-        stage = idx // batch_size
-        delay = int(stage * pause_s)
-        staged.append(sig.set(countdown=delay))
+    staged = _stage_scrape_signatures(scrape_signatures)
 
     workflow = chord(staged)(run_weekly_velocity_scrape_callback.si())
     logger.info(
@@ -420,23 +432,7 @@ def run_daily_scrape() -> dict[str, object]:
             "post_scrape_task_id": post_task.id,
         }
 
-    runtime = get_runtime_settings()
-    batch_size = max(1, runtime.scrape_dispatch_batch_size)
-    pause_s = max(0.0, runtime.scrape_dispatch_pause_seconds)
-    budget = daily_budget_bytes()
-    if budget > 0 and get_daily_bytes_used() >= budget:
-        logger.warning(
-            "Skipping daily run due to byte budget cap: used=%d budget=%d",
-            get_daily_bytes_used(),
-            budget,
-        )
-        return {"queued": 0, "skipped": "budget_exhausted"}
-
-    staged: list[object] = []
-    for idx, sig in enumerate(scrape_signatures):
-        stage = idx // batch_size
-        delay = int(stage * pause_s)
-        staged.append(sig.set(countdown=delay))
+    staged = _stage_scrape_signatures(scrape_signatures)
 
     queued = len(staged)
     workflow = chord(staged)(run_post_scrape_tasks.si())

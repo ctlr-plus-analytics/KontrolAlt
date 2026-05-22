@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -34,6 +35,43 @@ _GLOBAL_STOP_NO_NEW_INSERTED = 1_000_000
 _MAX_FEEDBACK_TERMS = 1_000_000
 _SCRAPE_NEW_LIMIT = 1_000_000
 _CHANNEL_PAGE_SIZE = 1_000_000
+_SERPER_MAX_ATTEMPTS = 3
+_SERPER_RETRY_DELAY_SECONDS = 1.5
+_SERPER_RETRY_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+_SERP_LINK_KEYS = {
+    "link",
+    "url",
+    "sourceurl",
+    "source_url",
+    "redirecturl",
+    "redirect_url",
+}
+_SERP_TEXT_KEYS = {
+    "attributes",
+    "date",
+    "description",
+    "displayedLink",
+    "displayed_link",
+    "extensions",
+    "highlightedWords",
+    "highlighted_words",
+    "link",
+    "position",
+    "richSnippet",
+    "rich_snippet",
+    "sitelinks",
+    "snippet",
+    "title",
+    "url",
+}
+_RELATIVE_RUMBLE_CHANNEL_PATH_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])/(c|user)/([A-Za-z0-9][A-Za-z0-9_-]{1,127})\b",
+    re.IGNORECASE,
+)
+_RELATIVE_BITCHUTE_CHANNEL_PATH_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])/channel/([A-Za-z0-9][A-Za-z0-9_-]{1,127})\b",
+    re.IGNORECASE,
+)
 
 
 def _utc_now_iso() -> str:
@@ -44,7 +82,17 @@ def _normalize_text_values(value: object) -> list[str]:
     if isinstance(value, str):
         return [value]
     if isinstance(value, list):
-        return [str(item) for item in value if isinstance(item, (str, int, float))]
+        values: list[str] = []
+        for item in value:
+            values.extend(_normalize_text_values(item))
+        return values
+    if isinstance(value, dict):
+        values = []
+        for item in value.values():
+            values.extend(_normalize_text_values(item))
+        return values
+    if isinstance(value, (int, float)):
+        return [str(value)]
     return []
 
 
@@ -170,11 +218,47 @@ def _collect_known_channel_candidates(
     }
 
     candidates: dict[str, tuple[ChannelUrlCandidate, str]] = {}
+    source_platform = str(channel.get("platform") or "")
     for field_name, blobs in field_blobs.items():
         for blob in blobs:
             for candidate in extract_supported_channel_urls(blob):
                 candidates.setdefault(candidate.channel_url, (candidate, field_name))
+            for candidate in _extract_relative_channel_urls(blob, source_platform):
+                candidates.setdefault(candidate.channel_url, (candidate, field_name))
     return list(candidates.values())
+
+
+def _extract_relative_channel_urls(
+    text: str, source_platform: str
+) -> list[ChannelUrlCandidate]:
+    """Extract same-platform relative channel links from scraped page fragments."""
+    candidates: dict[str, ChannelUrlCandidate] = {}
+    if source_platform == "rumble":
+        for match in _RELATIVE_RUMBLE_CHANNEL_PATH_PATTERN.finditer(text):
+            candidate = canonicalize_channel_url(
+                f"https://rumble.com/{match.group(1).lower()}/{match.group(2)}"
+            )
+            if candidate is not None:
+                candidates[candidate.channel_url] = candidate
+    elif source_platform == "bitchute":
+        for match in _RELATIVE_BITCHUTE_CHANNEL_PATH_PATTERN.finditer(text):
+            candidate = canonicalize_channel_url(
+                f"https://bitchute.com/channel/{match.group(1)}"
+            )
+            if candidate is not None:
+                candidates[candidate.channel_url] = candidate
+    return list(candidates.values())
+
+
+def _seed_discovery_confidence(source_field: str) -> float:
+    """Score seed evidence by how directly the source field points to a channel."""
+    if source_field in {"contact_info", "secondary_urls"}:
+        return 0.97
+    if source_field == "description":
+        return 0.92
+    if source_field == "video_titles":
+        return 0.84
+    return 0.9
 
 
 def _query_for_keyword(keyword: str, platform: str) -> str:
@@ -183,15 +267,29 @@ def _query_for_keyword(keyword: str, platform: str) -> str:
     return f'site:bitchute.com "{keyword}" inurl:/channel/ -inurl:/video/ -inurl:/embed/'
 
 
+def _category_phrase(category: str) -> str:
+    return category.replace("_", " ")
+
+
 def _keyword_templates(category: str, keyword: str) -> list[str]:
-    return [
+    category_phrase = _category_phrase(category)
+    templates = [
         _query_for_keyword(keyword, "rumble"),
         _query_for_keyword(keyword, "bitchute"),
-        f'site:rumble.com "{keyword}" "{category}" -inurl:/v -inurl:/embed/',
-        f'site:bitchute.com "{keyword}" "{category}" inurl:/channel/ -inurl:/video/ -inurl:/embed/',
+        f'site:rumble.com/c/ "{keyword}" -inurl:/v -inurl:/embed/',
+        f'site:rumble.com/user/ "{keyword}" -inurl:/v -inurl:/embed/',
+        f'site:bitchute.com/channel/ "{keyword}" -inurl:/video/ -inurl:/embed/',
+        f'site:rumble.com "{keyword}" "{category_phrase}" -inurl:/v -inurl:/embed/',
+        f'site:bitchute.com "{keyword}" "{category_phrase}" inurl:/channel/ -inurl:/video/ -inurl:/embed/',
         f'site:rumble.com intitle:"{keyword}" -inurl:/v -inurl:/embed/',
         f'site:bitchute.com intitle:"{keyword}" inurl:/channel/ -inurl:/video/ -inurl:/embed/',
+        f'"{keyword}" "rumble.com/c/" -inurl:/v -inurl:/embed/',
+        f'"{keyword}" "rumble.com/user/" -inurl:/v -inurl:/embed/',
+        f'"{keyword}" "bitchute.com/channel/" -inurl:/video/ -inurl:/embed/',
+        f'"{keyword}" "Rumble channel"',
+        f'"{keyword}" "BitChute channel"',
     ]
+    return list(dict.fromkeys(templates))
 
 
 def _iter_search_queries() -> list[tuple[str, str, str, str]]:
@@ -263,38 +361,73 @@ def _append_feedback_queries_round_robin(
 
 def _search_serper(query: str, page: int = 1) -> list[dict[str, object]]:
     results_per_query = get_runtime_settings().discovery_results_per_query
-    with httpx.Client(timeout=20.0) as http:
-        response = http.post(
-            _SERPER_SEARCH_URL,
-            headers={
-                "X-API-KEY": scraper_settings.serp_api_key,
-                "Content-Type": "application/json",
-            },
-            json={"q": query, "num": results_per_query, "page": page},
-        )
-        response.raise_for_status()
-        payload = response.json()
-        organic = payload.get("organic", []) if isinstance(payload, dict) else []
-        if not isinstance(organic, list):
-            return []
-        return organic[:results_per_query]
+    last_error: httpx.HTTPError | ValueError | None = None
+    for attempt in range(1, _SERPER_MAX_ATTEMPTS + 1):
+        try:
+            with httpx.Client(timeout=20.0) as http:
+                response = http.post(
+                    _SERPER_SEARCH_URL,
+                    headers={
+                        "X-API-KEY": scraper_settings.serp_api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={"q": query, "num": results_per_query, "page": page},
+                )
+                if response.status_code in _SERPER_RETRY_STATUS_CODES:
+                    response.raise_for_status()
+                response.raise_for_status()
+                payload = response.json()
+                organic = payload.get("organic", []) if isinstance(payload, dict) else []
+                if not isinstance(organic, list):
+                    return []
+                return organic[:results_per_query]
+        except (httpx.HTTPError, ValueError) as exc:
+            last_error = exc
+            if attempt >= _SERPER_MAX_ATTEMPTS:
+                raise
+            delay = _SERPER_RETRY_DELAY_SECONDS * attempt
+            logger.warning(
+                "Serper search attempt %d/%d failed for query=%s page=%d; retrying in %.1fs: %s",
+                attempt,
+                _SERPER_MAX_ATTEMPTS,
+                query,
+                page,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+    if last_error is not None:
+        raise last_error
+    return []
+
+
+def _walk_serp_values(
+    value: object, *, parent_key: str | None = None
+) -> list[tuple[str | None, str]]:
+    values: list[tuple[str | None, str]] = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            key_text = str(key)
+            values.extend(_walk_serp_values(nested, parent_key=key_text))
+        return values
+    if isinstance(value, list):
+        for nested in value:
+            values.extend(_walk_serp_values(nested, parent_key=parent_key))
+        return values
+    if isinstance(value, (str, int, float)):
+        text = str(value).strip()
+        if text:
+            values.append((parent_key, text))
+    return values
 
 
 def _extract_candidate_links(item: dict[str, object]) -> list[str]:
-    links: list[str] = []
-    primary = str(item.get("link") or "").strip()
-    if primary:
-        links.append(primary)
-
-    sitelinks = item.get("sitelinks")
-    if isinstance(sitelinks, list):
-        for sitelink in sitelinks:
-            if not isinstance(sitelink, dict):
-                continue
-            link = str(sitelink.get("link") or "").strip()
-            if link:
-                links.append(link)
-    return links
+    links: dict[str, None] = {}
+    for key, text in _walk_serp_values(item):
+        normalized_key = (key or "").replace("-", "_").lower()
+        if normalized_key in _SERP_LINK_KEYS or text.startswith(("http://", "https://")):
+            links[text] = None
+    return list(links.keys())
 
 
 def _extract_serp_candidates(item: dict[str, object]) -> list[ChannelUrlCandidate]:
@@ -305,12 +438,53 @@ def _extract_serp_candidates(item: dict[str, object]) -> list[ChannelUrlCandidat
         if candidate is not None:
             candidates[candidate.channel_url] = candidate
 
-    text_blob = " ".join(
-        str(item.get(key) or "") for key in ("title", "snippet", "link")
-    )
+    text_values = []
+    for key, text in _walk_serp_values(item):
+        normalized_key = (key or "").replace("-", "_")
+        if key is None or normalized_key in _SERP_TEXT_KEYS:
+            text_values.append(text)
+    text_blob = " ".join(text_values)
     for candidate in extract_supported_channel_urls(text_blob):
         candidates[candidate.channel_url] = candidate
     return list(candidates.values())
+
+
+def _candidate_was_direct_serp_link(
+    item: dict[str, object], candidate: ChannelUrlCandidate
+) -> bool:
+    """Return whether the candidate came from a SERP URL field, not only text."""
+    for link in _extract_candidate_links(item):
+        linked_candidate = canonicalize_channel_url(link)
+        if linked_candidate is None:
+            continue
+        if linked_candidate.channel_url == candidate.channel_url:
+            return True
+    return False
+
+
+def _keyword_discovery_confidence(
+    *,
+    query: str,
+    query_kind: str,
+    item: dict[str, object],
+    candidate: ChannelUrlCandidate,
+) -> float:
+    """Score discovery strength without rejecting useful loose candidates."""
+    confidence = 0.75
+    query_lower = query.lower()
+
+    if query_kind == "feedback":
+        confidence = 0.67
+    if '"rumble channel"' in query_lower or '"bitchute channel"' in query_lower:
+        confidence = min(confidence, 0.58)
+    if "rumble.com/c/" in query_lower or "rumble.com/user/" in query_lower:
+        confidence = max(confidence, 0.78)
+    if "bitchute.com/channel/" in query_lower or "inurl:/channel/" in query_lower:
+        confidence = max(confidence, 0.78)
+    if _candidate_was_direct_serp_link(item, candidate):
+        confidence = max(confidence, 0.82)
+
+    return round(confidence, 2)
 
 
 def _extract_feedback_terms(item: dict[str, object]) -> list[str]:
@@ -361,7 +535,7 @@ def _discover_from_known_channels(client) -> dict[str, object]:
     refreshed = 0
     duplicates = 0
     invalid = 0
-    new_urls: list[dict[str, str]] = []
+    new_urls: list[dict[str, object]] = []
     field_metrics: dict[str, int] = {
         "video_titles": 0,
         "contact_info": 0,
@@ -380,13 +554,14 @@ def _discover_from_known_channels(client) -> dict[str, object]:
             discovered += 1
             field_metrics[source_field] = field_metrics.get(source_field, 0) + 1
             platform_metrics[candidate.platform] = platform_metrics.get(candidate.platform, 0) + 1
-            if discovered >= insert_limit:
+            if inserted >= insert_limit:
                 break
             if candidate.channel_url == str(channel.get("channel_url") or ""):
                 duplicates += 1
                 continue
 
             try:
+                confidence = _seed_discovery_confidence(source_field)
                 changed, existed = upsert_discovered_channel(
                     client=client,
                     candidate=candidate,
@@ -394,7 +569,7 @@ def _discover_from_known_channels(client) -> dict[str, object]:
                     source_ref=source_channel_id or None,
                     title=_fallback_name(candidate.channel_url),
                     category=None,
-                    confidence=0.95,
+                    confidence=confidence,
                 )
             except APIError:
                 invalid += 1
@@ -411,9 +586,13 @@ def _discover_from_known_channels(client) -> dict[str, object]:
                     inserted_platform_metrics.get(candidate.platform, 0) + 1
                 )
                 new_urls.append(
-                    {"channel_url": candidate.channel_url, "platform": candidate.platform}
+                    {
+                        "channel_url": candidate.channel_url,
+                        "platform": candidate.platform,
+                        "confidence": confidence,
+                    }
                 )
-        if discovered >= insert_limit:
+        if inserted >= insert_limit:
             break
 
     return {
@@ -539,6 +718,12 @@ def _discover_from_keywords(client) -> dict[str, object]:
                     discovered += 1
                     metrics["discovered"] += 1
                     try:
+                        confidence = _keyword_discovery_confidence(
+                            query=query,
+                            query_kind=query_kind,
+                            item=item,
+                            candidate=candidate,
+                        )
                         changed, existed = upsert_discovered_channel(
                             client=client,
                             candidate=candidate,
@@ -546,7 +731,7 @@ def _discover_from_keywords(client) -> dict[str, object]:
                             source_ref=None,
                             title=title or _fallback_name(candidate.channel_url),
                             category=category,
-                            confidence=0.75,
+                            confidence=confidence,
                         )
                     except APIError:
                         invalid += 1
@@ -572,6 +757,7 @@ def _discover_from_keywords(client) -> dict[str, object]:
                             {
                                 "channel_url": candidate.channel_url,
                                 "platform": candidate.platform,
+                                "confidence": confidence,
                             }
                         )
 
@@ -628,7 +814,7 @@ def _discover_from_keywords(client) -> dict[str, object]:
     }
 
 
-def queue_discovered_channel_scrapes(new_urls: list[dict[str, str]]) -> int:
+def queue_discovered_channel_scrapes(new_urls: list[dict[str, object]]) -> int:
     """Queue scrapes for newly discovered channels."""
     queued = 0
     scrape_new_limit = min(
@@ -636,7 +822,12 @@ def queue_discovered_channel_scrapes(new_urls: list[dict[str, str]]) -> int:
     )
     seen: set[str] = set()
     client = get_supabase_client()
-    for row in new_urls:
+    priority_rows = sorted(
+        new_urls,
+        key=lambda row: float(row.get("confidence") or 0.0),
+        reverse=True,
+    )
+    for row in priority_rows:
         if queued >= scrape_new_limit:
             break
         channel_url = str(row.get("channel_url") or "")

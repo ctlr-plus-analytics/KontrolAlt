@@ -3,7 +3,7 @@
 import logging
 import re
 from datetime import datetime, timedelta
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 from bs4.element import Tag
@@ -27,12 +27,14 @@ BITCHUTE_BASE_URL = "https://www.bitchute.com"
 class BitChuteScraper(BaseScraper):
     """Scraper for BitChute channels using Patchright."""
 
-    VIDEO_PAGE_FALLBACK_LIMIT = 5
+    VIDEO_COLLECTION_LIMIT = 50
+    DEMOGRAPHIC_TITLE_LIMIT = 20
+    VIDEO_PAGE_FALLBACK_LIMIT = 20
 
     async def scrape(self, channel_url: str) -> dict[str, object]:
         """Scrape a single BitChute channel.
 
-        Extracts: channel name, subscriber count, last 20 videos
+        Extracts: channel name, subscriber count, recent videos
         (title, views, comments, date), description, external links,
         and contact emails.
 
@@ -84,7 +86,7 @@ class BitChuteScraper(BaseScraper):
                     logger.warning("BitChute: Video content not found on landing page for %s", channel_url)
 
                 # Load more video cards before snapshot parsing.
-                for _ in range(3):
+                for _ in range(6):
                     await page.mouse.wheel(0, 2600)
                     await human_delay(1.5, 3.0)
 
@@ -125,7 +127,8 @@ class BitChuteScraper(BaseScraper):
                 logger.info("BitChute: Found %d cards live for %s", len(cards), channel_url)
                 
                 for i, card in enumerate(cards):
-                    if i >= 20: break
+                    if i >= self.VIDEO_COLLECTION_LIMIT:
+                        break
                     try:
                         # Extract Video ID from link
                         link_el = card.locator("a[href*='/video/']").first
@@ -194,7 +197,7 @@ class BitChuteScraper(BaseScraper):
                         for el in info_elements:
                             text = (await el.inner_text()).lower()
                             if "ago" in text or "yesterday" in text or "published" in text:
-                                date_val = self._parse_relative_date(text)
+                                date_val = self._parse_bitchute_date(text)
                                 if date_val: break
                         
                         if video_id:
@@ -225,11 +228,17 @@ class BitChuteScraper(BaseScraper):
                 name = self._extract_name(soup_main, channel_url)
 
                 # Prefer static full-page parse for modern BitChute card markup.
-                # Collect in a bounded scroll loop to reach up to 20 unique videos.
+                # Collect in a bounded scroll loop to reach a deeper recent-video window.
                 await self._open_videos_tab_if_available(page, channel_url)
                 parsed_map = await self._collect_videos_with_scroll(page)
                 if parsed_map:
                     video_data_map = self._merge_video_maps(video_data_map, parsed_map)
+
+                api_fallback = await self._fetch_api_channel_fallback(context, channel_url)
+                if api_fallback:
+                    api_videos = api_fallback.get("videos")
+                    if isinstance(api_videos, dict):
+                        video_data_map = self._merge_video_maps(video_data_map, api_videos)
 
                 # Comments and publish dates are most reliable on video pages
                 # when channel-card metadata is partial.
@@ -300,6 +309,17 @@ class BitChuteScraper(BaseScraper):
                     description = self._extract_description(soup_main)
                     external_links = self._extract_external_links(soup_main)
 
+                if api_fallback:
+                    api_description = str(api_fallback.get("description") or "")
+                    api_links = [
+                        str(value)
+                        for value in api_fallback.get("external_links", [])
+                        if isinstance(value, str)
+                    ]
+                    if len(api_description) > len(description):
+                        description = api_description
+                    external_links = sorted(set(external_links + api_links))
+
                 # --- Extract emails and URLs from description ---
                 emails = extract_emails(description + " " + " ".join(external_links))
                 all_urls = extract_urls(description)
@@ -310,26 +330,32 @@ class BitChuteScraper(BaseScraper):
                     str(v["title"])
                     for v in video_data_map.values()
                     if v.get("title") and not self._is_bad_video_title(str(v["title"]))
-                ][:20]
+                ][: self.VIDEO_COLLECTION_LIMIT]
                 view_counts = [
                     float(v["views"])
                     for v in video_data_map.values()
                     if v.get("views") is not None
-                ][:20]
+                ][: self.VIDEO_COLLECTION_LIMIT]
                 comment_counts = [
                     float(v["comments"])
                     for v in video_data_map.values()
                     if v.get("comments") is not None
-                ][:20]
-                upload_dates = [v["date"] for v in video_data_map.values() if v["date"]][:20]
+                ][: self.VIDEO_COLLECTION_LIMIT]
+                upload_dates = [
+                    v["date"]
+                    for v in video_data_map.values()
+                    if v["date"]
+                ][: self.VIDEO_COLLECTION_LIMIT]
 
                 avg_views = self.compute_avg(view_counts)
                 avg_comments = self.compute_avg(comment_counts)
                 comment_tier = compute_comment_tier(avg_comments)
-                demographic = compute_channel_demographic(name, description, video_titles)
+                demographic = compute_channel_demographic(
+                    name, description, video_titles[: self.DEMOGRAPHIC_TITLE_LIMIT]
+                )
                 posts_per_week = self.compute_posting_cadence(upload_dates)
                 last_active = max(upload_dates) if upload_dates else None
-                total_videos_considered = min(20, len(video_data_map))
+                total_videos_considered = min(self.VIDEO_COLLECTION_LIMIT, len(video_data_map))
                 comments_extracted = len(comment_counts)
                 views_extracted = len(view_counts)
                 dates_extracted = len(upload_dates)
@@ -522,10 +548,10 @@ class BitChuteScraper(BaseScraper):
         return None
 
     def _extract_videos(self, soup) -> dict[str, dict[str, object]]:
-        """Extract last 20 videos from modern channel-card markup."""
+        """Extract recent videos from modern channel-card markup."""
         video_data_map: dict[str, dict[str, object]] = {}
         video_cards = soup.select("#video-card")
-        for card in video_cards[:20]:
+        for card in video_cards[: self.VIDEO_COLLECTION_LIMIT]:
             link_el = card.select_one("a[href*='/video/']")
             if link_el is None:
                 continue
@@ -591,10 +617,10 @@ class BitChuteScraper(BaseScraper):
         return video_data_map
 
     async def _collect_videos_with_scroll(self, page) -> dict[str, dict[str, object]]:
-        """Collect up to 20 unique videos by repeatedly snapshotting page HTML."""
+        """Collect a deeper recent-video window by repeatedly snapshotting page HTML."""
         collected: dict[str, dict[str, object]] = {}
         stagnant_rounds = 0
-        max_rounds = 8
+        max_rounds = 16
 
         for _ in range(max_rounds):
             html = await page.content()
@@ -606,7 +632,7 @@ class BitChuteScraper(BaseScraper):
                     collected[video_id] = payload
             after = len(collected)
 
-            if after >= 20:
+            if after >= self.VIDEO_COLLECTION_LIMIT:
                 break
 
             if after == before:
@@ -614,20 +640,145 @@ class BitChuteScraper(BaseScraper):
             else:
                 stagnant_rounds = 0
 
-            if stagnant_rounds >= 2:
+            if stagnant_rounds >= 3:
                 break
 
             await page.mouse.wheel(0, 3200)
             await human_delay(1.2, 2.5)
 
-        if len(collected) > 20:
+        if len(collected) > self.VIDEO_COLLECTION_LIMIT:
             trimmed: dict[str, dict[str, object]] = {}
             for idx, (video_id, payload) in enumerate(collected.items()):
-                if idx >= 20:
+                if idx >= self.VIDEO_COLLECTION_LIMIT:
                     break
                 trimmed[video_id] = payload
             return trimmed
         return collected
+
+    async def _fetch_api_channel_fallback(
+        self, context, channel_url: str
+    ) -> dict[str, object] | None:
+        """Fetch the legacy/API BitChute channel HTML as a static fallback."""
+        api_url = self._api_channel_url(channel_url)
+        if api_url is None:
+            return None
+
+        page = await context.new_page()
+        try:
+            await page.goto(api_url, wait_until="domcontentloaded", timeout=45000)
+            await human_delay(1.0, 2.0)
+            if not await wait_for_content(page, min_bytes=5000, timeout_s=10.0):
+                return None
+            soup = BeautifulSoup(await page.content(), "html.parser")
+            return {
+                "videos": self._extract_api_videos(soup),
+                "description": self._extract_api_description(soup),
+                "external_links": self._extract_external_links(soup),
+            }
+        except Exception as exc:
+            logger.debug("BitChute: API fallback failed for %s: %s", api_url, exc)
+            return None
+        finally:
+            await page.close()
+
+    def _api_channel_url(self, channel_url: str) -> str | None:
+        """Build the legacy/API BitChute channel URL for a channel page."""
+        parts = [part for part in urlsplit(channel_url).path.split("/") if part]
+        if len(parts) < 2 or parts[0] != "channel":
+            return None
+        return f"https://api.bitchute.com/channel/{parts[1]}/"
+
+    def _extract_api_description(self, soup: BeautifulSoup) -> str:
+        """Extract the longest bounded text block from a legacy/API channel page."""
+        candidates: list[str] = []
+        for selector in ["#channel-about", ".channel-about", ".channel-description", ".description"]:
+            for node in soup.select(selector):
+                text = node.get_text("\n", strip=True)
+                if len(text) > 80:
+                    candidates.append(text)
+        meta = soup.find("meta", attrs={"name": "description"})
+        if isinstance(meta, Tag):
+            text = str(meta.get("content") or "").strip()
+            if text:
+                candidates.append(text)
+        if not candidates:
+            return ""
+        return max(candidates, key=len)
+
+    def _extract_api_videos(self, soup: BeautifulSoup) -> dict[str, dict[str, object]]:
+        """Extract video rows from the legacy/API BitChute channel surface."""
+        videos: dict[str, dict[str, object]] = {}
+        for link in soup.select("a[href*='/video/']"):
+            href = str(link.get("href") or "").strip()
+            video_id = href.rstrip("/").split("/")[-1]
+            if not video_id or video_id in videos:
+                continue
+
+            title = link.get_text(" ", strip=True)
+            if not title or self._is_bad_video_title(title):
+                continue
+
+            container = self._bounded_video_container(link)
+            text = container.get_text(" ", strip=True) if container is not None else title
+            views = self._extract_api_video_views(link, container)
+            date_val = self._extract_api_video_date(text)
+
+            videos[video_id] = {
+                "title": title,
+                "views": views,
+                "comments": None,
+                "comments_source": None,
+                "date": date_val,
+                "url": self._to_absolute_url(href),
+            }
+            if len(videos) >= self.VIDEO_COLLECTION_LIMIT:
+                break
+        return videos
+
+    def _bounded_video_container(self, link: Tag) -> Tag | None:
+        """Return a small parent container for legacy/API video metadata."""
+        for parent in link.parents:
+            if not isinstance(parent, Tag):
+                continue
+            if parent.name in {"article", "li", "tr"}:
+                return parent
+            if parent.name == "div":
+                video_links = parent.select("a[href*='/video/']")
+                text_len = len(parent.get_text(" ", strip=True))
+                if len(video_links) <= 2 and text_len <= 3000:
+                    return parent
+        return None
+
+    def _extract_api_video_views(self, link: Tag, container: Tag | None) -> int | None:
+        """Extract legacy/API view counts from link-adjacent metadata."""
+        candidates: list[str] = []
+        if container is not None:
+            for anchor in container.select("a[href*='/video/']"):
+                if anchor is link:
+                    continue
+                text = anchor.get_text(" ", strip=True)
+                if re.fullmatch(r"[\d,.\s]+(?:[kmb])?\s+\d{1,2}:\d{2}(?::\d{2})?", text, re.I):
+                    candidates.append(text.split()[0])
+            text = container.get_text(" ", strip=True)
+            match = re.search(r"\b(\d[\d,]*(?:\.\d+)?\s*[kmb]?)\s+views?\b", text, re.I)
+            if match:
+                candidates.append(match.group(1))
+        for candidate in candidates:
+            parsed = self._parse_bitchute_count(candidate)
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _extract_api_video_date(self, text: str) -> datetime | None:
+        """Extract absolute dates from bounded legacy/API video text."""
+        match = re.search(
+            r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s+\d{4}\b",
+            text,
+            flags=re.I,
+        )
+        if match:
+            return self._parse_absolute_date(match.group(0))
+        return self._parse_bitchute_date(text)
 
     async def _open_videos_tab_if_available(self, page, channel_url: str) -> None:
         """Switch to the Videos tab when available to avoid featured-card duplicates."""
@@ -705,7 +856,7 @@ class BitChuteScraper(BaseScraper):
                 nodes = await page.locator(sel).all()
                 for node in nodes:
                     text = (await node.inner_text()).strip()
-                    parsed_date = self._parse_relative_date(text)
+                    parsed_date = self._parse_bitchute_date(text)
                     if parsed_date is not None:
                         publish_date = parsed_date
                         break
@@ -720,7 +871,7 @@ class BitChuteScraper(BaseScraper):
                     flags=re.IGNORECASE,
                 )
                 if date_match:
-                    publish_date = self._parse_relative_date(date_match.group(1))
+                    publish_date = self._parse_bitchute_date(date_match.group(1))
 
             return comment_count, publish_date
         except Exception as exc:
@@ -771,6 +922,8 @@ class BitChuteScraper(BaseScraper):
             return now - timedelta(days=1)
         if "just now" in text or "seconds ago" in text:
             return now
+        if "ago" not in text:
+            return None
             
         match = re.search(
             r"(\d+)\s+("
@@ -801,6 +954,22 @@ class BitChuteScraper(BaseScraper):
             return now - timedelta(days=val * 365)
         
         return None
+
+    def _parse_absolute_date(self, text: str) -> datetime | None:
+        """Parse absolute dates used by legacy BitChute pages."""
+        if not text:
+            return None
+        normalized = " ".join(text.strip().replace(",", ", ").split())
+        for fmt in ("%b %d, %Y", "%B %d, %Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(normalized, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _parse_bitchute_date(self, text: str) -> datetime | None:
+        """Parse either relative or absolute BitChute date text."""
+        return self._parse_relative_date(text) or self._parse_absolute_date(text)
 
     def _extract_name(self, soup: BeautifulSoup, channel_url: str) -> str:
         """Extract channel name from visible header, metadata, or URL fallback."""
@@ -840,13 +1009,6 @@ class BitChuteScraper(BaseScraper):
                         if parsed is not None:
                             return parsed
 
-        match = re.search(
-            r"(\d[\d,]*(?:\.\d+)?\s*[kmb]?)\s+subscribers?\b",
-            soup.get_text(" ", strip=True),
-            flags=re.IGNORECASE,
-        )
-        if match:
-            return self._parse_bitchute_count(match.group(1))
         return None
 
     def _extract_description(self, soup: BeautifulSoup) -> str:
@@ -879,7 +1041,7 @@ class BitChuteScraper(BaseScraper):
         return sorted(external_links)
 
     def _extract_videos(self, soup: BeautifulSoup) -> dict[str, dict[str, object]]:
-        """Extract up to 20 videos from several BitChute card variants."""
+        """Extract recent videos from several BitChute card variants."""
         video_data_map: dict[str, dict[str, object]] = {}
         cards = soup.select(
             "#video-card, .video-card, .q-card:has(a[href*='/video/']), "
@@ -893,7 +1055,7 @@ class BitChuteScraper(BaseScraper):
             ]
 
         for card in cards:
-            if len(video_data_map) >= 20 or not isinstance(card, Tag):
+            if len(video_data_map) >= self.VIDEO_COLLECTION_LIMIT or not isinstance(card, Tag):
                 break
             link_el = card.select_one("a[href*='/video/']")
             if link_el is None:
@@ -1039,7 +1201,7 @@ class BitChuteScraper(BaseScraper):
                 str(time_node.get("title") or ""),
                 time_node.get_text(" ", strip=True),
             ]:
-                parsed = self._parse_relative_date(candidate)
+                parsed = self._parse_bitchute_date(candidate)
                 if parsed is not None:
                     return parsed
 
@@ -1050,7 +1212,7 @@ class BitChuteScraper(BaseScraper):
             flags=re.IGNORECASE,
         )
         if match:
-            return self._parse_relative_date(match.group(1))
+            return self._parse_bitchute_date(match.group(1))
         return None
 
     def _merge_video_maps(

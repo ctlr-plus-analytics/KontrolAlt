@@ -191,6 +191,31 @@ def test_extract_serp_candidates_reads_snippet_urls() -> None:
     assert "https://bitchute.com/channel/SignalDesk" in urls
 
 
+def test_extract_serp_candidates_reads_nested_rich_results() -> None:
+    result = discover_channels._extract_serp_candidates(
+        {
+            "title": "Preparedness channels",
+            "link": "https://example.com/roundup",
+            "richSnippet": {
+                "top": {
+                    "extensions": [
+                        "Also on Rumble channel rumble.com/c/GridDownRadio",
+                        {"url": "https://old.bitchute.com/channel/HomesteadWire/"},
+                    ]
+                }
+            },
+            "sitelinks": [
+                {"title": "Mirror", "link": "https://rumble.com/user/SignalDesk"},
+            ],
+        }
+    )
+
+    urls = {candidate.channel_url for candidate in result}
+    assert "https://rumble.com/c/GridDownRadio" in urls
+    assert "https://bitchute.com/channel/HomesteadWire" in urls
+    assert "https://rumble.com/user/SignalDesk" in urls
+
+
 def test_query_for_keyword_excludes_video_paths() -> None:
     rumble_query = discover_channels._query_for_keyword("gold ira", "rumble")
     bitchute_query = discover_channels._query_for_keyword("gold ira", "bitchute")
@@ -198,6 +223,92 @@ def test_query_for_keyword_excludes_video_paths() -> None:
     assert "-inurl:/v" in rumble_query
     assert "-inurl:/video/" in bitchute_query
     assert "OR -inurl" not in rumble_query
+
+
+def test_keyword_templates_include_loose_channel_discovery_queries() -> None:
+    queries = discover_channels._keyword_templates(
+        "prepper_survival_homesteading", "water storage"
+    )
+
+    assert '"water storage" "Rumble channel"' in queries
+    assert '"water storage" "BitChute channel"' in queries
+    assert 'site:rumble.com/c/ "water storage" -inurl:/v -inurl:/embed/' in queries
+    assert any('"prepper survival homesteading"' in query for query in queries)
+
+
+def test_search_serper_retries_transient_failures(monkeypatch) -> None:
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self.payload = payload or {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise discover_channels.httpx.HTTPStatusError(
+                    "transient",
+                    request=discover_channels.httpx.Request(
+                        "POST", "https://example.com"
+                    ),
+                    response=discover_channels.httpx.Response(self.status_code),
+                )
+
+        def json(self):
+            return self.payload
+
+    class FakeHttp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, *_args, **_kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                return FakeResponse(503)
+            return FakeResponse(
+                200, {"organic": [{"link": "https://rumble.com/c/SignalDesk"}]}
+            )
+
+    monkeypatch.setattr(discover_channels.httpx, "Client", lambda timeout: FakeHttp())
+    monkeypatch.setattr(discover_channels.time, "sleep", lambda _seconds: None)
+
+    results = discover_channels._search_serper("site:rumble.com SignalDesk")
+
+    assert len(calls) == 2
+    assert results == [{"link": "https://rumble.com/c/SignalDesk"}]
+
+
+def test_keyword_discovery_confidence_scores_loose_and_direct_hits() -> None:
+    candidate = discover_channels.ChannelUrlCandidate(
+        channel_url="https://rumble.com/c/SignalDesk",
+        platform="rumble",
+    )
+    loose_confidence = discover_channels._keyword_discovery_confidence(
+        query='"gold ira" "Rumble channel"',
+        query_kind="base",
+        item={
+            "title": "Signal Desk",
+            "snippet": "Watch this creator at rumble.com/c/SignalDesk.",
+            "link": "https://example.com/roundup",
+        },
+        candidate=candidate,
+    )
+    direct_confidence = discover_channels._keyword_discovery_confidence(
+        query='site:rumble.com/c/ "gold ira" -inurl:/v',
+        query_kind="base",
+        item={
+            "title": "Signal Desk",
+            "link": "https://rumble.com/c/SignalDesk",
+        },
+        candidate=candidate,
+    )
+
+    assert loose_confidence < direct_confidence
+    assert loose_confidence == 0.58
+    assert direct_confidence == 0.82
 
 
 def test_iter_search_queries_round_robins_categories(monkeypatch) -> None:
@@ -330,10 +441,48 @@ def test_queue_discovered_channel_scrapes_marks_rows_queued(monkeypatch) -> None
     assert client.channels.updates[0][1]["discovery_status"] == "queued"
 
 
+def test_queue_discovered_channel_scrapes_prioritizes_confidence(monkeypatch) -> None:
+    client = FakeClient([])
+    queued_urls = []
+
+    class FakeTask:
+        @staticmethod
+        def delay(channel_url):
+            queued_urls.append(channel_url)
+
+    monkeypatch.setattr(discover_channels, "_SCRAPE_NEW_LIMIT", 2)
+    monkeypatch.setattr(discover_channels, "get_supabase_client", lambda: client)
+    monkeypatch.setattr(discover_channels, "scrape_rumble_channel", FakeTask)
+
+    queued = discover_channels.queue_discovered_channel_scrapes(
+        [
+            {
+                "channel_url": "https://rumble.com/Low",
+                "platform": "rumble",
+                "confidence": 0.58,
+            },
+            {
+                "channel_url": "https://rumble.com/High",
+                "platform": "rumble",
+                "confidence": 0.82,
+            },
+            {
+                "channel_url": "https://rumble.com/Mid",
+                "platform": "rumble",
+                "confidence": 0.75,
+            },
+        ]
+    )
+
+    assert queued == 2
+    assert queued_urls == ["https://rumble.com/High", "https://rumble.com/Mid"]
+
+
 def test_seed_discovery_extracts_messy_platform_mentions() -> None:
     channel = {
+        "platform": "rumble",
         "description": "Find me on Rumble: @SignalDesk and BitChute channel: LibertyRoom",
-        "video_titles": ["Guest also said rumble /c/ MacroAlpha"],
+        "video_titles": ["Guest also said rumble /c/ MacroAlpha and linked /user/GridDown"],
     }
 
     candidates = discover_channels._collect_known_channel_candidates(channel)
@@ -342,6 +491,7 @@ def test_seed_discovery_extracts_messy_platform_mentions() -> None:
     assert "https://rumble.com/SignalDesk" in urls
     assert "https://bitchute.com/channel/LibertyRoom" in urls
     assert "https://rumble.com/c/MacroAlpha" in urls
+    assert "https://rumble.com/user/GridDown" in urls
 
 
 def test_seed_discovery_inserts_directly_and_reports_source_metrics(monkeypatch) -> None:
@@ -365,7 +515,9 @@ def test_seed_discovery_inserts_directly_and_reports_source_metrics(monkeypatch)
     assert result["platform_metrics"]["rumble"] == 2
     assert result["inserted_platform_metrics"]["rumble"] == 1
     assert client.channels.inserts[0]["channel_url"] == "https://rumble.com/SignalDesk"
+    assert client.channels.inserts[0]["discovery_confidence"] == 0.92
     assert client.channels.inserts[0]["is_active"] is True
+    assert result["new_urls"][0]["confidence"] == 0.92
 
 
 def test_seed_discovery_refreshes_existing_without_overwriting_scraped_name(monkeypatch) -> None:
@@ -395,5 +547,37 @@ def test_seed_discovery_refreshes_existing_without_overwriting_scraped_name(monk
     assert result["refreshed"] == 1
     updated_row = next(row for row in client.channels.rows if row.get("id") == "existing-1")
     assert updated_row["name"] == "Scraped Signal Desk"
-    assert updated_row["discovery_confidence"] == 0.95
+    assert updated_row["discovery_confidence"] == 0.92
     assert updated_row["discovery_evidence_count"] == 4
+
+
+def test_seed_discovery_insert_limit_counts_insertions_not_self_duplicates(
+    monkeypatch,
+) -> None:
+    rows = [
+        {
+            "id": "source-1",
+            "channel_url": "https://rumble.com/c/Source",
+            "description": "Also watch Rumble: @SignalDesk",
+            "video_titles": [],
+            "contact_info": [],
+            "secondary_urls": [],
+        },
+        {
+            "id": "source-2",
+            "channel_url": "https://rumble.com/c/SourceTwo",
+            "description": "Also watch Rumble: @MacroAlpha",
+            "video_titles": [],
+            "contact_info": [],
+            "secondary_urls": [],
+        },
+    ]
+    client = FakeClient(rows)
+    monkeypatch.setattr(discover_channels, "_CHANNEL_PAGE_SIZE", 10)
+    monkeypatch.setattr(discover_channels, "_INSERT_LIMIT", 1)
+
+    result = discover_channels._discover_from_known_channels(client)
+
+    assert result["inserted"] == 1
+    assert result["duplicates"] >= 0
+    assert len(client.channels.inserts) == 1

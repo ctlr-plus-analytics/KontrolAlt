@@ -89,6 +89,53 @@ def test_parse_relative_date_supports_short_units() -> None:
     assert scraper._parse_relative_date("2 wk ago") is not None
 
 
+def test_parse_relative_date_requires_relative_context() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    assert scraper._parse_relative_date("Oct 31, 2023") is None
+    assert scraper._parse_bitchute_date("Oct 31, 2023") == datetime(2023, 10, 31)
+
+
+def test_extract_subscribers_ignores_unbounded_page_text() -> None:
+    from bs4 import BeautifulSoup
+
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    html = """
+    <main>
+      <p>Help us reach 1000 subscribers by sharing this video.</p>
+    </main>
+    """
+
+    assert scraper._extract_subscribers(BeautifulSoup(html, "html.parser")) is None
+
+
+def test_api_channel_url_builds_legacy_fallback_url() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    assert (
+        scraper._api_channel_url("https://www.bitchute.com/channel/autodidactic/")
+        == "https://api.bitchute.com/channel/autodidactic/"
+    )
+
+
+def test_extract_api_videos_parses_legacy_rows() -> None:
+    from bs4 import BeautifulSoup
+
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    html = """
+    <section>
+      <div class="video-row">
+        <a href="/video/LEGACY123/">Legacy Static Video</a>
+        <a href="/video/LEGACY123/">1,234 12:45</a>
+        <span>Oct 31, 2023</span>
+      </div>
+    </section>
+    """
+
+    parsed = scraper._extract_api_videos(BeautifulSoup(html, "html.parser"))
+    assert parsed["LEGACY123"]["title"] == "Legacy Static Video"
+    assert parsed["LEGACY123"]["views"] == 1234
+    assert parsed["LEGACY123"]["date"] == datetime(2023, 10, 31)
+
+
 def test_merge_video_page_signals_fills_missing_comment_and_date() -> None:
     scraper = BitChuteScraper.__new__(BitChuteScraper)
     item: dict[str, object] = {

@@ -16,6 +16,7 @@ from tasks.run_gate0 import (
     _scan_serper_results,
     _should_run_gate0_check,
 )
+from core.system_settings import Gate0CompetitorSetting, _parse_gate0_competitors
 
 
 def test_gate0_skips_recent_clean_channels() -> None:
@@ -69,3 +70,62 @@ def test_serper_scan_checks_top_result_links_and_text() -> None:
 
     assert brand == "birchgold.com"
     assert source_url == "https://birchgold.com/show"
+
+
+def test_serper_scan_returns_embedded_competitor_url_not_generic_result_url() -> None:
+    brand, source_url = _scan_serper_results(
+        [
+            {
+                "title": "Creator sponsor notes",
+                "snippet": "Details are at noblegold.com/creator-offer today",
+                "link": "https://rumble.com/c/generic-channel",
+            }
+        ]
+    )
+
+    assert brand == "noblegold.com"
+    assert source_url == "https://noblegold.com/creator-offer"
+
+
+def test_brand_only_match_does_not_return_generic_source_url() -> None:
+    brand, source_url = _scan_serper_results(
+        [
+            {
+                "title": "Creator talks about Noble Gold",
+                "snippet": "Sponsor discussion without a concrete URL",
+                "link": "https://rumble.com/c/generic-channel",
+            }
+        ]
+    )
+
+    assert brand == "Noble Gold"
+    assert source_url is None
+
+
+def test_competitor_domain_scan_uses_hostname_boundaries() -> None:
+    brand, source_url = _scan_serper_results(
+        [
+            {
+                "title": "Not a competitor",
+                "snippet": "This mentions notnoblegold.com only",
+                "link": "https://example.com",
+            }
+        ],
+        (Gate0CompetitorSetting("Noble Gold", ("noblegold.com",)),),
+    )
+
+    assert brand is None
+    assert source_url is None
+
+
+def test_gate0_competitor_parser_filters_invalid_domains_and_generic_brands() -> None:
+    competitors = _parse_gate0_competitors(
+        [
+            {"brand": "Gold", "domains": ["gold"]},
+            {"brand": "Acme Metals", "domains": ["https://partners.acme.com/path"]},
+        ]
+    )
+
+    assert competitors == (
+        Gate0CompetitorSetting("Acme Metals", ("partners.acme.com",)),
+    )

@@ -258,6 +258,11 @@ export interface AdminMeResponse {
   capabilities: string[];
 }
 
+export interface Gate0Competitor {
+  brand: string;
+  domains: string[];
+}
+
 export interface SystemSettings {
   daily_scrape_utc_time: string;
   gate0_enabled: boolean;
@@ -285,6 +290,7 @@ export interface SystemSettings {
   scrape_circuit_breaker_cooldown_seconds: number;
   gate0_daily_queue_limit: number;
   gate0_clean_recheck_days: number;
+  gate0_competitors: Gate0Competitor[];
   scraper_human_delay_min_seconds: number;
   scraper_human_delay_max_seconds: number;
   scraper_content_wait_min_bytes: number;
@@ -332,6 +338,7 @@ export interface SystemSettingsPatchRequest {
   scrape_circuit_breaker_cooldown_seconds?: number;
   gate0_daily_queue_limit?: number;
   gate0_clean_recheck_days?: number;
+  gate0_competitors?: Gate0Competitor[];
   scraper_human_delay_min_seconds?: number;
   scraper_human_delay_max_seconds?: number;
   scraper_content_wait_min_bytes?: number;

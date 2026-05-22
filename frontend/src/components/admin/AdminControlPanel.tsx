@@ -5,6 +5,7 @@ import {
   getAdminAudit,
   getAdminMe,
   getAdminSettings,
+  getAdminTaskStatus,
   patchAdminSettings,
   triggerAdminDiscoveryNow,
   triggerAdminGate0Now,
@@ -12,10 +13,18 @@ import {
   triggerAdminScrapeNow,
 } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
-import type { AdminAuditRecord, SystemSettings } from "@/types";
+import type {
+  AdminAuditRecord,
+  AdminTaskStatusResponse,
+  Gate0Competitor,
+  SystemSettings,
+} from "@/types";
 import { Button } from "@/components/ui/Button";
 
 const AUDIT_PAGE_SIZE = 20;
+const TASK_POLL_INTERVAL_MS = 2500;
+const TERMINAL_TASK_STATES = new Set(["SUCCESS", "FAILURE", "REVOKED"]);
+const ERROR_TASK_STATES = new Set(["FAILURE", "REVOKED"]);
 const WEEKDAY_OPTIONS: Array<SystemSettings["weekly_velocity_utc_day"]> = [
   "mon",
   "tue",
@@ -25,6 +34,25 @@ const WEEKDAY_OPTIONS: Array<SystemSettings["weekly_velocity_utc_day"]> = [
   "sat",
   "sun",
 ];
+const DEFAULT_GATE0_COMPETITORS: Gate0Competitor[] = [
+  { brand: "Noble Gold", domains: ["noblegold.com"] },
+  { brand: "Birch Gold", domains: ["birchgold.com"] },
+  { brand: "Patriot Gold", domains: ["patriotgold.com"] },
+  { brand: "Kirk Elliot", domains: ["kirkelliot.com"] },
+];
+
+type ManualTaskKind = "scrape" | "discovery" | "weekly-velocity" | "gate0";
+
+interface ManualTaskRun {
+  id: string;
+  kind: ManualTaskKind;
+  label: string;
+  taskIds: string[];
+  triggeredAt: string;
+  message: string;
+  statuses: Record<string, AdminTaskStatusResponse>;
+  pollingError: string | null;
+}
 
 interface OperationalForm {
   scrape_dispatch_batch_size: number;
@@ -57,7 +85,7 @@ interface OperationalForm {
 }
 
 const DEFAULT_OPERATIONAL_FORM: OperationalForm = {
-  scrape_dispatch_batch_size: 1,
+  scrape_dispatch_batch_size: 4,
   scrape_dispatch_pause_seconds: 2,
   scrape_run_max_channels: 0,
   scrape_daily_byte_budget_mb: 0,
@@ -90,6 +118,98 @@ const OPERATIONAL_KEYS = Object.keys(
   DEFAULT_OPERATIONAL_FORM
 ) as Array<keyof OperationalForm>;
 
+function getTaskLabel(kind: ManualTaskKind): string {
+  if (kind === "scrape") {
+    return "Full Scrape";
+  }
+  if (kind === "discovery") {
+    return "Discovery";
+  }
+  if (kind === "weekly-velocity") {
+    return "Weekly Velocity";
+  }
+  return "Gate 0 Batch";
+}
+
+function isTaskSettled(status?: AdminTaskStatusResponse): boolean {
+  return status ? TERMINAL_TASK_STATES.has(status.state) : false;
+}
+
+function getRunState(run: ManualTaskRun): string {
+  if (run.taskIds.length === 0) {
+    return "Not queued";
+  }
+  const statuses = run.taskIds.map((taskId) => run.statuses[taskId]);
+  if (statuses.some((status) => status && ERROR_TASK_STATES.has(status.state))) {
+    return "Error";
+  }
+  if (statuses.every((status) => status?.state === "SUCCESS")) {
+    return "Success";
+  }
+  if (statuses.some((status) => status?.state === "STARTED")) {
+    return "Running";
+  }
+  if (statuses.some((status) => status?.state === "RETRY")) {
+    return "Retrying";
+  }
+  if (statuses.some((status) => status?.state === "PENDING")) {
+    return "Queued";
+  }
+  return statuses.some(Boolean) ? "Running" : "Queued";
+}
+
+function getRunStateClass(run: ManualTaskRun): string {
+  const state = getRunState(run);
+  if (state === "Success") {
+    return "border-[#4F8A5B] bg-[#EEF7F0] text-[#2F6B3B]";
+  }
+  if (state === "Error") {
+    return "border-[#B22222] bg-[#FDECEC] text-[#B22222]";
+  }
+  if (state === "Not queued") {
+    return "border-[#D8D2C8] bg-[#F7F4EE] text-[#6B6B6B]";
+  }
+  return "border-[#C9A84C] bg-[#FFF8DF] text-[#7A5B00]";
+}
+
+function formatTaskResult(result: unknown): string | null {
+  if (result === null || result === undefined) {
+    return null;
+  }
+  if (typeof result === "string") {
+    return result;
+  }
+  if (
+    typeof result === "number" ||
+    typeof result === "boolean" ||
+    typeof result === "bigint"
+  ) {
+    return String(result);
+  }
+  try {
+    return JSON.stringify(result);
+  } catch {
+    return "Result could not be displayed.";
+  }
+}
+
+function normalizeCompetitors(competitors: Gate0Competitor[]): Gate0Competitor[] {
+  return competitors
+    .map((competitor) => ({
+      brand: competitor.brand.trim().replace(/\s+/g, " "),
+      domains: competitor.domains
+        .map((domain) =>
+          domain
+            .trim()
+            .toLowerCase()
+            .replace(/^https?:\/\//, "")
+            .split("/")[0]
+        )
+        .filter((domain, index, domains) => domain.length > 0 && domains.indexOf(domain) === index),
+    }))
+    .filter((competitor) => competitor.brand.length > 0);
+}
+
 export function AdminControlPanel() {
   const { session } = useAuth();
   const token = session?.access_token;
@@ -101,6 +221,7 @@ export function AdminControlPanel() {
   const [saving, setSaving] = useState<boolean>(false);
   const [message, setMessage] = useState<string>("");
   const [gate0IdsInput, setGate0IdsInput] = useState<string>("");
+  const [taskRuns, setTaskRuns] = useState<ManualTaskRun[]>([]);
 
   const [timeInput, setTimeInput] = useState<string>("02:00");
   const [gate0Enabled, setGate0Enabled] = useState<boolean>(true);
@@ -124,6 +245,9 @@ export function AdminControlPanel() {
     "rumble",
     "bitchute",
   ]);
+  const [gate0Competitors, setGate0Competitors] = useState<Gate0Competitor[]>(
+    DEFAULT_GATE0_COMPETITORS
+  );
 
   useEffect(() => {
     if (!token) {
@@ -144,6 +268,7 @@ export function AdminControlPanel() {
         setSettings(settingsData);
         setTimeInput(settingsData.daily_scrape_utc_time);
         setGate0Enabled(settingsData.gate0_enabled);
+        setGate0Competitors(settingsData.gate0_competitors);
         setDiscoveryEnabled(settingsData.discovery_enabled);
         setLookalikeEnabled(settingsData.lookalike_enabled);
         setPlatformPriority(settingsData.scrape_platform_priority);
@@ -215,6 +340,65 @@ export function AdminControlPanel() {
     };
   }, [token]);
 
+  useEffect(() => {
+    if (!token) {
+      return;
+    }
+    const pendingTaskIds = taskRuns.flatMap((run) =>
+      run.taskIds.filter((taskId) => !isTaskSettled(run.statuses[taskId]))
+    );
+    if (pendingTaskIds.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const updates = await Promise.all(
+          pendingTaskIds.map(async (taskId) => {
+            try {
+              const status = await getAdminTaskStatus(taskId, token);
+              return { taskId, status, error: null };
+            } catch (error) {
+              const message =
+                error instanceof Error ? error.message : "Failed to refresh task status.";
+              return { taskId, status: null, error: message };
+            }
+          })
+        );
+        if (cancelled) {
+          return;
+        }
+        setTaskRuns((currentRuns) =>
+          currentRuns.map((run) => {
+            const matchingUpdates = updates.filter((update) =>
+              run.taskIds.includes(update.taskId)
+            );
+            if (matchingUpdates.length === 0) {
+              return run;
+            }
+            const nextStatuses = { ...run.statuses };
+            let pollingError = run.pollingError;
+            matchingUpdates.forEach((update) => {
+              if (update.status) {
+                nextStatuses[update.taskId] = update.status;
+                pollingError = null;
+              } else if (update.error) {
+                pollingError = update.error;
+              }
+            });
+            return { ...run, statuses: nextStatuses, pollingError };
+          })
+        );
+      })();
+    }, TASK_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [taskRuns, token]);
+
   const movePriority = useCallback((index: number, direction: -1 | 1) => {
     setPlatformPriority((prev) => {
       const nextIndex = index + direction;
@@ -248,11 +432,14 @@ export function AdminControlPanel() {
       settings.velocity_weekly_min_subscribers !== velocityMinSubscribers ||
       settings.velocity_weekly_stale_hours !== velocityStaleHours ||
       OPERATIONAL_KEYS.some((key) => settings[key] !== operational[key]) ||
+      JSON.stringify(settings.gate0_competitors) !==
+        JSON.stringify(normalizeCompetitors(gate0Competitors)) ||
       settings.scrape_platform_priority.join(",") !== platformPriority.join(",")
     );
   }, [
     discoveryEnabled,
     gate0Enabled,
+    gate0Competitors,
     lookalikeEnabled,
     operational,
     platformPriority,
@@ -280,6 +467,7 @@ export function AdminControlPanel() {
         {
           daily_scrape_utc_time: timeInput,
           gate0_enabled: gate0Enabled,
+          gate0_competitors: normalizeCompetitors(gate0Competitors),
           discovery_enabled: discoveryEnabled,
           lookalike_enabled: lookalikeEnabled,
           scrape_platform_priority: platformPriority,
@@ -298,6 +486,7 @@ export function AdminControlPanel() {
         token
       );
       setSettings(updated);
+      setGate0Competitors(updated.gate0_competitors);
       setMessage("Settings saved.");
       const auditData = await getAdminAudit(1, AUDIT_PAGE_SIZE, token);
       setAudit(auditData.data);
@@ -309,6 +498,7 @@ export function AdminControlPanel() {
   }, [
     discoveryEnabled,
     gate0Enabled,
+    gate0Competitors,
     lookalikeEnabled,
     operational,
     platformPriority,
@@ -336,15 +526,54 @@ export function AdminControlPanel() {
         if (kind === "scrape") {
           const result = await triggerAdminScrapeNow({ reason: "admin-ui" }, token);
           setMessage(result.message);
+          setTaskRuns((prev) => [
+            {
+              id: `${kind}-${result.triggered_at}`,
+              kind,
+              label: getTaskLabel(kind),
+              taskIds: result.task_ids,
+              triggeredAt: result.triggered_at,
+              message: result.message,
+              statuses: {},
+              pollingError: null,
+            },
+            ...prev.slice(0, 4),
+          ]);
         } else if (kind === "discovery") {
           const result = await triggerAdminDiscoveryNow({ reason: "admin-ui" }, token);
           setMessage(result.message);
+          setTaskRuns((prev) => [
+            {
+              id: `${kind}-${result.triggered_at}`,
+              kind,
+              label: getTaskLabel(kind),
+              taskIds: result.task_ids,
+              triggeredAt: result.triggered_at,
+              message: result.message,
+              statuses: {},
+              pollingError: null,
+            },
+            ...prev.slice(0, 4),
+          ]);
         } else if (kind === "weekly-velocity") {
           const result = await triggerAdminWeeklyVelocityNow(
             { reason: "admin-ui" },
             token
           );
           setMessage(result.message);
+          setTaskRuns((prev) => [
+            {
+              id: `${kind}-${result.triggered_at}`,
+              kind,
+              label: getTaskLabel(kind),
+              taskIds: result.task_ids,
+              triggeredAt: result.triggered_at,
+              message: result.message,
+              statuses: {},
+              pollingError: null,
+            },
+            ...prev.slice(0, 4),
+          ]);
         } else {
           const channelIds = gate0IdsInput
             .split(/[,\n]+/)
@@ -355,6 +584,19 @@ export function AdminControlPanel() {
             token
           );
           setMessage(`Gate 0 queued: ${result.queued}`);
+          setTaskRuns((prev) => [
+            {
+              id: `${kind}-${result.triggered_at}`,
+              kind,
+              label: getTaskLabel(kind),
+              taskIds: result.task_ids,
+              triggeredAt: result.triggered_at,
+              message: `Gate 0 queued: ${result.queued}`,
+              statuses: {},
+              pollingError: null,
+            },
+            ...prev.slice(0, 4),
+          ]);
         }
         const auditData = await getAdminAudit(1, AUDIT_PAGE_SIZE, token);
         setAudit(auditData.data);
@@ -371,6 +613,36 @@ export function AdminControlPanel() {
     },
     []
   );
+
+  const updateGate0Competitor = useCallback(
+    (index: number, field: keyof Gate0Competitor, value: string) => {
+      setGate0Competitors((prev) =>
+        prev.map((competitor, currentIndex) => {
+          if (currentIndex !== index) {
+            return competitor;
+          }
+          if (field === "domains") {
+            return {
+              ...competitor,
+              domains: value.split(",").map((domain) => domain.trim()),
+            };
+          }
+          return { ...competitor, brand: value };
+        })
+      );
+    },
+    []
+  );
+
+  const addGate0Competitor = useCallback(() => {
+    setGate0Competitors((prev) => [...prev, { brand: "", domains: [] }]);
+  }, []);
+
+  const removeGate0Competitor = useCallback((index: number) => {
+    setGate0Competitors((prev) =>
+      prev.filter((_, currentIndex) => currentIndex !== index)
+    );
+  }, []);
 
   if (loading) {
     return <p className="text-sm text-[#6B6B6B]">Loading admin controls...</p>;
@@ -663,6 +935,67 @@ export function AdminControlPanel() {
         </div>
 
         <div className="mt-6 border-t border-[#E8E4DC] pt-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-[#1A1A2E]">
+              Gate 0 Competitors
+            </h3>
+            <Button variant="ghost" size="sm" onClick={addGate0Competitor}>
+              Add Competitor
+            </Button>
+          </div>
+          <div className="space-y-3">
+            {gate0Competitors.map((competitor, index) => (
+              <div
+                key={`${index}-${competitor.brand}`}
+                className="grid gap-3 rounded-lg border border-[#E8E4DC] bg-[#FBFAF7] p-3 md:grid-cols-[1fr_2fr_auto]"
+              >
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+                    Brand
+                  </span>
+                  <input
+                    type="text"
+                    value={competitor.brand}
+                    onChange={(event) =>
+                      updateGate0Competitor(index, "brand", event.target.value)
+                    }
+                    className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                  />
+                </label>
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+                    Domains
+                  </span>
+                  <input
+                    type="text"
+                    value={competitor.domains.join(", ")}
+                    onChange={(event) =>
+                      updateGate0Competitor(index, "domains", event.target.value)
+                    }
+                    placeholder="example.com, partner.example.com"
+                    className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                  />
+                </label>
+                <div className="flex items-end">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeGate0Competitor(index)}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              </div>
+            ))}
+            {gate0Competitors.length === 0 && (
+              <p className="text-sm text-[#6B6B6B]">
+                No competitors configured. Gate 0 will mark channels clean unless new competitors are added.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-6 border-t border-[#E8E4DC] pt-4">
           <h3 className="mb-3 text-sm font-semibold text-[#1A1A2E]">
             Discovery Limits
           </h3>
@@ -738,6 +1071,79 @@ export function AdminControlPanel() {
           placeholder="Paste channel UUIDs (comma or newline separated)"
           className="mt-3 w-full rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-xs text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
         />
+        {taskRuns.length > 0 && (
+          <div className="mt-4 space-y-3">
+            {taskRuns.map((run) => (
+              <div
+                key={run.id}
+                className="rounded-lg border border-[#E8E4DC] bg-[#FBFAF7] p-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-semibold text-[#1A1A2E]">
+                        {run.label}
+                      </h3>
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-xs font-medium ${getRunStateClass(run)}`}
+                      >
+                        {getRunState(run)}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-[#6B6B6B]">
+                      {run.message} | {new Date(run.triggeredAt).toLocaleString()}
+                    </p>
+                  </div>
+                  <p className="text-xs text-[#6B6B6B]">
+                    {run.taskIds.length} task{run.taskIds.length === 1 ? "" : "s"}
+                  </p>
+                </div>
+
+                {run.pollingError && (
+                  <p className="mt-2 text-xs text-[#B22222]">{run.pollingError}</p>
+                )}
+
+                {run.taskIds.length === 0 ? (
+                  <p className="mt-3 text-xs text-[#6B6B6B]">
+                    No Celery tasks were queued.
+                  </p>
+                ) : (
+                  <div className="mt-3 space-y-2">
+                    {run.taskIds.map((taskId) => {
+                      const status = run.statuses[taskId];
+                      const result = formatTaskResult(status?.result);
+                      return (
+                        <div
+                          key={taskId}
+                          className="rounded-md border border-[#E8E4DC] bg-white px-3 py-2"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <code className="break-all text-xs text-[#1A1A2E]">
+                              {taskId}
+                            </code>
+                            <span className="rounded-full bg-[#F7F4EE] px-2 py-0.5 text-xs font-medium text-[#6B6B6B]">
+                              {status?.state ?? "Queued"}
+                            </span>
+                          </div>
+                          {status?.date_done && (
+                            <p className="mt-1 text-xs text-[#6B6B6B]">
+                              Settled: {new Date(status.date_done).toLocaleString()}
+                            </p>
+                          )}
+                          {result && (
+                            <p className="mt-1 break-words text-xs text-[#6B6B6B]">
+                              {result}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">

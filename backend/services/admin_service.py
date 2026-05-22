@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from celery import Celery
+from celery.exceptions import CeleryError
 from celery.result import AsyncResult
+from kombu.exceptions import OperationalError
 from postgrest.exceptions import APIError
 
 from core.config import settings
@@ -28,6 +30,12 @@ _celery = Celery(broker=settings.redis_url, backend=settings.redis_url)
 _SETTINGS_TABLE = "system_settings"
 _AUDIT_TABLE = "admin_actions_audit"
 _SETTINGS_SINGLETON_KEY = "global"
+_DEFAULT_GATE0_COMPETITORS: list[dict[str, object]] = [
+    {"brand": "Noble Gold", "domains": ["noblegold.com"]},
+    {"brand": "Birch Gold", "domains": ["birchgold.com"]},
+    {"brand": "Patriot Gold", "domains": ["patriotgold.com"]},
+    {"brand": "Kirk Elliot", "domains": ["kirkelliot.com"]},
+]
 
 
 def _default_settings_row() -> dict[str, object]:
@@ -60,6 +68,7 @@ def _default_settings_row() -> dict[str, object]:
         "scrape_circuit_breaker_cooldown_seconds": 1800,
         "gate0_daily_queue_limit": 200,
         "gate0_clean_recheck_days": 7,
+        "gate0_competitors": _DEFAULT_GATE0_COMPETITORS,
         "scraper_human_delay_min_seconds": 2,
         "scraper_human_delay_max_seconds": 8,
         "scraper_content_wait_min_bytes": 5000,
@@ -110,6 +119,9 @@ def _to_settings_response(row: dict[str, object]) -> SystemSettingsResponse:
     raw_time = str(row.get("daily_scrape_utc_time") or "02:00:00")
     formatted_time = raw_time[:5]
     raw_weekly_time = str(row.get("weekly_velocity_utc_time") or "03:00:00")
+    competitors = row.get("gate0_competitors")
+    if not isinstance(competitors, list):
+        competitors = _DEFAULT_GATE0_COMPETITORS
     return SystemSettingsResponse(
         daily_scrape_utc_time=formatted_time,
         gate0_enabled=bool(row.get("gate0_enabled", True)),
@@ -135,7 +147,7 @@ def _to_settings_response(row: dict[str, object]) -> SystemSettingsResponse:
         velocity_weekly_stale_hours=int(
             row.get("velocity_weekly_stale_hours") or 144
         ),
-        scrape_dispatch_batch_size=int(row.get("scrape_dispatch_batch_size") or 1),
+        scrape_dispatch_batch_size=int(row.get("scrape_dispatch_batch_size") or 4),
         scrape_dispatch_pause_seconds=float(
             row.get("scrape_dispatch_pause_seconds") or 2
         ),
@@ -157,6 +169,7 @@ def _to_settings_response(row: dict[str, object]) -> SystemSettingsResponse:
         ),
         gate0_daily_queue_limit=int(row.get("gate0_daily_queue_limit") or 200),
         gate0_clean_recheck_days=int(row.get("gate0_clean_recheck_days") or 7),
+        gate0_competitors=competitors,
         scraper_human_delay_min_seconds=float(
             row.get("scraper_human_delay_min_seconds") or 2
         ),
@@ -251,6 +264,11 @@ async def update_system_settings(
         updates["daily_scrape_utc_time"] = f"{payload.daily_scrape_utc_time}:00"
     if payload.gate0_enabled is not None:
         updates["gate0_enabled"] = payload.gate0_enabled
+    if payload.gate0_competitors is not None:
+        updates["gate0_competitors"] = [
+            competitor.model_dump(mode="json")
+            for competitor in payload.gate0_competitors
+        ]
     if payload.discovery_enabled is not None:
         updates["discovery_enabled"] = payload.discovery_enabled
     if payload.lookalike_enabled is not None:
@@ -428,17 +446,41 @@ async def trigger_gate0_batch(
     task_ids: list[str] = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for channel_id in channel_ids:
+        pending_marked = False
         try:
             supabase_admin.table("channels").update(
                 {"gate0_status": "pending", "updated_at": now_iso}
             ).eq("id", str(channel_id)).execute()
+            pending_marked = True
         except APIError as exc:
             logger.warning(
                 "Failed to mark channel pending for gate0 batch: %s",
                 exc,
                 exc_info=True,
             )
-        task = _celery.send_task(TASK_RUN_GATE0, args=[str(channel_id), True])
+            continue
+
+        try:
+            task = _celery.send_task(TASK_RUN_GATE0, args=[str(channel_id), True])
+        except (CeleryError, OperationalError) as exc:
+            if pending_marked:
+                try:
+                    supabase_admin.table("channels").update(
+                        {"gate0_status": "unchecked", "updated_at": now_iso}
+                    ).eq("id", str(channel_id)).execute()
+                except APIError:
+                    logger.error(
+                        "Failed to clear pending Gate 0 status for %s",
+                        channel_id,
+                        exc_info=True,
+                    )
+            logger.warning(
+                "Failed to queue Gate 0 task for %s: %s",
+                channel_id,
+                exc,
+                exc_info=True,
+            )
+            continue
         task_ids.append(task.id)
 
     _audit(
