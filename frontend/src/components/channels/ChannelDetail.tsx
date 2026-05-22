@@ -48,7 +48,6 @@ export function ChannelDetail({
   const realtimeTables = useMemo(
     () => [
       { table: "channels", filter: `id=eq.${channel.id}` },
-      { table: "velocity_scores", filter: `channel_id=eq.${channel.id}` },
       { table: "gate0_results", filter: `channel_id=eq.${channel.id}` },
       { table: "scrape_logs", filter: `channel_id=eq.${channel.id}` },
     ],

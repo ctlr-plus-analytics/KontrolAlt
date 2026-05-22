@@ -31,7 +31,7 @@ export function useChannelSearch(query: string): UseChannelSearchReturn {
         const response = await getChannels(
           {
             search_query: normalizedQuery,
-            sort_by: "view_velocity_30d",
+            sort_by: "avg_comments",
             sort_order: "desc",
           },
           1,

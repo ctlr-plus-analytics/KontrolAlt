@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncGenerator
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,7 +37,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         supabase_admin.table("channels").select("id").limit(1).execute()
         logger.info("Supabase connectivity verified.")
-    except APIError as exc:
+    except (APIError, httpx.HTTPError) as exc:
         logger.warning(
             "Supabase is unreachable on startup: %s. "
             "The API will start but database operations may fail.",

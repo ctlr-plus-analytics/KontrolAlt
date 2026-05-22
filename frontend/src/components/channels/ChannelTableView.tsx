@@ -44,6 +44,7 @@ export function ChannelTableView({
   const displayChannels = channels;
   const displayTotal = total;
   const totalPages = Math.max(1, Math.ceil(displayTotal / PAGE_SIZE));
+  const showBlockingLoader = loading && displayChannels.length === 0;
 
   const handleSetFilters = useCallback(
     (newFilters: ChannelFilters) => {
@@ -113,7 +114,7 @@ export function ChannelTableView({
       />
 
       <div className="relative min-h-[400px]">
-        {loading && (
+        {showBlockingLoader && (
           <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-white/60 backdrop-blur-sm">
             <Spinner size="lg" />
           </div>

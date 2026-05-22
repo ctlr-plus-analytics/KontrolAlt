@@ -16,8 +16,10 @@ os.environ.setdefault("SERP_API_KEY", "serper-key")
 from tasks.compute_velocity import (
     _compute_velocity_sync,
     _find_snapshot_for_date,
+    _is_velocity_qualified,
     _safe_velocity,
 )
+from core.system_settings import RuntimeSettings
 
 
 class _Response:
@@ -98,3 +100,14 @@ def test_compute_velocity_upserts_null_row_without_history(
     assert fake_client.upserted is not None
     assert fake_client.upserted["view_velocity_30d"] is None
     assert fake_client.upserted["comment_velocity_90d"] is None
+
+
+def test_velocity_qualified_requires_stronger_metrics(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "tasks.compute_velocity.get_runtime_settings",
+        lambda: RuntimeSettings(),
+    )
+
+    assert _is_velocity_qualified({"comment_tier": "sweet_spot"})
+    assert _is_velocity_qualified({"avg_comments": 20})
+    assert not _is_velocity_qualified({"comment_tier": "active", "avg_comments": 10})

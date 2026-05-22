@@ -74,6 +74,15 @@ async def trigger_discovery_now(
     return await admin_service.trigger_discovery(actor=user, reason=body.reason)
 
 
+@router.post("/tasks/weekly-velocity-now", response_model=AdminTaskTriggerResponse)
+async def trigger_weekly_velocity_now(
+    body: AdminTaskTriggerRequest,
+    user: dict = Depends(require_admin_user),
+) -> AdminTaskTriggerResponse:
+    """Trigger weekly clean-lead velocity workflow immediately."""
+    return await admin_service.trigger_weekly_velocity(actor=user, reason=body.reason)
+
+
 @router.post("/tasks/gate0-now", response_model=Gate0BatchTriggerResponse)
 async def trigger_gate0_now(
     body: Gate0BatchTriggerRequest,

@@ -13,7 +13,7 @@ from models.channel import ChannelFilters, ChannelWithMetrics
 
 logger = get_logger(__name__)
 
-_CHANNEL_DISCOVERY_TABLE = "channel_discovery"
+_CHANNEL_DISCOVERY_TABLE = "channels"
 _CHANNEL_COLUMNS = {
     "id",
     "platform",
@@ -34,19 +34,35 @@ _CHANNEL_COLUMNS = {
     "gate0_status",
     "gate0_checked_at",
     "secondary_urls",
+    "has_been_scraped",
+    "discovery_status",
+    "last_scrape_error",
+    "dashboard_metrics_complete",
+    "dashboard_url_valid",
+    "dashboard_eligible",
+    "view_velocity_30d",
+    "view_velocity_90d",
+    "comment_velocity_30d",
+    "comment_velocity_90d",
+    "velocity_computed_at",
+    "gate0_result_id",
+    "gate0_search_query",
+    "gate0_result_status",
+    "gate0_flagged_brand",
+    "gate0_source_url",
     "created_at",
     "updated_at",
 }
 
 
 def _channel_from_discovery_row(row: dict[str, object]) -> ChannelWithMetrics:
-    """Convert a channel_discovery row into the public response model."""
-    channel_data = {key: row.get(key) for key in _CHANNEL_COLUMNS}
+    """Convert a channels row into the public response model."""
+    channel_data = {key: row.get(key) for key in _CHANNEL_COLUMNS if key in row}
 
     velocity_data = None
-    if row.get("velocity_id") is not None:
+    if row.get("velocity_computed_at") is not None:
         velocity_data = {
-            "id": row.get("velocity_id"),
+            "id": row.get("id"),
             "channel_id": row.get("id"),
             "computed_at": row.get("velocity_computed_at"),
             "view_velocity_30d": row.get("view_velocity_30d"),
@@ -60,7 +76,7 @@ def _channel_from_discovery_row(row: dict[str, object]) -> ChannelWithMetrics:
         gate0_data = {
             "id": row.get("gate0_result_id"),
             "channel_id": row.get("id"),
-            "checked_at": row.get("gate0_result_checked_at"),
+            "checked_at": row.get("gate0_checked_at"),
             "search_query": row.get("gate0_search_query"),
             "result_status": row.get("gate0_result_status"),
             "flagged_brand": row.get("gate0_flagged_brand"),
@@ -84,6 +100,8 @@ async def get_channels(
             count="exact",
         )
         query = query.eq("is_active", True)
+        if not filters.include_incomplete:
+            query = query.eq("dashboard_eligible", True)
 
         if filters.platform is not None:
             query = query.eq("platform", filters.platform.value)
@@ -163,8 +181,9 @@ async def list_niche_tags() -> list[str]:
     """Return sorted distinct niche tags across all channels."""
     try:
         result = (
-            supabase_admin.table("channels")
+            supabase_admin.table(_CHANNEL_DISCOVERY_TABLE)
             .select("niche_tags")
+            .eq("dashboard_eligible", True)
             .not_.is_("niche_tags", "null")
             .execute()
         )
@@ -187,11 +206,11 @@ async def list_niche_tags() -> list[str]:
 
 
 async def get_channel_by_id(channel_id: UUID) -> ChannelWithMetrics | None:
-    """Fetch a single channel by ID with joined velocity, Gate 0, and logs."""
+    """Fetch a single channel by ID with consolidated velocity, Gate 0, and logs."""
     try:
         result = (
             supabase_admin.table("channels")
-            .select("*, velocity_scores(*), gate0_results(*)")
+            .select("*")
             .eq("id", str(channel_id))
             .maybe_single()
             .execute()
@@ -203,20 +222,28 @@ async def get_channel_by_id(channel_id: UUID) -> ChannelWithMetrics | None:
         row = result.data
 
         velocity_data = None
-        velocity_records = row.pop("velocity_scores", [])
-        if velocity_records:
-            velocity_records.sort(
-                key=lambda v: v.get("computed_at", ""), reverse=True
-            )
-            velocity_data = velocity_records[0]
+        if row.get("velocity_computed_at") is not None:
+            velocity_data = {
+                "id": row.get("id"),
+                "channel_id": row.get("id"),
+                "computed_at": row.get("velocity_computed_at"),
+                "view_velocity_30d": row.get("view_velocity_30d"),
+                "view_velocity_90d": row.get("view_velocity_90d"),
+                "comment_velocity_30d": row.get("comment_velocity_30d"),
+                "comment_velocity_90d": row.get("comment_velocity_90d"),
+            }
 
         gate0_data = None
-        gate0_records = row.pop("gate0_results", [])
-        if gate0_records:
-            gate0_records.sort(
-                key=lambda g: g.get("checked_at", ""), reverse=True
-            )
-            gate0_data = gate0_records[0]
+        if row.get("gate0_result_id") is not None:
+            gate0_data = {
+                "id": row.get("gate0_result_id"),
+                "channel_id": row.get("id"),
+                "checked_at": row.get("gate0_checked_at"),
+                "search_query": row.get("gate0_search_query"),
+                "result_status": row.get("gate0_result_status"),
+                "flagged_brand": row.get("gate0_flagged_brand"),
+                "source_url": row.get("gate0_source_url"),
+            }
 
         logs_result = (
             supabase_admin.table("scrape_logs")

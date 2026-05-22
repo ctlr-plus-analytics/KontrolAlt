@@ -43,23 +43,31 @@ export default async function ChannelDetailPage({
     );
   }
 
-  /* Fetch velocity */
-  const { data: velocity } = await supabase
-    .from("velocity_scores")
-    .select("*")
-    .eq("channel_id", id)
-    .order("computed_at", { ascending: false })
-    .limit(1)
-    .single();
+  /* Construct velocity from cached flat columns */
+  const velocity: VelocityScore | null = channel.velocity_computed_at
+    ? {
+        id: channel.id,
+        channel_id: channel.id,
+        computed_at: channel.velocity_computed_at,
+        view_velocity_30d: channel.view_velocity_30d,
+        view_velocity_90d: channel.view_velocity_90d,
+        comment_velocity_30d: channel.comment_velocity_30d,
+        comment_velocity_90d: channel.comment_velocity_90d,
+      }
+    : null;
 
-  /* Fetch gate0 result */
-  const { data: gate0 } = await supabase
-    .from("gate0_results")
-    .select("*")
-    .eq("channel_id", id)
-    .order("checked_at", { ascending: false })
-    .limit(1)
-    .single();
+  /* Construct gate0 from cached flat columns */
+  const gate0: Gate0Result | null = channel.gate0_result_id
+    ? {
+        id: channel.gate0_result_id,
+        channel_id: channel.id,
+        checked_at: channel.gate0_checked_at,
+        search_query: channel.gate0_search_query,
+        result_status: channel.gate0_result_status as "clean" | "dirty",
+        flagged_brand: channel.gate0_flagged_brand,
+        source_url: channel.gate0_source_url,
+      }
+    : null;
 
   /* Fetch scrape logs */
   const { data: scrapeLogs } = await supabase
@@ -72,8 +80,8 @@ export default async function ChannelDetailPage({
   return (
     <ChannelDetail
       channel={channel as unknown as Channel}
-      velocity={(velocity as unknown as VelocityScore) ?? null}
-      gate0={(gate0 as unknown as Gate0Result) ?? null}
+      velocity={velocity}
+      gate0={gate0}
       scrapeLogs={(scrapeLogs as unknown as ScrapeLog[]) ?? []}
     />
   );

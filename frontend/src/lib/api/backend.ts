@@ -156,6 +156,9 @@ export async function getChannels(
   if (filters.inactive_filter) {
     params.set("inactive_filter", "true");
   }
+  if (filters.include_incomplete) {
+    params.set("include_incomplete", "true");
+  }
   if (filters.sort_by) {
     params.set("sort_by", filters.sort_by);
   }
@@ -333,6 +336,18 @@ export async function triggerAdminDiscoveryNow(
   token?: string
 ): Promise<AdminTaskTriggerResponse> {
   return apiFetch<AdminTaskTriggerResponse>("/api/v1/admin/tasks/discovery-now", {
+    method: "POST",
+    body: payload,
+    token,
+  });
+}
+
+/** Trigger weekly clean-lead velocity workflow as admin. */
+export async function triggerAdminWeeklyVelocityNow(
+  payload: AdminTaskTriggerRequest,
+  token?: string
+): Promise<AdminTaskTriggerResponse> {
+  return apiFetch<AdminTaskTriggerResponse>("/api/v1/admin/tasks/weekly-velocity-now", {
     method: "POST",
     body: payload,
     token,

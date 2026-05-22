@@ -17,6 +17,11 @@ interface UseChannelsReturn {
   refetch: () => void;
 }
 
+interface FetchChannelsOptions {
+  showLoading?: boolean;
+  preserveDataOnError?: boolean;
+}
+
 export function useChannels(
   filters: Partial<ChannelFilters>,
   page: number,
@@ -31,37 +36,70 @@ export function useChannels(
   const [loading, setLoading] = useState<boolean>(initialChannels.length === 0);
   const [error, setError] = useState<string | null>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestRequestId = useRef<number>(0);
+  const hasVisibleData = useRef<boolean>(initialChannels.length > 0);
   const realtimeTables = useMemo(
     () => [
       { table: "channels" },
-      { table: "velocity_scores" },
       { table: "gate0_results" },
     ],
     []
   );
 
-  const fetchChannels = useCallback(async () => {
-    setLoading(true);
+  const fetchChannels = useCallback(async (options: FetchChannelsOptions = {}) => {
+    const {
+      showLoading = true,
+      preserveDataOnError = false,
+    } = options;
+    const requestId = latestRequestId.current + 1;
+    latestRequestId.current = requestId;
+
+    if (showLoading && !hasVisibleData.current) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const result = await getChannels(filters, page, pageSize, token);
+      if (requestId !== latestRequestId.current) {
+        return;
+      }
       setChannels(result.data);
       setTotal(result.total);
+      hasVisibleData.current = result.data.length > 0;
     } catch (err) {
+      if (requestId !== latestRequestId.current) {
+        return;
+      }
       setError(err instanceof Error ? err.message : "Failed to fetch channels");
-      setChannels([]);
-      setTotal(0);
+      if (!preserveDataOnError) {
+        setChannels([]);
+        setTotal(0);
+        hasVisibleData.current = false;
+      }
     } finally {
-      setLoading(false);
+      if (requestId === latestRequestId.current) {
+        setLoading(false);
+      }
     }
   }, [filters, page, pageSize, token]);
+
+  const refreshChannelsInBackground = useCallback(() => {
+    void fetchChannels({
+      showLoading: false,
+      preserveDataOnError: true,
+    });
+  }, [fetchChannels]);
+
+  const refetchChannels = useCallback(() => {
+    void fetchChannels({ showLoading: true });
+  }, [fetchChannels]);
 
   useEffect(() => {
     if (debounceTimer.current) {
       clearTimeout(debounceTimer.current);
     }
     debounceTimer.current = setTimeout(() => {
-      void fetchChannels();
+      void fetchChannels({ showLoading: true });
     }, 300);
 
     return () => {
@@ -75,8 +113,14 @@ export function useChannels(
     channelKey: `channels-live-${page}-${pageSize}`,
     tables: realtimeTables,
     enabled: Boolean(token),
-    onRefresh: fetchChannels,
+    onRefresh: refreshChannelsInBackground,
   });
 
-  return { channels, total, loading, error, refetch: fetchChannels };
+  return {
+    channels,
+    total,
+    loading,
+    error,
+    refetch: refetchChannels,
+  };
 }

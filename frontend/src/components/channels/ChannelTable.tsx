@@ -21,21 +21,22 @@ interface ChannelTableProps {
 type SortableColumn = {
   key: ChannelFilters["sort_by"] | null;
   label: string;
+  align?: "left" | "right" | "center";
 };
 
 const COLUMNS: SortableColumn[] = [
   { key: null, label: "Channel Name" },
   { key: null, label: "Platform" },
-  { key: "subscriber_count", label: "Subscribers" },
-  { key: "avg_views", label: "Avg Views" },
-  { key: "avg_comments", label: "Avg Comments" },
+  { key: "avg_comments", label: "Avg Comments", align: "right" },
   { key: null, label: "Comment Tier" },
-  { key: "view_velocity_30d", label: "Velocity 30d" },
-  { key: "view_velocity_90d", label: "Velocity 90d" },
+  { key: "view_velocity_30d", label: "Velocity 30d", align: "right" },
+  { key: "view_velocity_90d", label: "Velocity 90d", align: "right" },
   { key: null, label: "Gate 0" },
-  { key: null, label: "55+ Signal" },
+  { key: null, label: "55+ Signal", align: "center" },
+  { key: "subscriber_count", label: "Subscribers", align: "right" },
+  { key: "avg_views", label: "Avg Views", align: "right" },
   { key: "last_active_date", label: "Last Active" },
-  { key: null, label: "Actions" },
+  { key: null, label: "Actions", align: "center" },
 ];
 
 export function ChannelTable({
@@ -68,6 +69,13 @@ export function ChannelTable({
               sortable={col.key !== null}
               sorted={col.key === sortBy ? sortOrder : null}
               onSort={col.key ? () => onSort(col.key!) : undefined}
+              className={
+                col.align === "right"
+                  ? "text-right"
+                  : col.align === "center"
+                    ? "text-center"
+                    : undefined
+              }
             >
               {col.label}
             </TableHeaderCell>

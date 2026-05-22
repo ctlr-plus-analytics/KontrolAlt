@@ -36,7 +36,7 @@ class ScraperSettings(BaseSettings):
     proxy_platform_filter: str | None = None
 
     # Scrape pacing / quota guardrails
-    scrape_dispatch_batch_size: int = 1
+    scrape_dispatch_batch_size: int = 4
     scrape_dispatch_pause_seconds: float = 2.0
     scrape_run_max_channels: int = 0
     scrape_run_max_retries_per_channel: int = 1

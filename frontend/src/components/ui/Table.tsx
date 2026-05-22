@@ -10,7 +10,7 @@ interface TableProps extends React.TableHTMLAttributes<HTMLTableElement> {
 
 export function Table({ children, className, ...props }: TableProps) {
   return (
-    <div className="overflow-x-auto rounded-xl border border-[#E8E4DC] bg-white shadow-sm">
+    <div className="overflow-x-auto rounded-lg border border-[#E8E4DC] bg-white shadow-sm">
       <table className={cn("w-full text-left text-sm", className)} {...props}>
         {children}
       </table>
@@ -20,7 +20,7 @@ export function Table({ children, className, ...props }: TableProps) {
 
 /* ─── Table Head (thead) ─── */
 export function TableHead({ children }: { children: React.ReactNode }) {
-  return <thead className="bg-[#1A1A2E] text-white">{children}</thead>;
+  return <thead className="sticky top-0 z-10 bg-[#1A1A2E] text-white">{children}</thead>;
 }
 
 /* ─── Table Body ─── */

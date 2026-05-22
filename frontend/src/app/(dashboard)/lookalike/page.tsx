@@ -23,6 +23,9 @@ export default function LookalikePage() {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const displayResults = token ? results : null;
+  const displayError = token ? error : null;
+  const displayNotice = token ? notice : null;
 
   const refreshResults = useCallback(async (): Promise<void> => {
     try {
@@ -40,12 +43,16 @@ export default function LookalikePage() {
 
   useEffect(() => {
     if (!token) {
-      setResults(null);
-      setNotice(null);
-      setError(null);
       return;
     }
-    void refreshResults();
+
+    const refreshTimer = setTimeout(() => {
+      void refreshResults();
+    }, 0);
+
+    return () => {
+      clearTimeout(refreshTimer);
+    };
   }, [refreshResults, token]);
 
   useRealtimeRefresh({
@@ -105,24 +112,24 @@ export default function LookalikePage() {
             <h2 className="text-lg font-semibold tracking-tight text-[#1A1A2E]">
               Lookalike Channels
             </h2>
-            {results && results.length > 0 && (
-              <Badge variant="gold">{results.length}</Badge>
+            {displayResults && displayResults.length > 0 && (
+              <Badge variant="gold">{displayResults.length}</Badge>
             )}
           </div>
 
-          {error && (
+          {displayError && (
             <div className="mb-4 rounded-lg bg-[#B22222]/10 px-4 py-3 text-sm text-[#B22222]">
-              {error}
+              {displayError}
             </div>
           )}
-          {notice && (
+          {displayNotice && (
             <div className="mb-4 rounded-lg bg-[#C9A84C]/10 px-4 py-3 text-sm text-[#1A1A2E]">
-              {notice}
+              {displayNotice}
             </div>
           )}
 
           {/* Empty State */}
-          {results === null && !loading && (
+          {displayResults === null && !loading && (
             <div className="flex flex-col items-center justify-center py-16">
               <GitBranch
                 size={48}
@@ -142,7 +149,7 @@ export default function LookalikePage() {
           )}
 
           {/* Results List */}
-          {results && !loading && results.length === 0 && (
+          {displayResults && !loading && displayResults.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16">
               <p className="text-sm text-[#6B6B6B]">
                 No lookalike channels found for the given creators
@@ -150,9 +157,9 @@ export default function LookalikePage() {
             </div>
           )}
 
-          {results && !loading && results.length > 0 && (
+          {displayResults && !loading && displayResults.length > 0 && (
             <div className="space-y-3">
-              {results.map((match) => (
+              {displayResults.map((match) => (
                 <LookalikeMatchCard key={match.id} match={match} />
               ))}
             </div>

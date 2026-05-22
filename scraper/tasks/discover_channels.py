@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 from collections import Counter
 from datetime import datetime, timezone
@@ -14,6 +13,7 @@ from postgrest.exceptions import APIError
 from worker import celery_app
 from core.config import scraper_settings
 from core.supabase import get_supabase_client
+from core.system_settings import get_runtime_settings
 from tasks.scrape_bitchute import scrape_bitchute_channel
 from tasks.scrape_rumble import scrape_rumble_channel
 from utils.channel_urls import (
@@ -26,15 +26,14 @@ from utils.taxonomy import KEYWORD_TAXONOMY
 logger = logging.getLogger(__name__)
 
 _SERPER_SEARCH_URL = "https://google.serper.dev/search"
-_QUERY_LIMIT = int(os.environ.get("DISCOVERY_QUERY_LIMIT", "480"))
-_RESULTS_PER_QUERY = int(os.environ.get("DISCOVERY_RESULTS_PER_QUERY", "20"))
-_MAX_PAGES_PER_QUERY = int(os.environ.get("DISCOVERY_MAX_PAGES_PER_QUERY", "8"))
-_INSERT_LIMIT = int(os.environ.get("DISCOVERY_INSERT_LIMIT", "20000"))
-_QUERY_STAGNATION_LIMIT = int(os.environ.get("DISCOVERY_QUERY_STAGNATION_LIMIT", "4"))
-_GLOBAL_STOP_NO_NEW_INSERTED = int(os.environ.get("DISCOVERY_GLOBAL_STOP_NO_NEW_INSERTED", "120"))
-_MAX_FEEDBACK_TERMS = int(os.environ.get("DISCOVERY_MAX_FEEDBACK_TERMS", "36"))
-_SCRAPE_NEW_LIMIT = int(os.environ.get("DISCOVERY_NEW_SCRAPE_LIMIT", "500"))
-_CHANNEL_PAGE_SIZE = int(os.environ.get("DISCOVERY_CHANNEL_PAGE_SIZE", "1000"))
+_QUERY_LIMIT = 1_000_000
+_MAX_PAGES_PER_QUERY = 1_000_000
+_INSERT_LIMIT = 1_000_000_000
+_QUERY_STAGNATION_LIMIT = 1_000_000
+_GLOBAL_STOP_NO_NEW_INSERTED = 1_000_000
+_MAX_FEEDBACK_TERMS = 1_000_000
+_SCRAPE_NEW_LIMIT = 1_000_000
+_CHANNEL_PAGE_SIZE = 1_000_000
 
 
 def _utc_now_iso() -> str:
@@ -68,7 +67,9 @@ def _existing_channel_by_url(client, channel_url: str) -> dict[str, object] | No
 
 def _iter_channel_rows(client, columns: str):
     """Yield channel rows in pages so discovery can scan large databases."""
-    page_size = max(1, _CHANNEL_PAGE_SIZE)
+    page_size = max(
+        1, min(get_runtime_settings().discovery_channel_page_size, _CHANNEL_PAGE_SIZE)
+    )
     start = 0
     while True:
         result = (
@@ -199,7 +200,10 @@ def _iter_search_queries() -> list[tuple[str, str, str, str]]:
     keyword_positions: dict[str, int] = {category: 0 for category in categories}
     template_positions: dict[tuple[str, int], int] = {}
 
-    while len(queries) < _QUERY_LIMIT:
+    query_limit = min(
+        get_runtime_settings().discovery_serper_query_limit, _QUERY_LIMIT
+    )
+    while len(queries) < query_limit:
         progressed = False
         for category in categories:
             keywords = KEYWORD_TAXONOMY.get(category, [])
@@ -226,7 +230,7 @@ def _iter_search_queries() -> list[tuple[str, str, str, str]]:
             queries.append((category, keyword, templates[template_pos], "base"))
             template_positions[template_key] = template_pos + 1
             progressed = True
-            if len(queries) >= _QUERY_LIMIT:
+            if len(queries) >= query_limit:
                 break
 
         if not progressed:
@@ -258,6 +262,7 @@ def _append_feedback_queries_round_robin(
 
 
 def _search_serper(query: str, page: int = 1) -> list[dict[str, object]]:
+    results_per_query = get_runtime_settings().discovery_results_per_query
     with httpx.Client(timeout=20.0) as http:
         response = http.post(
             _SERPER_SEARCH_URL,
@@ -265,14 +270,14 @@ def _search_serper(query: str, page: int = 1) -> list[dict[str, object]]:
                 "X-API-KEY": scraper_settings.serp_api_key,
                 "Content-Type": "application/json",
             },
-            json={"q": query, "num": _RESULTS_PER_QUERY, "page": page},
+            json={"q": query, "num": results_per_query, "page": page},
         )
         response.raise_for_status()
         payload = response.json()
         organic = payload.get("organic", []) if isinstance(payload, dict) else []
         if not isinstance(organic, list):
             return []
-        return organic[:_RESULTS_PER_QUERY]
+        return organic[:results_per_query]
 
 
 def _extract_candidate_links(item: dict[str, object]) -> list[str]:
@@ -331,7 +336,9 @@ def _feedback_queries(
     keyword: str,
     terms: list[str],
 ) -> list[str]:
-    selected = terms[:_MAX_FEEDBACK_TERMS]
+    selected = terms[
+        : min(get_runtime_settings().discovery_max_feedback_terms, _MAX_FEEDBACK_TERMS)
+    ]
     queries: list[str] = []
     for term in selected:
         if platform == "rumble":
@@ -346,6 +353,7 @@ def _feedback_queries(
 
 
 def _discover_from_known_channels(client) -> dict[str, object]:
+    insert_limit = min(get_runtime_settings().discovery_insert_limit, _INSERT_LIMIT)
     columns = "id,channel_url,name,description,video_titles,contact_info,secondary_urls"
 
     discovered = 0
@@ -372,7 +380,7 @@ def _discover_from_known_channels(client) -> dict[str, object]:
             discovered += 1
             field_metrics[source_field] = field_metrics.get(source_field, 0) + 1
             platform_metrics[candidate.platform] = platform_metrics.get(candidate.platform, 0) + 1
-            if discovered >= _INSERT_LIMIT:
+            if discovered >= insert_limit:
                 break
             if candidate.channel_url == str(channel.get("channel_url") or ""):
                 duplicates += 1
@@ -405,7 +413,7 @@ def _discover_from_known_channels(client) -> dict[str, object]:
                 new_urls.append(
                     {"channel_url": candidate.channel_url, "platform": candidate.platform}
                 )
-        if discovered >= _INSERT_LIMIT:
+        if discovered >= insert_limit:
             break
 
     return {
@@ -423,6 +431,18 @@ def _discover_from_known_channels(client) -> dict[str, object]:
 
 
 def _discover_from_keywords(client) -> dict[str, object]:
+    runtime = get_runtime_settings()
+    insert_limit = min(runtime.discovery_insert_limit, _INSERT_LIMIT)
+    max_pages_per_query = min(
+        runtime.discovery_max_pages_per_query, _MAX_PAGES_PER_QUERY
+    )
+    query_stagnation_limit = min(
+        runtime.discovery_query_stagnation_limit, _QUERY_STAGNATION_LIMIT
+    )
+    global_stop_no_new = min(
+        runtime.discovery_global_stop_no_new, _GLOBAL_STOP_NO_NEW_INSERTED
+    )
+    max_feedback_terms = min(runtime.discovery_max_feedback_terms, _MAX_FEEDBACK_TERMS)
     discovered = 0
     inserted = 0
     refreshed = 0
@@ -455,13 +475,13 @@ def _discover_from_keywords(client) -> dict[str, object]:
         category: [] for category in KEYWORD_TAXONOMY.keys()
     }
     seen_feedback_queries: set[str] = set()
-    max_active_queries = _QUERY_LIMIT * 2
+    max_active_queries = min(runtime.discovery_serper_query_limit, _QUERY_LIMIT) * 2
     query_idx = 0
 
     while query_idx < len(active_queries):
         category, keyword, query, query_kind = active_queries[query_idx]
         query_idx += 1
-        if inserted >= _INSERT_LIMIT:
+        if inserted >= insert_limit:
             break
 
         searched_queries += 1
@@ -487,8 +507,8 @@ def _discover_from_keywords(client) -> dict[str, object]:
         no_new_for_active_query = True
         terms_for_query: Counter[str] = Counter()
 
-        for page_num in range(1, _MAX_PAGES_PER_QUERY + 1):
-            if inserted >= _INSERT_LIMIT:
+        for page_num in range(1, max_pages_per_query + 1):
+            if inserted >= insert_limit:
                 break
             pages_fetched += 1
             new_this_page = 0
@@ -559,7 +579,7 @@ def _discover_from_keywords(client) -> dict[str, object]:
                 no_new_for_query += 1
             else:
                 no_new_for_query = 0
-            if no_new_for_query >= _QUERY_STAGNATION_LIMIT:
+            if no_new_for_query >= query_stagnation_limit:
                 break
 
         platform = "rumble" if "site:rumble.com" in query else "bitchute"
@@ -567,7 +587,7 @@ def _discover_from_keywords(client) -> dict[str, object]:
             platform=platform,
             category=category,
             keyword=keyword,
-            terms=[term for term, _count in terms_for_query.most_common(_MAX_FEEDBACK_TERMS)],
+            terms=[term for term, _count in terms_for_query.most_common(max_feedback_terms)],
         )
         for feedback_query in feedback_queries:
             if feedback_query in seen_feedback_queries:
@@ -587,7 +607,7 @@ def _discover_from_keywords(client) -> dict[str, object]:
             no_new_global += 1
         else:
             no_new_global = 0
-        if no_new_global >= _GLOBAL_STOP_NO_NEW_INSERTED:
+        if no_new_global >= global_stop_no_new:
             logger.info("Keyword discovery stopping due to global no-new-insert limit")
             break
 
@@ -611,10 +631,13 @@ def _discover_from_keywords(client) -> dict[str, object]:
 def queue_discovered_channel_scrapes(new_urls: list[dict[str, str]]) -> int:
     """Queue scrapes for newly discovered channels."""
     queued = 0
+    scrape_new_limit = min(
+        get_runtime_settings().discovery_new_scrape_limit, _SCRAPE_NEW_LIMIT
+    )
     seen: set[str] = set()
     client = get_supabase_client()
     for row in new_urls:
-        if queued >= _SCRAPE_NEW_LIMIT:
+        if queued >= scrape_new_limit:
             break
         channel_url = str(row.get("channel_url") or "")
         platform = str(row.get("platform") or "")

@@ -21,6 +21,58 @@ class RuntimeSettings:
     discovery_enabled: bool = True
     lookalike_enabled: bool = True
     scrape_platform_priority: tuple[str, ...] = ("rumble", "bitchute")
+    scrape_only_new_or_missing_metrics: bool = True
+    scrape_rescrape_min_hours: int = 72
+    weekly_velocity_enabled: bool = True
+    weekly_velocity_utc_day: str = "sun"
+    weekly_velocity_utc_time: str = "03:00"
+    velocity_weekly_min_avg_comments: float = 20.0
+    velocity_weekly_min_avg_views: float = 0.0
+    velocity_weekly_min_subscribers: int = 0
+    velocity_weekly_stale_hours: int = 144
+    scrape_dispatch_batch_size: int = 4
+    scrape_dispatch_pause_seconds: float = 2.0
+    scrape_run_max_channels: int = 0
+    scrape_daily_byte_budget_mb: int = 0
+    scrape_retry_base_delay_seconds: int = 60
+    scrape_retry_jitter_min: float = 0.8
+    scrape_retry_jitter_max: float = 1.2
+    scrape_circuit_breaker_fail_threshold: int = 5
+    scrape_circuit_breaker_window_seconds: int = 1800
+    scrape_circuit_breaker_cooldown_seconds: int = 1800
+    gate0_daily_queue_limit: int = 200
+    gate0_clean_recheck_days: int = 7
+    scraper_human_delay_min_seconds: float = 2.0
+    scraper_human_delay_max_seconds: float = 8.0
+    scraper_content_wait_min_bytes: int = 5000
+    scraper_content_wait_timeout_seconds: float = 20.0
+    scraper_content_wait_poll_seconds: float = 1.5
+    discovery_serper_query_limit: int = 480
+    discovery_results_per_query: int = 20
+    discovery_max_pages_per_query: int = 8
+    discovery_insert_limit: int = 20000
+    discovery_query_stagnation_limit: int = 4
+    discovery_global_stop_no_new: int = 120
+    discovery_max_feedback_terms: int = 36
+    discovery_new_scrape_limit: int = 500
+    discovery_channel_page_size: int = 1000
+    discovery_verify_timeout_seconds: float = 15.0
+
+
+def _as_non_negative_int(value: object, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def _as_non_negative_float(value: object, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def get_runtime_settings() -> RuntimeSettings:
@@ -36,6 +88,10 @@ def get_runtime_settings() -> RuntimeSettings:
         )
         row = result.data or {}
         raw_time = str(row.get("daily_scrape_utc_time") or "02:00:00")
+        raw_weekly_time = str(row.get("weekly_velocity_utc_time") or "03:00:00")
+        weekly_day = str(row.get("weekly_velocity_utc_day") or "sun").lower()
+        if weekly_day not in {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}:
+            weekly_day = "sun"
         priority_raw = row.get("scrape_platform_priority") or ["rumble", "bitchute"]
         if not isinstance(priority_raw, list):
             priority_raw = ["rumble", "bitchute"]
@@ -52,6 +108,129 @@ def get_runtime_settings() -> RuntimeSettings:
             discovery_enabled=bool(row.get("discovery_enabled", True)),
             lookalike_enabled=bool(row.get("lookalike_enabled", True)),
             scrape_platform_priority=priority,
+            scrape_only_new_or_missing_metrics=bool(
+                row.get("scrape_only_new_or_missing_metrics", True)
+            ),
+            scrape_rescrape_min_hours=_as_non_negative_int(
+                row.get("scrape_rescrape_min_hours"), 72
+            ),
+            weekly_velocity_enabled=bool(row.get("weekly_velocity_enabled", True)),
+            weekly_velocity_utc_day=weekly_day,
+            weekly_velocity_utc_time=raw_weekly_time[:5],
+            velocity_weekly_min_avg_comments=_as_non_negative_float(
+                row.get("velocity_weekly_min_avg_comments"), 20.0
+            ),
+            velocity_weekly_min_avg_views=_as_non_negative_float(
+                row.get("velocity_weekly_min_avg_views"), 0.0
+            ),
+            velocity_weekly_min_subscribers=_as_non_negative_int(
+                row.get("velocity_weekly_min_subscribers"), 0
+            ),
+            velocity_weekly_stale_hours=_as_non_negative_int(
+                row.get("velocity_weekly_stale_hours"), 144
+            ),
+            scrape_dispatch_batch_size=max(
+                1, _as_non_negative_int(row.get("scrape_dispatch_batch_size"), 1)
+            ),
+            scrape_dispatch_pause_seconds=_as_non_negative_float(
+                row.get("scrape_dispatch_pause_seconds"), 2.0
+            ),
+            scrape_run_max_channels=_as_non_negative_int(
+                row.get("scrape_run_max_channels"), 0
+            ),
+            scrape_daily_byte_budget_mb=_as_non_negative_int(
+                row.get("scrape_daily_byte_budget_mb"), 0
+            ),
+            scrape_retry_base_delay_seconds=max(
+                1,
+                _as_non_negative_int(row.get("scrape_retry_base_delay_seconds"), 60),
+            ),
+            scrape_retry_jitter_min=_as_non_negative_float(
+                row.get("scrape_retry_jitter_min"), 0.8
+            ),
+            scrape_retry_jitter_max=max(
+                _as_non_negative_float(row.get("scrape_retry_jitter_min"), 0.8),
+                _as_non_negative_float(row.get("scrape_retry_jitter_max"), 1.2),
+            ),
+            scrape_circuit_breaker_fail_threshold=max(
+                1,
+                _as_non_negative_int(
+                    row.get("scrape_circuit_breaker_fail_threshold"), 5
+                ),
+            ),
+            scrape_circuit_breaker_window_seconds=max(
+                1,
+                _as_non_negative_int(
+                    row.get("scrape_circuit_breaker_window_seconds"), 1800
+                ),
+            ),
+            scrape_circuit_breaker_cooldown_seconds=max(
+                1,
+                _as_non_negative_int(
+                    row.get("scrape_circuit_breaker_cooldown_seconds"), 1800
+                ),
+            ),
+            gate0_daily_queue_limit=_as_non_negative_int(
+                row.get("gate0_daily_queue_limit"), 200
+            ),
+            gate0_clean_recheck_days=_as_non_negative_int(
+                row.get("gate0_clean_recheck_days"), 7
+            ),
+            scraper_human_delay_min_seconds=_as_non_negative_float(
+                row.get("scraper_human_delay_min_seconds"), 2.0
+            ),
+            scraper_human_delay_max_seconds=max(
+                _as_non_negative_float(
+                    row.get("scraper_human_delay_min_seconds"), 2.0
+                ),
+                _as_non_negative_float(
+                    row.get("scraper_human_delay_max_seconds"), 8.0
+                ),
+            ),
+            scraper_content_wait_min_bytes=_as_non_negative_int(
+                row.get("scraper_content_wait_min_bytes"), 5000
+            ),
+            scraper_content_wait_timeout_seconds=_as_non_negative_float(
+                row.get("scraper_content_wait_timeout_seconds"), 20.0
+            ),
+            scraper_content_wait_poll_seconds=max(
+                0.1,
+                _as_non_negative_float(
+                    row.get("scraper_content_wait_poll_seconds"), 1.5
+                ),
+            ),
+            discovery_serper_query_limit=_as_non_negative_int(
+                row.get("discovery_serper_query_limit"), 480
+            ),
+            discovery_results_per_query=max(
+                1, _as_non_negative_int(row.get("discovery_results_per_query"), 20)
+            ),
+            discovery_max_pages_per_query=max(
+                1, _as_non_negative_int(row.get("discovery_max_pages_per_query"), 8)
+            ),
+            discovery_insert_limit=_as_non_negative_int(
+                row.get("discovery_insert_limit"), 20000
+            ),
+            discovery_query_stagnation_limit=max(
+                1,
+                _as_non_negative_int(row.get("discovery_query_stagnation_limit"), 4),
+            ),
+            discovery_global_stop_no_new=max(
+                1,
+                _as_non_negative_int(row.get("discovery_global_stop_no_new"), 120),
+            ),
+            discovery_max_feedback_terms=_as_non_negative_int(
+                row.get("discovery_max_feedback_terms"), 36
+            ),
+            discovery_new_scrape_limit=_as_non_negative_int(
+                row.get("discovery_new_scrape_limit"), 500
+            ),
+            discovery_channel_page_size=max(
+                1, _as_non_negative_int(row.get("discovery_channel_page_size"), 1000)
+            ),
+            discovery_verify_timeout_seconds=_as_non_negative_float(
+                row.get("discovery_verify_timeout_seconds"), 15.0
+            ),
         )
     except APIError as exc:
         logger.warning("Failed to load runtime settings; using defaults: %s", exc)

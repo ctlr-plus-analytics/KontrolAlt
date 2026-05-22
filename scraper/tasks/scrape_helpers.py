@@ -10,6 +10,7 @@ from celery import Task
 from postgrest.exceptions import APIError
 
 from core.config import scraper_settings
+from core.system_settings import get_runtime_settings
 from scrapers.base import BaseScraper
 
 logger = logging.getLogger(__name__)
@@ -22,9 +23,13 @@ def retry_countdown_seconds(task: Task) -> int:
 
     Jitter reduces synchronized retry storms when many tasks fail together.
     """
+    runtime = get_runtime_settings()
     retries = int(task.request.retries or 0)
-    base = 60 * (2**retries)
-    jitter_factor = random.uniform(0.8, 1.2)
+    base = runtime.scrape_retry_base_delay_seconds * (2**retries)
+    jitter_factor = random.uniform(
+        runtime.scrape_retry_jitter_min,
+        runtime.scrape_retry_jitter_max,
+    )
     return int(base * jitter_factor)
 
 
@@ -205,7 +210,7 @@ def record_daily_bytes_used(bytes_est: int) -> int:
 
 def daily_budget_bytes() -> int:
     """Return configured daily budget in bytes (0 means unlimited)."""
-    mb = scraper_settings.scrape_daily_byte_budget_mb
+    mb = get_runtime_settings().scrape_daily_byte_budget_mb
     if mb <= 0:
         return 0
     return mb * 1024 * 1024

@@ -180,11 +180,20 @@ def _persist_gate0_result(
         "flagged_brand": flagged_brand,
         "source_url": source_url,
     }
-    client.table("gate0_results").insert(gate0_record).execute()
+    insert_res = client.table("gate0_results").insert(gate0_record).execute()
+    gate0_id = None
+    if insert_res.data:
+        gate0_id = insert_res.data[0].get("id")
+
     client.table("channels").update(
         {
             "gate0_status": result_status,
             "gate0_checked_at": now,
+            "gate0_result_id": gate0_id,
+            "gate0_search_query": search_query,
+            "gate0_result_status": result_status,
+            "gate0_flagged_brand": flagged_brand,
+            "gate0_source_url": source_url,
             "updated_at": now,
         }
     ).eq("id", channel_id).execute()

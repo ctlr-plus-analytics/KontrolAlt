@@ -12,9 +12,26 @@ def _daily_scrape_crontab() -> crontab:
     except (TypeError, ValueError):
         return crontab(hour=2, minute=0)
 
+
+def _weekly_velocity_crontab() -> crontab:
+    settings = get_runtime_settings()
+    try:
+        hour_str, minute_str = settings.weekly_velocity_utc_time.split(":")
+        return crontab(
+            hour=int(hour_str),
+            minute=int(minute_str),
+            day_of_week=settings.weekly_velocity_utc_day,
+        )
+    except (TypeError, ValueError):
+        return crontab(hour=3, minute=0, day_of_week="sun")
+
 CELERY_BEAT_SCHEDULE: dict[str, dict[str, object]] = {
-    "daily-scrape-and-velocity": {
+    "daily-discovery-scrape": {
         "task": "scraper.tasks.run_daily_scrape",
         "schedule": _daily_scrape_crontab(),
+    },
+    "weekly-clean-lead-velocity-scrape": {
+        "task": "scraper.tasks.run_weekly_velocity_scrape",
+        "schedule": _weekly_velocity_crontab(),
     },
 }

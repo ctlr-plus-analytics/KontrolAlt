@@ -8,6 +8,7 @@ from postgrest.exceptions import APIError
 
 from worker import celery_app
 from core.supabase import get_supabase_client
+from core.system_settings import get_runtime_settings
 from models import VelocityTaskResult
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,8 @@ def _as_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
 
 
 def _safe_velocity(current: object, past: object) -> float | None:
@@ -141,9 +144,14 @@ def _compute_velocity_sync(channel_id: str) -> dict[str, object]:
             }
         )
 
-    client.table("velocity_scores").upsert(
-        velocity_data, on_conflict="channel_id"
-    ).execute()
+    update_payload = {
+        "view_velocity_30d": velocity_data["view_velocity_30d"],
+        "view_velocity_90d": velocity_data["view_velocity_90d"],
+        "comment_velocity_30d": velocity_data["comment_velocity_30d"],
+        "comment_velocity_90d": velocity_data["comment_velocity_90d"],
+        "velocity_computed_at": velocity_data["computed_at"],
+    }
+    client.table("channels").update(update_payload).eq("id", channel_id).execute()
     logger.info("Velocity computed for channel %s", channel_id)
     return VelocityTaskResult(
         status="computed",
@@ -172,13 +180,35 @@ def compute_velocity(self: Task, channel_id: str) -> dict[str, object]:
 
 
 @celery_app.task(name="scraper.tasks.compute_velocity_all")
-def compute_velocity_all() -> dict[str, object]:
-    """Fetch all channel IDs and dispatch individual velocity tasks."""
+def compute_velocity_all(qualified_only: bool = False) -> dict[str, object]:
+    """Fetch channel IDs and dispatch individual velocity tasks.
+
+    When qualified_only is true, only clean leads with complete metrics and
+    stronger engagement are included. That keeps velocity computation aligned
+    with the weekly refresh lane.
+    """
     logger.info("Starting batch velocity computation")
     try:
         client = get_supabase_client()
-        result = client.table("channels").select("id").eq("is_active", True).execute()
-        channel_ids = [row["id"] for row in (result.data or [])]
+        query = client.table("channels").select(
+            "id,gate0_status,has_been_scraped,discovery_status,"
+            "subscriber_count,avg_views,avg_comments,comment_tier"
+        ).eq("is_active", True)
+        if qualified_only:
+            query = (
+                query.eq("gate0_status", "clean")
+                .eq("has_been_scraped", True)
+                .eq("discovery_status", "scraped")
+                .not_.is_("subscriber_count", "null")
+                .not_.is_("avg_views", "null")
+                .not_.is_("avg_comments", "null")
+            )
+        result = query.execute()
+        channel_ids = []
+        for row in result.data or []:
+            if qualified_only and not _is_velocity_qualified(row):
+                continue
+            channel_ids.append(row["id"])
     except APIError as exc:
         logger.error("Failed to fetch channel IDs: %s", exc)
         return {"queued": 0, "error": str(exc)}
@@ -187,4 +217,32 @@ def compute_velocity_all() -> dict[str, object]:
         compute_velocity.delay(channel_id)
 
     logger.info("Queued %d velocity computations", len(channel_ids))
-    return {"queued": len(channel_ids)}
+    return {"queued": len(channel_ids), "qualified_only": qualified_only}
+
+
+def _is_velocity_qualified(channel: dict[str, object]) -> bool:
+    """Return True for clean, scraped channels with stronger metrics."""
+    runtime = get_runtime_settings()
+    if channel.get("comment_tier") in {"sweet_spot", "whale"}:
+        return True
+    try:
+        if (
+            float(channel.get("avg_comments") or 0)
+            >= runtime.velocity_weekly_min_avg_comments
+        ):
+            return True
+        if (
+            runtime.velocity_weekly_min_avg_views > 0
+            and float(channel.get("avg_views") or 0)
+            >= runtime.velocity_weekly_min_avg_views
+        ):
+            return True
+        if (
+            runtime.velocity_weekly_min_subscribers > 0
+            and int(channel.get("subscriber_count") or 0)
+            >= runtime.velocity_weekly_min_subscribers
+        ):
+            return True
+    except (TypeError, ValueError):
+        return False
+    return False

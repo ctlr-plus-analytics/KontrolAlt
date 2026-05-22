@@ -8,6 +8,7 @@ import {
   patchAdminSettings,
   triggerAdminDiscoveryNow,
   triggerAdminGate0Now,
+  triggerAdminWeeklyVelocityNow,
   triggerAdminScrapeNow,
 } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
@@ -15,6 +16,79 @@ import type { AdminAuditRecord, SystemSettings } from "@/types";
 import { Button } from "@/components/ui/Button";
 
 const AUDIT_PAGE_SIZE = 20;
+const WEEKDAY_OPTIONS: Array<SystemSettings["weekly_velocity_utc_day"]> = [
+  "mon",
+  "tue",
+  "wed",
+  "thu",
+  "fri",
+  "sat",
+  "sun",
+];
+
+interface OperationalForm {
+  scrape_dispatch_batch_size: number;
+  scrape_dispatch_pause_seconds: number;
+  scrape_run_max_channels: number;
+  scrape_daily_byte_budget_mb: number;
+  scrape_retry_base_delay_seconds: number;
+  scrape_retry_jitter_min: number;
+  scrape_retry_jitter_max: number;
+  scrape_circuit_breaker_fail_threshold: number;
+  scrape_circuit_breaker_window_seconds: number;
+  scrape_circuit_breaker_cooldown_seconds: number;
+  gate0_daily_queue_limit: number;
+  gate0_clean_recheck_days: number;
+  scraper_human_delay_min_seconds: number;
+  scraper_human_delay_max_seconds: number;
+  scraper_content_wait_min_bytes: number;
+  scraper_content_wait_timeout_seconds: number;
+  scraper_content_wait_poll_seconds: number;
+  discovery_serper_query_limit: number;
+  discovery_results_per_query: number;
+  discovery_max_pages_per_query: number;
+  discovery_insert_limit: number;
+  discovery_query_stagnation_limit: number;
+  discovery_global_stop_no_new: number;
+  discovery_max_feedback_terms: number;
+  discovery_new_scrape_limit: number;
+  discovery_channel_page_size: number;
+  discovery_verify_timeout_seconds: number;
+}
+
+const DEFAULT_OPERATIONAL_FORM: OperationalForm = {
+  scrape_dispatch_batch_size: 1,
+  scrape_dispatch_pause_seconds: 2,
+  scrape_run_max_channels: 0,
+  scrape_daily_byte_budget_mb: 0,
+  scrape_retry_base_delay_seconds: 60,
+  scrape_retry_jitter_min: 0.8,
+  scrape_retry_jitter_max: 1.2,
+  scrape_circuit_breaker_fail_threshold: 5,
+  scrape_circuit_breaker_window_seconds: 1800,
+  scrape_circuit_breaker_cooldown_seconds: 1800,
+  gate0_daily_queue_limit: 200,
+  gate0_clean_recheck_days: 7,
+  scraper_human_delay_min_seconds: 2,
+  scraper_human_delay_max_seconds: 8,
+  scraper_content_wait_min_bytes: 5000,
+  scraper_content_wait_timeout_seconds: 20,
+  scraper_content_wait_poll_seconds: 1.5,
+  discovery_serper_query_limit: 480,
+  discovery_results_per_query: 20,
+  discovery_max_pages_per_query: 8,
+  discovery_insert_limit: 20000,
+  discovery_query_stagnation_limit: 4,
+  discovery_global_stop_no_new: 120,
+  discovery_max_feedback_terms: 36,
+  discovery_new_scrape_limit: 500,
+  discovery_channel_page_size: 1000,
+  discovery_verify_timeout_seconds: 15,
+};
+
+const OPERATIONAL_KEYS = Object.keys(
+  DEFAULT_OPERATIONAL_FORM
+) as Array<keyof OperationalForm>;
 
 export function AdminControlPanel() {
   const { session } = useAuth();
@@ -32,6 +106,20 @@ export function AdminControlPanel() {
   const [gate0Enabled, setGate0Enabled] = useState<boolean>(true);
   const [discoveryEnabled, setDiscoveryEnabled] = useState<boolean>(true);
   const [lookalikeEnabled, setLookalikeEnabled] = useState<boolean>(true);
+  const [scrapeOnlyNewOrMissing, setScrapeOnlyNewOrMissing] = useState<boolean>(true);
+  const [scrapeRescrapeMinHours, setScrapeRescrapeMinHours] = useState<number>(72);
+  const [weeklyVelocityEnabled, setWeeklyVelocityEnabled] = useState<boolean>(true);
+  const [weeklyVelocityDay, setWeeklyVelocityDay] = useState<
+    SystemSettings["weekly_velocity_utc_day"]
+  >("sun");
+  const [weeklyVelocityTime, setWeeklyVelocityTime] = useState<string>("03:00");
+  const [velocityMinAvgComments, setVelocityMinAvgComments] = useState<number>(20);
+  const [velocityMinAvgViews, setVelocityMinAvgViews] = useState<number>(0);
+  const [velocityMinSubscribers, setVelocityMinSubscribers] = useState<number>(0);
+  const [velocityStaleHours, setVelocityStaleHours] = useState<number>(144);
+  const [operational, setOperational] = useState<OperationalForm>(
+    DEFAULT_OPERATIONAL_FORM
+  );
   const [platformPriority, setPlatformPriority] = useState<("rumble" | "bitchute")[]>([
     "rumble",
     "bitchute",
@@ -59,6 +147,55 @@ export function AdminControlPanel() {
         setDiscoveryEnabled(settingsData.discovery_enabled);
         setLookalikeEnabled(settingsData.lookalike_enabled);
         setPlatformPriority(settingsData.scrape_platform_priority);
+        setScrapeOnlyNewOrMissing(settingsData.scrape_only_new_or_missing_metrics);
+        setScrapeRescrapeMinHours(settingsData.scrape_rescrape_min_hours);
+        setWeeklyVelocityEnabled(settingsData.weekly_velocity_enabled);
+        setWeeklyVelocityDay(settingsData.weekly_velocity_utc_day);
+        setWeeklyVelocityTime(settingsData.weekly_velocity_utc_time);
+        setVelocityMinAvgComments(settingsData.velocity_weekly_min_avg_comments);
+        setVelocityMinAvgViews(settingsData.velocity_weekly_min_avg_views);
+        setVelocityMinSubscribers(settingsData.velocity_weekly_min_subscribers);
+        setVelocityStaleHours(settingsData.velocity_weekly_stale_hours);
+        setOperational({
+          scrape_dispatch_batch_size: settingsData.scrape_dispatch_batch_size,
+          scrape_dispatch_pause_seconds: settingsData.scrape_dispatch_pause_seconds,
+          scrape_run_max_channels: settingsData.scrape_run_max_channels,
+          scrape_daily_byte_budget_mb: settingsData.scrape_daily_byte_budget_mb,
+          scrape_retry_base_delay_seconds:
+            settingsData.scrape_retry_base_delay_seconds,
+          scrape_retry_jitter_min: settingsData.scrape_retry_jitter_min,
+          scrape_retry_jitter_max: settingsData.scrape_retry_jitter_max,
+          scrape_circuit_breaker_fail_threshold:
+            settingsData.scrape_circuit_breaker_fail_threshold,
+          scrape_circuit_breaker_window_seconds:
+            settingsData.scrape_circuit_breaker_window_seconds,
+          scrape_circuit_breaker_cooldown_seconds:
+            settingsData.scrape_circuit_breaker_cooldown_seconds,
+          gate0_daily_queue_limit: settingsData.gate0_daily_queue_limit,
+          gate0_clean_recheck_days: settingsData.gate0_clean_recheck_days,
+          scraper_human_delay_min_seconds:
+            settingsData.scraper_human_delay_min_seconds,
+          scraper_human_delay_max_seconds:
+            settingsData.scraper_human_delay_max_seconds,
+          scraper_content_wait_min_bytes:
+            settingsData.scraper_content_wait_min_bytes,
+          scraper_content_wait_timeout_seconds:
+            settingsData.scraper_content_wait_timeout_seconds,
+          scraper_content_wait_poll_seconds:
+            settingsData.scraper_content_wait_poll_seconds,
+          discovery_serper_query_limit: settingsData.discovery_serper_query_limit,
+          discovery_results_per_query: settingsData.discovery_results_per_query,
+          discovery_max_pages_per_query: settingsData.discovery_max_pages_per_query,
+          discovery_insert_limit: settingsData.discovery_insert_limit,
+          discovery_query_stagnation_limit:
+            settingsData.discovery_query_stagnation_limit,
+          discovery_global_stop_no_new: settingsData.discovery_global_stop_no_new,
+          discovery_max_feedback_terms: settingsData.discovery_max_feedback_terms,
+          discovery_new_scrape_limit: settingsData.discovery_new_scrape_limit,
+          discovery_channel_page_size: settingsData.discovery_channel_page_size,
+          discovery_verify_timeout_seconds:
+            settingsData.discovery_verify_timeout_seconds,
+        });
         setAudit(auditData.data);
       } catch (error) {
         if (cancelled) {
@@ -101,15 +238,35 @@ export function AdminControlPanel() {
       settings.gate0_enabled !== gate0Enabled ||
       settings.discovery_enabled !== discoveryEnabled ||
       settings.lookalike_enabled !== lookalikeEnabled ||
+      settings.scrape_only_new_or_missing_metrics !== scrapeOnlyNewOrMissing ||
+      settings.scrape_rescrape_min_hours !== scrapeRescrapeMinHours ||
+      settings.weekly_velocity_enabled !== weeklyVelocityEnabled ||
+      settings.weekly_velocity_utc_day !== weeklyVelocityDay ||
+      settings.weekly_velocity_utc_time !== weeklyVelocityTime ||
+      settings.velocity_weekly_min_avg_comments !== velocityMinAvgComments ||
+      settings.velocity_weekly_min_avg_views !== velocityMinAvgViews ||
+      settings.velocity_weekly_min_subscribers !== velocityMinSubscribers ||
+      settings.velocity_weekly_stale_hours !== velocityStaleHours ||
+      OPERATIONAL_KEYS.some((key) => settings[key] !== operational[key]) ||
       settings.scrape_platform_priority.join(",") !== platformPriority.join(",")
     );
   }, [
     discoveryEnabled,
     gate0Enabled,
     lookalikeEnabled,
+    operational,
     platformPriority,
+    scrapeOnlyNewOrMissing,
+    scrapeRescrapeMinHours,
     settings,
     timeInput,
+    velocityMinAvgComments,
+    velocityMinAvgViews,
+    velocityMinSubscribers,
+    velocityStaleHours,
+    weeklyVelocityDay,
+    weeklyVelocityEnabled,
+    weeklyVelocityTime,
   ]);
 
   const handleSave = useCallback(async () => {
@@ -126,6 +283,16 @@ export function AdminControlPanel() {
           discovery_enabled: discoveryEnabled,
           lookalike_enabled: lookalikeEnabled,
           scrape_platform_priority: platformPriority,
+          scrape_only_new_or_missing_metrics: scrapeOnlyNewOrMissing,
+          scrape_rescrape_min_hours: scrapeRescrapeMinHours,
+          weekly_velocity_enabled: weeklyVelocityEnabled,
+          weekly_velocity_utc_day: weeklyVelocityDay,
+          weekly_velocity_utc_time: weeklyVelocityTime,
+          velocity_weekly_min_avg_comments: velocityMinAvgComments,
+          velocity_weekly_min_avg_views: velocityMinAvgViews,
+          velocity_weekly_min_subscribers: velocityMinSubscribers,
+          velocity_weekly_stale_hours: velocityStaleHours,
+          ...operational,
           expected_version: settings.version,
         },
         token
@@ -143,14 +310,24 @@ export function AdminControlPanel() {
     discoveryEnabled,
     gate0Enabled,
     lookalikeEnabled,
+    operational,
     platformPriority,
+    scrapeOnlyNewOrMissing,
+    scrapeRescrapeMinHours,
     settings,
     timeInput,
     token,
+    velocityMinAvgComments,
+    velocityMinAvgViews,
+    velocityMinSubscribers,
+    velocityStaleHours,
+    weeklyVelocityDay,
+    weeklyVelocityEnabled,
+    weeklyVelocityTime,
   ]);
 
   const runTask = useCallback(
-    async (kind: "scrape" | "discovery" | "gate0") => {
+    async (kind: "scrape" | "discovery" | "weekly-velocity" | "gate0") => {
       if (!token) {
         return;
       }
@@ -161,6 +338,12 @@ export function AdminControlPanel() {
           setMessage(result.message);
         } else if (kind === "discovery") {
           const result = await triggerAdminDiscoveryNow({ reason: "admin-ui" }, token);
+          setMessage(result.message);
+        } else if (kind === "weekly-velocity") {
+          const result = await triggerAdminWeeklyVelocityNow(
+            { reason: "admin-ui" },
+            token
+          );
           setMessage(result.message);
         } else {
           const channelIds = gate0IdsInput
@@ -180,6 +363,13 @@ export function AdminControlPanel() {
       }
     },
     [gate0IdsInput, token]
+  );
+
+  const updateOperational = useCallback(
+    (key: keyof OperationalForm, value: number) => {
+      setOperational((prev) => ({ ...prev, [key]: value }));
+    },
+    []
   );
 
   if (loading) {
@@ -275,6 +465,242 @@ export function AdminControlPanel() {
           </div>
         </div>
 
+        <div className="mt-6 grid gap-4 border-t border-[#E8E4DC] pt-4 md:grid-cols-2">
+          <div>
+            <h3 className="mb-3 text-sm font-semibold text-[#1A1A2E]">Daily Scrape Scope</h3>
+            <label className="mb-3 inline-flex items-center gap-2 text-sm text-[#1A1A2E]">
+              <input
+                type="checkbox"
+                checked={scrapeOnlyNewOrMissing}
+                onChange={(event) => setScrapeOnlyNewOrMissing(event.target.checked)}
+              />
+              Only new, queued, never-scraped, or incomplete-metric channels
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+                Rescrape Minimum Hours
+              </span>
+              <input
+                type="number"
+                min={0}
+                value={scrapeRescrapeMinHours}
+                onChange={(event) => setScrapeRescrapeMinHours(Number(event.target.value))}
+                className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+              />
+            </label>
+          </div>
+
+          <div>
+            <h3 className="mb-3 text-sm font-semibold text-[#1A1A2E]">Weekly Velocity</h3>
+            <label className="mb-3 inline-flex items-center gap-2 text-sm text-[#1A1A2E]">
+              <input
+                type="checkbox"
+                checked={weeklyVelocityEnabled}
+                onChange={(event) => setWeeklyVelocityEnabled(event.target.checked)}
+              />
+              Enabled for clean higher-metric leads
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+                  Day
+                </span>
+                <select
+                  value={weeklyVelocityDay}
+                  onChange={(event) =>
+                    setWeeklyVelocityDay(
+                      event.target.value as SystemSettings["weekly_velocity_utc_day"]
+                    )
+                  }
+                  className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                >
+                  {WEEKDAY_OPTIONS.map((day) => (
+                    <option key={day} value={day}>
+                      {day.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+                  Time UTC
+                </span>
+                <input
+                  type="time"
+                  value={weeklyVelocityTime}
+                  onChange={(event) => setWeeklyVelocityTime(event.target.value)}
+                  className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-4 md:grid-cols-4">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+              Min Avg Comments
+            </span>
+            <input
+              type="number"
+              min={0}
+              value={velocityMinAvgComments}
+              onChange={(event) => setVelocityMinAvgComments(Number(event.target.value))}
+              className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+            />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+              Min Avg Views
+            </span>
+            <input
+              type="number"
+              min={0}
+              value={velocityMinAvgViews}
+              onChange={(event) => setVelocityMinAvgViews(Number(event.target.value))}
+              className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+            />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+              Min Subscribers
+            </span>
+            <input
+              type="number"
+              min={0}
+              value={velocityMinSubscribers}
+              onChange={(event) => setVelocityMinSubscribers(Number(event.target.value))}
+              className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+            />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+              Stale After Hours
+            </span>
+            <input
+              type="number"
+              min={0}
+              value={velocityStaleHours}
+              onChange={(event) => setVelocityStaleHours(Number(event.target.value))}
+              className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+            />
+          </label>
+        </div>
+
+        <div className="mt-6 border-t border-[#E8E4DC] pt-4">
+          <h3 className="mb-3 text-sm font-semibold text-[#1A1A2E]">
+            Scrape Pacing And Quotas
+          </h3>
+          <div className="grid gap-4 md:grid-cols-4">
+            {[
+              ["scrape_dispatch_batch_size", "Dispatch Batch", 1],
+              ["scrape_dispatch_pause_seconds", "Dispatch Pause Seconds", 0],
+              ["scrape_run_max_channels", "Max Channels Per Run", 0],
+              ["scrape_daily_byte_budget_mb", "Daily Budget MB", 0],
+              ["scrape_retry_base_delay_seconds", "Retry Base Seconds", 1],
+              ["scrape_retry_jitter_min", "Retry Jitter Min", 0],
+              ["scrape_retry_jitter_max", "Retry Jitter Max", 0],
+              ["scrape_circuit_breaker_fail_threshold", "CB Fail Threshold", 1],
+              ["scrape_circuit_breaker_window_seconds", "CB Window Seconds", 1],
+              ["scrape_circuit_breaker_cooldown_seconds", "CB Cooldown Seconds", 1],
+            ].map(([key, label, min]) => (
+              <label key={key} className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+                  {label}
+                </span>
+                <input
+                  type="number"
+                  min={min}
+                  step={String(key).includes("jitter") || String(key).includes("pause") ? 0.1 : 1}
+                  value={operational[key as keyof OperationalForm]}
+                  onChange={(event) =>
+                    updateOperational(
+                      key as keyof OperationalForm,
+                      Number(event.target.value)
+                    )
+                  }
+                  className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-6 border-t border-[#E8E4DC] pt-4">
+          <h3 className="mb-3 text-sm font-semibold text-[#1A1A2E]">
+            Gate 0 And Browser Timing
+          </h3>
+          <div className="grid gap-4 md:grid-cols-4">
+            {[
+              ["gate0_daily_queue_limit", "Gate 0 Daily Queue", 0],
+              ["gate0_clean_recheck_days", "Clean Recheck Days", 0],
+              ["scraper_human_delay_min_seconds", "Human Delay Min", 0],
+              ["scraper_human_delay_max_seconds", "Human Delay Max", 0],
+              ["scraper_content_wait_min_bytes", "Content Min Bytes", 0],
+              ["scraper_content_wait_timeout_seconds", "Content Timeout", 0],
+              ["scraper_content_wait_poll_seconds", "Content Poll Seconds", 0.1],
+            ].map(([key, label, min]) => (
+              <label key={key} className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+                  {label}
+                </span>
+                <input
+                  type="number"
+                  min={min}
+                  step={String(key).includes("seconds") ? 0.1 : 1}
+                  value={operational[key as keyof OperationalForm]}
+                  onChange={(event) =>
+                    updateOperational(
+                      key as keyof OperationalForm,
+                      Number(event.target.value)
+                    )
+                  }
+                  className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-6 border-t border-[#E8E4DC] pt-4">
+          <h3 className="mb-3 text-sm font-semibold text-[#1A1A2E]">
+            Discovery Limits
+          </h3>
+          <div className="grid gap-4 md:grid-cols-4">
+            {[
+              ["discovery_serper_query_limit", "Serper Query Limit", 0],
+              ["discovery_results_per_query", "Results Per Query", 1],
+              ["discovery_max_pages_per_query", "Max Pages Per Query", 1],
+              ["discovery_insert_limit", "Insert Limit", 0],
+              ["discovery_query_stagnation_limit", "Query Stagnation", 1],
+              ["discovery_global_stop_no_new", "Global No-New Stop", 1],
+              ["discovery_max_feedback_terms", "Max Feedback Terms", 0],
+              ["discovery_new_scrape_limit", "New Scrape Queue", 0],
+              ["discovery_channel_page_size", "Channel Page Size", 1],
+              ["discovery_verify_timeout_seconds", "Verify Timeout Seconds", 0],
+            ].map(([key, label, min]) => (
+              <label key={key} className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+                  {label}
+                </span>
+                <input
+                  type="number"
+                  min={min}
+                  step={String(key).includes("confidence") ? 0.01 : 1}
+                  value={operational[key as keyof OperationalForm]}
+                  onChange={(event) =>
+                    updateOperational(
+                      key as keyof OperationalForm,
+                      Number(event.target.value)
+                    )
+                  }
+                  className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+
         <div className="mt-4 flex items-center gap-3">
           <Button variant="accent" size="sm" onClick={handleSave} disabled={!dirty || saving}>
             Save Settings
@@ -293,6 +719,13 @@ export function AdminControlPanel() {
           </Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("discovery")}>
             Trigger Discovery
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => void runTask("weekly-velocity")}
+          >
+            Trigger Weekly Velocity
           </Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("gate0")}>
             Trigger Gate 0 Batch

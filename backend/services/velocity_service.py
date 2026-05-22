@@ -26,11 +26,9 @@ async def get_velocity(channel_id: UUID) -> VelocityScore | None:
     """
     try:
         result = (
-            supabase_admin.table("velocity_scores")
-            .select("*")
-            .eq("channel_id", str(channel_id))
-            .order("computed_at", desc=True)
-            .limit(1)
+            supabase_admin.table("channels")
+            .select("id, view_velocity_30d, view_velocity_90d, comment_velocity_30d, comment_velocity_90d, velocity_computed_at")
+            .eq("id", str(channel_id))
             .execute()
         )
 
@@ -39,7 +37,21 @@ async def get_velocity(channel_id: UUID) -> VelocityScore | None:
                 f"No velocity data for channel {channel_id}"
             )
 
-        return VelocityScore(**result.data[0])
+        row = result.data[0]
+        if row.get("velocity_computed_at") is None:
+            raise NotFoundError(
+                f"No velocity data for channel {channel_id}"
+            )
+
+        return VelocityScore(
+            id=row["id"],
+            channel_id=row["id"],
+            computed_at=row["velocity_computed_at"],
+            view_velocity_30d=row["view_velocity_30d"],
+            view_velocity_90d=row["view_velocity_90d"],
+            comment_velocity_30d=row["comment_velocity_30d"],
+            comment_velocity_90d=row["comment_velocity_90d"],
+        )
 
     except NotFoundError:
         raise

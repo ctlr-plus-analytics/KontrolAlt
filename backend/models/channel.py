@@ -38,6 +38,17 @@ class Gate0Status(str, Enum):
     unchecked = "unchecked"
 
 
+class DiscoveryStatus(str, Enum):
+    """Channel discovery lifecycle status."""
+
+    new = "new"
+    queued = "queued"
+    scraped = "scraped"
+    failed = "failed"
+    dead = "dead"
+    blocked = "blocked"
+
+
 class Channel(BaseModel):
     """Full channel representation from the database."""
 
@@ -60,6 +71,27 @@ class Channel(BaseModel):
     gate0_status: Gate0Status = Gate0Status.unchecked
     gate0_checked_at: datetime | None = None
     secondary_urls: list[str] = Field(default_factory=list)
+    has_been_scraped: bool = False
+    discovery_status: DiscoveryStatus = DiscoveryStatus.new
+    last_scrape_error: str | None = None
+    dashboard_metrics_complete: bool = False
+    dashboard_url_valid: bool = False
+    dashboard_eligible: bool = False
+
+    # Consolidated velocity fields
+    view_velocity_30d: float | None = None
+    view_velocity_90d: float | None = None
+    comment_velocity_30d: float | None = None
+    comment_velocity_90d: float | None = None
+    velocity_computed_at: datetime | None = None
+
+    # Consolidated Gate 0 cache fields
+    gate0_result_id: UUID | None = None
+    gate0_search_query: str | None = None
+    gate0_result_status: str | None = None
+    gate0_flagged_brand: str | None = None
+    gate0_source_url: str | None = None
+
     created_at: datetime
     updated_at: datetime
 
@@ -77,8 +109,6 @@ class ChannelWithMetrics(Channel):
 
 
 class ChannelFilters(BaseModel):
-    """Query parameters for filtering the channel discovery table."""
-
     platform: Platform | None = None
     comment_tier: CommentTier | None = None
     gate0_status: Gate0Status | None = None
@@ -94,7 +124,8 @@ class ChannelFilters(BaseModel):
     inactive_filter: bool = False
     last_active_from: date | None = None
     last_active_to: date | None = None
-    sort_by: str = "view_velocity_30d"
+    include_incomplete: bool = False
+    sort_by: str = "avg_comments"
     sort_order: str = "desc"
     page: int = 1
     page_size: int = 50

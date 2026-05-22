@@ -20,6 +20,7 @@ from models.admin import (
 )
 from workers.tasks import TASK_DISCOVER_CHANNELS
 from workers.tasks import TASK_RUN_DAILY_SCRAPE, TASK_RUN_GATE0
+from workers.tasks import TASK_RUN_WEEKLY_VELOCITY_SCRAPE
 
 logger = get_logger(__name__)
 _celery = Celery(broker=settings.redis_url, backend=settings.redis_url)
@@ -38,6 +39,42 @@ def _default_settings_row() -> dict[str, object]:
         "discovery_enabled": True,
         "lookalike_enabled": True,
         "scrape_platform_priority": ["rumble", "bitchute"],
+        "scrape_only_new_or_missing_metrics": True,
+        "scrape_rescrape_min_hours": 72,
+        "weekly_velocity_enabled": True,
+        "weekly_velocity_utc_day": "sun",
+        "weekly_velocity_utc_time": "03:00:00",
+        "velocity_weekly_min_avg_comments": 20,
+        "velocity_weekly_min_avg_views": 0,
+        "velocity_weekly_min_subscribers": 0,
+        "velocity_weekly_stale_hours": 144,
+        "scrape_dispatch_batch_size": 4,
+        "scrape_dispatch_pause_seconds": 2,
+        "scrape_run_max_channels": 0,
+        "scrape_daily_byte_budget_mb": 0,
+        "scrape_retry_base_delay_seconds": 60,
+        "scrape_retry_jitter_min": 0.8,
+        "scrape_retry_jitter_max": 1.2,
+        "scrape_circuit_breaker_fail_threshold": 5,
+        "scrape_circuit_breaker_window_seconds": 1800,
+        "scrape_circuit_breaker_cooldown_seconds": 1800,
+        "gate0_daily_queue_limit": 200,
+        "gate0_clean_recheck_days": 7,
+        "scraper_human_delay_min_seconds": 2,
+        "scraper_human_delay_max_seconds": 8,
+        "scraper_content_wait_min_bytes": 5000,
+        "scraper_content_wait_timeout_seconds": 20,
+        "scraper_content_wait_poll_seconds": 1.5,
+        "discovery_serper_query_limit": 480,
+        "discovery_results_per_query": 20,
+        "discovery_max_pages_per_query": 8,
+        "discovery_insert_limit": 20000,
+        "discovery_query_stagnation_limit": 4,
+        "discovery_global_stop_no_new": 120,
+        "discovery_max_feedback_terms": 36,
+        "discovery_new_scrape_limit": 500,
+        "discovery_channel_page_size": 1000,
+        "discovery_verify_timeout_seconds": 15,
         "version": 1,
         "updated_at": now_iso,
         "created_at": now_iso,
@@ -72,12 +109,93 @@ def _ensure_settings_row() -> dict[str, object]:
 def _to_settings_response(row: dict[str, object]) -> SystemSettingsResponse:
     raw_time = str(row.get("daily_scrape_utc_time") or "02:00:00")
     formatted_time = raw_time[:5]
+    raw_weekly_time = str(row.get("weekly_velocity_utc_time") or "03:00:00")
     return SystemSettingsResponse(
         daily_scrape_utc_time=formatted_time,
         gate0_enabled=bool(row.get("gate0_enabled", True)),
         discovery_enabled=bool(row.get("discovery_enabled", True)),
         lookalike_enabled=bool(row.get("lookalike_enabled", True)),
         scrape_platform_priority=list(row.get("scrape_platform_priority") or []),
+        scrape_only_new_or_missing_metrics=bool(
+            row.get("scrape_only_new_or_missing_metrics", True)
+        ),
+        scrape_rescrape_min_hours=int(row.get("scrape_rescrape_min_hours") or 72),
+        weekly_velocity_enabled=bool(row.get("weekly_velocity_enabled", True)),
+        weekly_velocity_utc_day=str(row.get("weekly_velocity_utc_day") or "sun"),
+        weekly_velocity_utc_time=raw_weekly_time[:5],
+        velocity_weekly_min_avg_comments=float(
+            row.get("velocity_weekly_min_avg_comments") or 20
+        ),
+        velocity_weekly_min_avg_views=float(
+            row.get("velocity_weekly_min_avg_views") or 0
+        ),
+        velocity_weekly_min_subscribers=int(
+            row.get("velocity_weekly_min_subscribers") or 0
+        ),
+        velocity_weekly_stale_hours=int(
+            row.get("velocity_weekly_stale_hours") or 144
+        ),
+        scrape_dispatch_batch_size=int(row.get("scrape_dispatch_batch_size") or 1),
+        scrape_dispatch_pause_seconds=float(
+            row.get("scrape_dispatch_pause_seconds") or 2
+        ),
+        scrape_run_max_channels=int(row.get("scrape_run_max_channels") or 0),
+        scrape_daily_byte_budget_mb=int(row.get("scrape_daily_byte_budget_mb") or 0),
+        scrape_retry_base_delay_seconds=int(
+            row.get("scrape_retry_base_delay_seconds") or 60
+        ),
+        scrape_retry_jitter_min=float(row.get("scrape_retry_jitter_min") or 0.8),
+        scrape_retry_jitter_max=float(row.get("scrape_retry_jitter_max") or 1.2),
+        scrape_circuit_breaker_fail_threshold=int(
+            row.get("scrape_circuit_breaker_fail_threshold") or 5
+        ),
+        scrape_circuit_breaker_window_seconds=int(
+            row.get("scrape_circuit_breaker_window_seconds") or 1800
+        ),
+        scrape_circuit_breaker_cooldown_seconds=int(
+            row.get("scrape_circuit_breaker_cooldown_seconds") or 1800
+        ),
+        gate0_daily_queue_limit=int(row.get("gate0_daily_queue_limit") or 200),
+        gate0_clean_recheck_days=int(row.get("gate0_clean_recheck_days") or 7),
+        scraper_human_delay_min_seconds=float(
+            row.get("scraper_human_delay_min_seconds") or 2
+        ),
+        scraper_human_delay_max_seconds=float(
+            row.get("scraper_human_delay_max_seconds") or 8
+        ),
+        scraper_content_wait_min_bytes=int(
+            row.get("scraper_content_wait_min_bytes") or 5000
+        ),
+        scraper_content_wait_timeout_seconds=float(
+            row.get("scraper_content_wait_timeout_seconds") or 20
+        ),
+        scraper_content_wait_poll_seconds=float(
+            row.get("scraper_content_wait_poll_seconds") or 1.5
+        ),
+        discovery_serper_query_limit=int(
+            row.get("discovery_serper_query_limit") or 480
+        ),
+        discovery_results_per_query=int(row.get("discovery_results_per_query") or 20),
+        discovery_max_pages_per_query=int(
+            row.get("discovery_max_pages_per_query") or 8
+        ),
+        discovery_insert_limit=int(row.get("discovery_insert_limit") or 20000),
+        discovery_query_stagnation_limit=int(
+            row.get("discovery_query_stagnation_limit") or 4
+        ),
+        discovery_global_stop_no_new=int(
+            row.get("discovery_global_stop_no_new") or 120
+        ),
+        discovery_max_feedback_terms=int(
+            row.get("discovery_max_feedback_terms") or 36
+        ),
+        discovery_new_scrape_limit=int(row.get("discovery_new_scrape_limit") or 500),
+        discovery_channel_page_size=int(
+            row.get("discovery_channel_page_size") or 1000
+        ),
+        discovery_verify_timeout_seconds=float(
+            row.get("discovery_verify_timeout_seconds") or 15
+        ),
         version=int(row.get("version") or 1),
         updated_at=row.get("updated_at") or datetime.now(timezone.utc),
         updated_by_email=row.get("updated_by_email"),
@@ -139,6 +257,63 @@ async def update_system_settings(
         updates["lookalike_enabled"] = payload.lookalike_enabled
     if payload.scrape_platform_priority is not None:
         updates["scrape_platform_priority"] = payload.scrape_platform_priority
+    if payload.scrape_only_new_or_missing_metrics is not None:
+        updates["scrape_only_new_or_missing_metrics"] = (
+            payload.scrape_only_new_or_missing_metrics
+        )
+    if payload.scrape_rescrape_min_hours is not None:
+        updates["scrape_rescrape_min_hours"] = payload.scrape_rescrape_min_hours
+    if payload.weekly_velocity_enabled is not None:
+        updates["weekly_velocity_enabled"] = payload.weekly_velocity_enabled
+    if payload.weekly_velocity_utc_day is not None:
+        updates["weekly_velocity_utc_day"] = payload.weekly_velocity_utc_day
+    if payload.weekly_velocity_utc_time is not None:
+        updates["weekly_velocity_utc_time"] = f"{payload.weekly_velocity_utc_time}:00"
+    if payload.velocity_weekly_min_avg_comments is not None:
+        updates["velocity_weekly_min_avg_comments"] = (
+            payload.velocity_weekly_min_avg_comments
+        )
+    if payload.velocity_weekly_min_avg_views is not None:
+        updates["velocity_weekly_min_avg_views"] = payload.velocity_weekly_min_avg_views
+    if payload.velocity_weekly_min_subscribers is not None:
+        updates["velocity_weekly_min_subscribers"] = (
+            payload.velocity_weekly_min_subscribers
+        )
+    if payload.velocity_weekly_stale_hours is not None:
+        updates["velocity_weekly_stale_hours"] = payload.velocity_weekly_stale_hours
+    operational_fields = (
+        "scrape_dispatch_batch_size",
+        "scrape_dispatch_pause_seconds",
+        "scrape_run_max_channels",
+        "scrape_daily_byte_budget_mb",
+        "scrape_retry_base_delay_seconds",
+        "scrape_retry_jitter_min",
+        "scrape_retry_jitter_max",
+        "scrape_circuit_breaker_fail_threshold",
+        "scrape_circuit_breaker_window_seconds",
+        "scrape_circuit_breaker_cooldown_seconds",
+        "gate0_daily_queue_limit",
+        "gate0_clean_recheck_days",
+        "scraper_human_delay_min_seconds",
+        "scraper_human_delay_max_seconds",
+        "scraper_content_wait_min_bytes",
+        "scraper_content_wait_timeout_seconds",
+        "scraper_content_wait_poll_seconds",
+        "discovery_serper_query_limit",
+        "discovery_results_per_query",
+        "discovery_max_pages_per_query",
+        "discovery_insert_limit",
+        "discovery_query_stagnation_limit",
+        "discovery_global_stop_no_new",
+        "discovery_max_feedback_terms",
+        "discovery_new_scrape_limit",
+        "discovery_channel_page_size",
+        "discovery_verify_timeout_seconds",
+    )
+    payload_data = payload.model_dump(exclude_unset=True)
+    for field in operational_fields:
+        if field in payload_data and payload_data[field] is not None:
+            updates[field] = payload_data[field]
 
     try:
         result = (
@@ -188,6 +363,25 @@ async def trigger_full_scrape(actor: dict, reason: str | None) -> AdminTaskTrigg
     )
     return AdminTaskTriggerResponse(
         message=f"Scrape workflow triggered: {task.id}",
+        task_id=task.id,
+        task_ids=[task.id],
+        triggered_at=datetime.now(timezone.utc),
+    )
+
+
+async def trigger_weekly_velocity(
+    actor: dict, reason: str | None
+) -> AdminTaskTriggerResponse:
+    """Admin-triggered weekly clean-lead velocity scrape workflow."""
+    task = _celery.send_task(TASK_RUN_WEEKLY_VELOCITY_SCRAPE)
+    _audit(
+        actor=actor,
+        action="tasks.trigger",
+        target="velocity.weekly",
+        metadata={"task_ids": [task.id], "reason": reason},
+    )
+    return AdminTaskTriggerResponse(
+        message=f"Weekly velocity workflow triggered: {task.id}",
         task_id=task.id,
         task_ids=[task.id],
         triggered_at=datetime.now(timezone.utc),

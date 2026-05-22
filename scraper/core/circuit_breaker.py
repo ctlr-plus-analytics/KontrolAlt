@@ -1,17 +1,13 @@
 """Redis-backed circuit breaker for platform scrape failures."""
 
 import logging
-import os
 
 import redis
 
 from core.config import scraper_settings
+from core.system_settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
-
-_FAIL_THRESHOLD = int(os.environ.get("SCRAPE_CB_FAIL_THRESHOLD", "5"))
-_WINDOW_SECONDS = int(os.environ.get("SCRAPE_CB_WINDOW_SECONDS", "1800"))
-_COOLDOWN_SECONDS = int(os.environ.get("SCRAPE_CB_COOLDOWN_SECONDS", "1800"))
 
 _redis_client: redis.Redis | None = None
 
@@ -47,17 +43,22 @@ def record_failure(platform: str) -> None:
     """Record a failed scrape and open breaker when threshold is exceeded."""
     try:
         conn = _redis_conn()
+        runtime = get_runtime_settings()
         key = _fail_key(platform)
         count = int(conn.incr(key))
-        conn.expire(key, _WINDOW_SECONDS)
-        if count >= _FAIL_THRESHOLD:
-            conn.set(_open_key(platform), "1", ex=_COOLDOWN_SECONDS)
+        conn.expire(key, runtime.scrape_circuit_breaker_window_seconds)
+        if count >= runtime.scrape_circuit_breaker_fail_threshold:
+            conn.set(
+                _open_key(platform),
+                "1",
+                ex=runtime.scrape_circuit_breaker_cooldown_seconds,
+            )
             logger.warning(
                 "Circuit breaker opened for %s: failures=%d threshold=%d cooldown_s=%d",
                 platform,
                 count,
-                _FAIL_THRESHOLD,
-                _COOLDOWN_SECONDS,
+                runtime.scrape_circuit_breaker_fail_threshold,
+                runtime.scrape_circuit_breaker_cooldown_seconds,
             )
     except redis.RedisError as exc:
         logger.warning("Circuit breaker write failed for %s: %s", platform, exc)

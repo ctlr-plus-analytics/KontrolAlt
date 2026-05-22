@@ -31,7 +31,6 @@ celery_app.conf.update(
         "tasks.discover_channels",
         "tasks.discover_keyword_expansion",
         "tasks.discover_seed_expansion",
-        "tasks.promote_discovery_candidates",
         "tasks.run_gate0",
         "tasks.find_lookalikes",
         "tasks.run_daily_scrape",

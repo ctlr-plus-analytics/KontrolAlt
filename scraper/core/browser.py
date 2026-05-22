@@ -14,6 +14,7 @@ from patchright.async_api import async_playwright, Browser, BrowserContext, Page
 
 from core.config import scraper_settings
 from core.proxy import build_session_proxy, get_random_proxy
+from core.system_settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +173,12 @@ async def human_delay(min_s: float = 2.0, max_s: float = 8.0) -> None:
         min_s: Minimum delay in seconds.
         max_s: Maximum delay in seconds.
     """
-    await asyncio.sleep(random.uniform(min_s, max_s))
+    runtime = get_runtime_settings()
+    configured_min = runtime.scraper_human_delay_min_seconds
+    configured_max = runtime.scraper_human_delay_max_seconds
+    resolved_min = max(0.0, max(min_s, configured_min))
+    resolved_max = max(resolved_min, max_s, configured_max)
+    await asyncio.sleep(random.uniform(resolved_min, resolved_max))
 
 
 async def wait_for_content(
@@ -198,6 +204,10 @@ async def wait_for_content(
         True if content reached ``min_bytes`` within ``timeout_s``.
         False if the page still looks like a challenge stub after the timeout.
     """
+    runtime = get_runtime_settings()
+    min_bytes = runtime.scraper_content_wait_min_bytes
+    timeout_s = runtime.scraper_content_wait_timeout_seconds
+    poll_interval_s = runtime.scraper_content_wait_poll_seconds
     elapsed = 0.0
     while elapsed < timeout_s:
         html = await page.content()

@@ -306,7 +306,11 @@ class BitChuteScraper(BaseScraper):
                 contact_info = sorted(set(emails + all_urls + external_links))
 
                 # --- Compute derived fields ---
-                video_titles = [v["title"] for v in video_data_map.values() if v["title"]][:20]
+                video_titles = [
+                    str(v["title"])
+                    for v in video_data_map.values()
+                    if v.get("title") and not self._is_bad_video_title(str(v["title"]))
+                ][:20]
                 view_counts = [
                     float(v["views"])
                     for v in video_data_map.values()
@@ -943,6 +947,10 @@ class BitChuteScraper(BaseScraper):
 
     def _extract_video_title(self, card: Tag, link_el: Tag) -> str:
         """Extract a video title from text nodes and attributes."""
+        for attr in ["title", "aria-label"]:
+            text = str(link_el.get(attr) or "").strip()
+            if text and not self._is_bad_video_title(text):
+                return text
         for selector in [
             ".q-item__label.bc-text-break",
             ".video-card-title",
@@ -955,7 +963,7 @@ class BitChuteScraper(BaseScraper):
             node = card.select_one(selector)
             if node is not None:
                 text = str(node.get("title") or node.get_text(" ", strip=True)).strip()
-                if text and "/video/" not in text:
+                if text and "/video/" not in text and not self._is_bad_video_title(text):
                     return text
         for selector in [".q-img[aria-label]", "img[alt]"]:
             node = card.select_one(selector)
@@ -964,6 +972,19 @@ class BitChuteScraper(BaseScraper):
                 if text:
                     return text
         return str(link_el.get("title") or link_el.get_text(" ", strip=True)).strip()
+
+    def _is_bad_video_title(self, title: str) -> bool:
+        """Return True for overlay/metadata text that is not a real video title."""
+        text = " ".join(title.lower().split())
+        if not text:
+            return True
+        if text.startswith("visibility "):
+            return True
+        if re.fullmatch(r"[\d,.\skm:]+", text):
+            return True
+        if " views " in f" {text} " and len(text) < 40:
+            return True
+        return False
 
     def _extract_card_count(
         self,
@@ -1045,7 +1066,15 @@ class BitChuteScraper(BaseScraper):
                 merged[video_id] = fallback_item
                 continue
             for key, value in fallback_item.items():
-                if existing.get(key) in (None, "", "Unknown Title") and value not in (
+                existing_value = existing.get(key)
+                should_replace_bad_title = (
+                    key == "title"
+                    and isinstance(existing_value, str)
+                    and isinstance(value, str)
+                    and self._is_bad_video_title(existing_value)
+                    and not self._is_bad_video_title(value)
+                )
+                if should_replace_bad_title or existing_value in (None, "", "Unknown Title") and value not in (
                     None,
                     "",
                     "Unknown Title",

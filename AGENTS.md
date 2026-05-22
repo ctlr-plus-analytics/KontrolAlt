@@ -121,7 +121,7 @@ docker-compose up --build
 Frontend always runs locally, never in Docker.
 
 ### Database Migration
-Apply migrations sequentially (from `frontend/supabase/migrations/001_initial_schema.sql` up through `database/migrations/007_channel_discovery_status.sql`) using the Supabase SQL editor or CLI:
+Apply migrations sequentially (from `frontend/supabase/migrations/001_initial_schema.sql` up through `database/migrations/012_retire_discovery_candidates.sql`) using the Supabase SQL editor or CLI:
 ```bash
 # Push migrations via CLI or copy/paste them directly in the Supabase SQL editor
 supabase db push

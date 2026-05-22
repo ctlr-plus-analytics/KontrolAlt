@@ -160,3 +160,30 @@ def test_merge_video_maps_preserves_live_comments() -> None:
     assert merged["ABC"]["comments"] == 9
     assert merged["ABC"]["views"] == 100
     assert merged["ABC"]["date"] == datetime(2026, 5, 1, 12, 0, 0)
+
+
+def test_merge_video_maps_replaces_overlay_title() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    primary = {
+        "ABC": {
+            "title": "visibility\n5,055\n6:46",
+            "views": 5055,
+            "comments": None,
+            "comments_source": None,
+            "date": None,
+            "url": "https://www.bitchute.com/video/ABC",
+        }
+    }
+    fallback = {
+        "ABC": {
+            "title": "Real Video Title",
+            "views": 5055,
+            "comments": None,
+            "comments_source": None,
+            "date": None,
+            "url": "https://www.bitchute.com/video/ABC",
+        }
+    }
+
+    merged = scraper._merge_video_maps(primary, fallback)
+    assert merged["ABC"]["title"] == "Real Video Title"
