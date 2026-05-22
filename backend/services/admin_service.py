@@ -18,7 +18,7 @@ from models.admin import (
     SystemSettingsPatchRequest,
     SystemSettingsResponse,
 )
-from workers.tasks import TASK_DISCOVER_KEYWORD_EXPANSION, TASK_DISCOVER_SEED_EXPANSION
+from workers.tasks import TASK_DISCOVER_CHANNELS
 from workers.tasks import TASK_RUN_DAILY_SCRAPE, TASK_RUN_GATE0
 
 logger = get_logger(__name__)
@@ -204,9 +204,8 @@ async def trigger_discovery(actor: dict, reason: str | None) -> AdminTaskTrigger
             triggered_at=datetime.now(timezone.utc),
         )
 
-    seed_task = _celery.send_task(TASK_DISCOVER_SEED_EXPANSION)
-    keyword_task = _celery.send_task(TASK_DISCOVER_KEYWORD_EXPANSION)
-    task_ids = [seed_task.id, keyword_task.id]
+    discovery_task = _celery.send_task(TASK_DISCOVER_CHANNELS)
+    task_ids = [discovery_task.id]
     _audit(
         actor=actor,
         action="tasks.trigger",
@@ -214,8 +213,8 @@ async def trigger_discovery(actor: dict, reason: str | None) -> AdminTaskTrigger
         metadata={"task_ids": task_ids, "reason": reason},
     )
     return AdminTaskTriggerResponse(
-        message="Discovery-only tasks triggered",
-        task_id=seed_task.id,
+        message="Discovery workflow triggered",
+        task_id=discovery_task.id,
         task_ids=task_ids,
         triggered_at=datetime.now(timezone.utc),
     )

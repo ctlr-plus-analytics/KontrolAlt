@@ -7,7 +7,7 @@ from core.config import settings
 from core.logging import get_logger
 from models.scrape import ScrapeTaskResponse
 from services import admin_service
-from workers.tasks import TASK_DISCOVER_KEYWORD_EXPANSION, TASK_DISCOVER_SEED_EXPANSION
+from workers.tasks import TASK_DISCOVER_CHANNELS
 from workers.tasks import TASK_RUN_DAILY_SCRAPE
 
 logger = get_logger(__name__)
@@ -41,18 +41,16 @@ async def trigger_discovery_only() -> ScrapeTaskResponse:
             triggered_at=datetime.now(timezone.utc),
         )
 
-    seed_task = _celery.send_task(TASK_DISCOVER_SEED_EXPANSION)
-    keyword_task = _celery.send_task(TASK_DISCOVER_KEYWORD_EXPANSION)
-    task_ids = [seed_task.id, keyword_task.id]
+    discovery_task = _celery.send_task(TASK_DISCOVER_CHANNELS)
+    task_ids = [discovery_task.id]
 
     logger.info(
-        "Discovery-only workflow triggered: seed_task=%s keyword_task=%s",
-        seed_task.id,
-        keyword_task.id,
+        "Discovery workflow triggered: task=%s",
+        discovery_task.id,
     )
     return ScrapeTaskResponse(
-        message="Discovery-only tasks triggered",
-        task_id=seed_task.id,
+        message="Discovery workflow triggered",
+        task_id=discovery_task.id,
         task_ids=task_ids,
         triggered_at=datetime.now(timezone.utc),
     )

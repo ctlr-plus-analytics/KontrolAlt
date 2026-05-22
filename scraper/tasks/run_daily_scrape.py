@@ -14,8 +14,7 @@ from core.circuit_breaker import is_open
 from core.supabase import get_supabase_client
 from core.system_settings import get_runtime_settings
 from tasks.compute_velocity import compute_velocity_all
-from tasks.discover_keyword_expansion import discover_keyword_expansion_now
-from tasks.discover_seed_expansion import discover_seed_expansion_now
+from tasks.discover_channels import discover_channels_now
 from tasks.run_gate0 import run_gate0
 from tasks.scrape_bitchute import scrape_bitchute_channel
 from tasks.scrape_helpers import daily_budget_bytes, get_daily_bytes_used
@@ -36,7 +35,6 @@ _SCRAPE_ONLY_NEW_OR_MISSING_METRICS = (
     os.environ.get("SCRAPE_ONLY_NEW_OR_MISSING_METRICS", "0").strip().lower()
     in {"1", "true", "yes", "on"}
 )
-_KEYWORD_DISCOVERY_HOLD_SOURCE = "auto_keyword_hold"
 
 
 def _parse_datetime(value: object) -> datetime | None:
@@ -147,19 +145,20 @@ def _prioritize_channels_for_scrape(
     for row in channels:
         channel_id = str(row.get("id") or "")
         latest = latest_by_id.get(channel_id)
+        never_scraped = (row.get("has_been_scraped") is False) or latest is None
         missing_metrics = has_all_core_metrics_na(row)
 
-        if _SCRAPE_ONLY_NEW_OR_MISSING_METRICS and latest is not None and not missing_metrics:
+        if _SCRAPE_ONLY_NEW_OR_MISSING_METRICS and not never_scraped and not missing_metrics:
             continue
         if (
             _SCRAPE_NEW_CHANNELS_ONLY
             and not _SCRAPE_ONLY_NEW_OR_MISSING_METRICS
-            and latest is not None
+            and not never_scraped
         ):
             continue
-        if latest is not None and not missing_metrics and now - latest < min_age:
+        if not never_scraped and latest is not None and not missing_metrics and now - latest < min_age:
             continue
-        if latest is None:
+        if never_scraped:
             prioritized.append((True, datetime.min.replace(tzinfo=timezone.utc), row))
         else:
             prioritized.append((False, latest, row))
@@ -186,45 +185,23 @@ def run_post_scrape_tasks() -> dict[str, object]:
     discovery_failed = False
     if runtime.discovery_enabled:
         try:
-            discovery_result = discover_seed_expansion_now()
+            discovery_result = discover_channels_now(queue_scrapes=True)
         except Exception as exc:
             discovery_failed = True
-            logger.error("Failed to run seed expansion discovery: %s", exc, exc_info=True)
+            logger.error("Failed to run channel discovery: %s", exc, exc_info=True)
             discovery_result = {
-                "source_channels": 0,
-                "discovered": 0,
-                "staged": 0,
-                "already_staged": 0,
+                "seed_expansion": {"error": str(exc)},
+                "keyword_expansion": {"error": str(exc)},
+                "inserted": 0,
+                "refreshed": 0,
                 "duplicates": 0,
                 "invalid": 1,
+                "new_urls": [],
+                "scrape_queued": 0,
                 "error": str(exc),
             }
-
-        try:
-            keyword_expansion_result = discover_keyword_expansion_now()
-        except Exception as exc:
-            discovery_failed = True
-            logger.error("Failed to run keyword expansion discovery: %s", exc, exc_info=True)
-            keyword_expansion_result = {
-                "searched_queries": 0,
-                "pages_fetched": 0,
-                "raw_links": 0,
-                "discovered": 0,
-                "staged": 0,
-                "already_staged": 0,
-                "duplicates": 0,
-                "invalid": 1,
-                "staged_rumble": 0,
-                "staged_bitchute": 0,
-                "feedback_terms": [],
-                "error": str(exc),
-            }
-
-        promotion_result = {"disabled": True, "reason": "direct_channel_insert"}
     else:
         discovery_result = {"disabled": True}
-        keyword_expansion_result = {"disabled": True}
-        promotion_result = {"disabled": True}
 
     try:
         gate0_queued = _queue_due_gate0_checks()
@@ -239,9 +216,7 @@ def run_post_scrape_tasks() -> dict[str, object]:
     if discovery_failed:
         logger.warning("Post-scrape discovery completed with failures")
     return {
-        "seed_expansion": discovery_result,
-        "keyword_expansion": keyword_expansion_result,
-        "discovery_promotion": promotion_result,
+        "discovery": discovery_result,
         "discovery_failed": discovery_failed,
         "gate0_queued": gate0_queued,
         "velocity_task_id": velocity_task_id,
@@ -256,8 +231,10 @@ def run_daily_scrape() -> dict[str, object]:
         client = get_supabase_client()
         result = (
             client.table("channels")
-            .select("id,channel_url,platform,subscriber_count,avg_views,avg_comments")
-            .or_(f"is_active.eq.true,discovery_source.eq.{_KEYWORD_DISCOVERY_HOLD_SOURCE}")
+            .select(
+                "id,channel_url,platform,subscriber_count,avg_views,avg_comments,has_been_scraped,discovery_source"
+            )
+            .eq("is_active", True)
             .execute()
         )
         channels = _prioritize_channels_for_scrape(result.data or [])

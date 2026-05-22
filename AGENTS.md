@@ -18,8 +18,7 @@ kontrol-alt/
 ├── scraper/           # Python, Patchright, Celery worker
 ├── shared/            # Shared TypeScript types
 ├── database/
-│   └── migrations/
-│       └── 001_initial_schema.sql
+│   └── migrations/    # Database schema migrations (002_*.sql to 007_*.sql)
 ├── docker-compose.yml
 ├── .env.example
 └── README.md
@@ -122,8 +121,9 @@ docker-compose up --build
 Frontend always runs locally, never in Docker.
 
 ### Database Migration
-Apply `database/migrations/001_initial_schema.sql` directly in the Supabase SQL editor or via the Supabase CLI:
+Apply migrations sequentially (from `frontend/supabase/migrations/001_initial_schema.sql` up through `database/migrations/007_channel_discovery_status.sql`) using the Supabase SQL editor or CLI:
 ```bash
+# Push migrations via CLI or copy/paste them directly in the Supabase SQL editor
 supabase db push
 ```
 
@@ -198,12 +198,26 @@ All routes are mounted under `/api/v1/`. The router is assembled in `api/v1/rout
 ```
 GET  /health
 GET  /api/v1/channels
+GET  /api/v1/channels/niche-tags
+POST /api/v1/channels/intake/manual
+POST /api/v1/channels/intake/bulk
+POST /api/v1/channels/intake/resolve
+POST /api/v1/channels/intake/resolve/confirm
 GET  /api/v1/channels/{id}
 GET  /api/v1/velocity/{channel_id}
 POST /api/v1/gate0/check/{channel_id}
 POST /api/v1/lookalike/search
 GET  /api/v1/lookalike/results
-POST /api/v1/scraper/trigger          # admin only
+POST /api/v1/scraper/trigger                   # admin only
+POST /api/v1/scraper/discovery/trigger         # admin only
+GET  /api/v1/admin/me                           # admin only
+GET  /api/v1/admin/settings                     # admin only
+PATCH /api/v1/admin/settings                    # admin only
+POST /api/v1/admin/tasks/scrape-now             # admin only
+POST /api/v1/admin/tasks/discovery-now          # admin only
+POST /api/v1/admin/tasks/gate0-now              # admin only
+GET  /api/v1/admin/tasks/{task_id}              # admin only
+GET  /api/v1/admin/audit                        # admin only
 ```
 
 ### Auth Dependency
@@ -244,13 +258,23 @@ The Supabase client is a singleton initialized in `core/supabase.py`. Use `SUPAB
 ## Scraper Architecture
 
 ### How Scraping Works
-1. Celery Beat triggers a daily task at 2am UTC
-2. The task fetches all active channel URLs from Supabase
-3. It dispatches one Celery task per channel (scrape_rumble or scrape_bitchute)
-4. Each task launches a Patchright browser session with a random proxy and scrapes the channel
-5. Results are written directly to Supabase — channels table and channel_snapshots table
-6. The scrape attempt is logged to scrape_logs regardless of success or failure
-7. After all channel scrapes complete a separate task computes velocity scores for each channel
+1. **Daily Orchestrator (`run_daily_scrape`)**: Celery Beat triggers the orchestrator task at 2am UTC (or via manual trigger).
+2. **Prioritization**: Channels are ranked so that never-scraped channels are handled first, then the oldest/stalest ones, respecting platform priority, settings (e.g. scrape new channels only), and circuit breakers.
+3. **Bandwidth Budget & Circuit Breakers**: The run terminates if the daily byte limit is hit. Scrapes are skipped if circuit breakers for Rumble or BitChute are tripped.
+4. **Staggered Scraping via Chord**: The task dispatches a Celery `chord` of tasks (`scrape_rumble_channel` or `scrape_bitchute_channel`) staggered using countdown offsets to avoid server stampedes.
+5. **Patchright Session execution**: Each task launches a Playwright-based Patchright session with a rotated proxy and randomized delays.
+6. **Db Writes**: Successful scrapes write directly to the database (marking `has_been_scraped = true` and `discovery_status = 'scraped'`) and insert a record in `channel_snapshots`.
+7. **Scrape Logs**: Results and attempts are tracked in `scrape_logs` with statuses: `success`, `blocked`, `retry`, or `failed`.
+8. **Post-Scrape Sequence (`run_post_scrape_tasks`)**: Once all chord scrapers finish, a callback task automatically executes:
+   - Unified channel discovery (`discover_channels_now(queue_scrapes=True)`).
+   - Enqueuing of due Gate 0 compliance check tasks.
+   - Channel growth velocity computation.
+
+### Unified Channel Discovery Workflow
+Discovered channels are processed directly in the database under `'new'` status:
+* **Seed/Known-Channel Expansion**: Scans existing channels' bio descriptions, video titles, and contact links. It extracts and filters platform links using the `utils/channel_urls.py` canonical patterns.
+* **Keyword/Taxonomy Search Expansion**: Loops through all categories and terms in `taxonomy.py` and uses the Serper Search API to find platform matches (e.g., `site:rumble.com "keyword"`).
+* **Canonicalization**: The `utils/channel_urls.py` utility strips tracking parameters, normalizes schemes, and structures canonical URLs (`https://rumble.com/c/<slug>`, `https://bitchute.com/channel/<slug>`).
 
 ### Base Scraper Class
 All scrapers extend `scrapers/base.py`:
@@ -283,18 +307,12 @@ def get_random_proxy() -> str: ...
 If `PROXY_LIST` is empty the scraper must raise a configuration error on startup, not silently run without proxies.
 
 ### Retry Logic
-Each Celery scrape task retries up to 3 times with exponential backoff on failure. After 3 failures the channel is logged as `status="failed"` in `scrape_logs`. The channel record is not deleted. It will be retried in the next daily run.
+Each Celery scrape task retries up to 3 times with exponential backoff and jitter on failure. After 3 failures the channel is logged as `status="failed"` in `scrape_logs`. The channel record is not deleted. It will be retried in the next daily run.
 
-### Keyword Matcher
-`utils/keyword_matcher.py` defines the full taxonomy:
+### Keyword Matcher & Taxonomy
+The full taxonomy is defined in `scraper/utils/taxonomy.py` (which divides keywords into categories like `faith_based_biblical_prophecy`, `prepper_survival_homesteading`, `finance_economics_crypto`, etc.).
+`utils/keyword_matcher.py` exposes:
 ```python
-KEYWORD_TAXONOMY = {
-    "gold_investment":       [...],
-    "retirement":            [...],
-    "conservative_finance":  [...],
-    "health_age_related":    [...],
-}
-
 def match_keywords(text: str) -> list[str]: ...
 def is_55_plus_audience(matched_categories: list[str]) -> bool: ...
     # Returns True if len(matched_categories) >= 2
@@ -321,6 +339,16 @@ Returns a flat `list[str]`. The caller stores this in `channels.contact_info` (t
 - Indexes on `channel_id` for every table that references channels
 - Index on `scraped_at` for `channel_snapshots`
 - Row Level Security (RLS) enabled on every table
+
+### Channels Table Schema Columns
+Besides standard metrics (`subscriber_count`, `avg_views`, `avg_comments`, `comment_tier`), the `channels` table tracks:
+* `has_been_scraped` (`boolean`): Tracks whether a channel has been successfully scraped at least once.
+* `discovery_status` (`text`): Workflow state, checked with `chk_channels_discovery_status` (`'new'`, `'queued'`, `'scraped'`, `'failed'`, `'dead'`, `'blocked'`).
+* `discovery_evidence_count` (`integer`): How many times this channel URL has been encountered during discovery tasks.
+* `discovery_last_seen_at` (`timestamptz`): Timestamp of the last time this channel was discovered.
+* `discovery_category` (`text`): The search category or label assigned during discovery.
+* `last_discovery_source` (`text`): Source string of the last discovery run.
+* `last_scrape_error` (`text`): Error details if the last scrape attempt failed.
 
 ### RLS Policies
 Authenticated users can SELECT, INSERT, UPDATE on all tables. No DELETE for anyone except service_role. The backend and scraper use the service role key so they bypass RLS. The frontend uses the anon key and is subject to RLS.

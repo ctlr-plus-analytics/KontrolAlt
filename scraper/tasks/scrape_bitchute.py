@@ -54,17 +54,20 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
         result = asyncio.run(scraper.scrape(channel_url))
         metrics = result.get("_scrape_metrics", {}) if isinstance(result, dict) else {}
         bytes_est = int(metrics.get("bytes_est", 0) or 0)
-        used = record_daily_bytes_used(bytes_est)
-        budget = daily_budget_bytes()
-        if budget > 0:
-            logger.info(
-                "Daily proxy byte budget progress: used=%d budget=%d remaining=%d",
-                used,
-                budget,
-                max(0, budget - used),
-            )
-        else:
-            logger.info("Daily proxy bytes used (no budget cap): %d", get_daily_bytes_used())
+        try:
+            used = record_daily_bytes_used(bytes_est)
+            budget = daily_budget_bytes()
+            if budget > 0:
+                logger.info(
+                    "Daily proxy byte budget progress: used=%d budget=%d remaining=%d",
+                    used,
+                    budget,
+                    max(0, budget - used),
+                )
+            else:
+                logger.info("Daily proxy bytes used (no budget cap): %d", get_daily_bytes_used())
+        except Exception as exc:
+            logger.warning("Could not record BitChute proxy byte usage: %s", exc)
         release_keyword_discovery_hold(scraper, channel_url)
         record_success("bitchute")
         logger.info("BitChute scrape complete: %s", channel_url)
@@ -76,7 +79,6 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
     except ScraperBlockedError as exc:
         if not has_retries_remaining_for_block(self):
             record_failure("bitchute")
-            deactivate_channel_for_url(scraper, channel_url)
             log_scrape_task_attempt(scraper, channel_url, "failed", exc)
             logger.error(
                 "BitChute scrape blocked through final retry: %s - %s",
@@ -118,7 +120,6 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
 
         if not has_retries_remaining(self):
             record_failure("bitchute")
-            deactivate_channel_for_url(scraper, channel_url)
             log_scrape_task_attempt(scraper, channel_url, "failed", exc)
             return ScrapeTaskResult(
                 status="failed",
@@ -134,7 +135,6 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
     except (APIError, PlaywrightError, RuntimeError, TypeError, ValueError) as exc:
         if not has_retries_remaining(self):
             record_failure("bitchute")
-            deactivate_channel_for_url(scraper, channel_url)
             log_scrape_task_attempt(scraper, channel_url, "failed", exc)
             logger.error(
                 "BitChute scrape permanently failed after retries: %s - %s",
@@ -153,6 +153,30 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
             self.request.retries + 1,
             channel_url,
             exc,
+        )
+        raise self.retry(
+            exc=exc,
+            countdown=retry_countdown_seconds(self),
+        )
+    except Exception as exc:
+        if not has_retries_remaining(self):
+            record_failure("bitchute")
+            log_scrape_task_attempt(scraper, channel_url, "failed", exc)
+            logger.exception(
+                "BitChute scrape failed with unexpected error after retries: %s",
+                channel_url,
+            )
+            return ScrapeTaskResult(
+                status="failed",
+                channel_url=channel_url,
+                error=str(exc),
+            ).model_dump(mode="json")
+
+        log_scrape_task_attempt(scraper, channel_url, "retry", exc)
+        logger.exception(
+            "BitChute scrape failed with unexpected error (attempt %d): %s",
+            self.request.retries + 1,
+            channel_url,
         )
         raise self.retry(
             exc=exc,

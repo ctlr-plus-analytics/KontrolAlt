@@ -29,6 +29,7 @@ CREATE TABLE channels (
     gate0_status    text NOT NULL DEFAULT 'unchecked' CHECK (gate0_status IN ('clean', 'dirty', 'pending', 'unchecked')),
     gate0_checked_at timestamptz,
     secondary_urls  text[] DEFAULT '{}',
+    has_been_scraped boolean NOT NULL DEFAULT false,
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
 );

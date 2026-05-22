@@ -8,6 +8,7 @@ tasks to the scraper worker without importing the worker directly.
 TASK_RUN_DAILY_SCRAPE = "scraper.tasks.run_daily_scrape"
 TASK_SCRAPE_RUMBLE_CHANNEL = "scraper.tasks.scrape_rumble_channel"
 TASK_SCRAPE_BITCHUTE_CHANNEL = "scraper.tasks.scrape_bitchute_channel"
+TASK_DISCOVER_CHANNELS = "scraper.tasks.discover_channels"
 TASK_DISCOVER_SEED_EXPANSION = "scraper.tasks.discover_seed_expansion"
 TASK_DISCOVER_KEYWORD_EXPANSION = "scraper.tasks.discover_keyword_expansion"
 

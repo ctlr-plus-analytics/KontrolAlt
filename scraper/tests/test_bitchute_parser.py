@@ -46,6 +46,42 @@ def test_extract_videos_parses_views_from_visibility_chip() -> None:
     assert parsed["XYZ789"]["date"] is not None
 
 
+def test_extract_videos_parses_comments_from_card_text() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    html = """
+    <article>
+      <a href="/video/COM123" title="Commented Video"></a>
+      <div>2.4K Views</div>
+      <div>18 comments</div>
+      <time>4 days ago</time>
+    </article>
+    """
+    from bs4 import BeautifulSoup
+
+    parsed = scraper._extract_videos(BeautifulSoup(html, "html.parser"))
+    assert parsed["COM123"]["title"] == "Commented Video"
+    assert parsed["COM123"]["views"] == 2400
+    assert parsed["COM123"]["comments"] == 18
+    assert parsed["COM123"]["date"] is not None
+
+
+def test_extract_videos_does_not_parse_date_as_views() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    html = """
+    <div id="video-card">
+      <a href="/video/NOVIEWS">
+        <div class="q-item__label bc-text-break">No Views Yet</div>
+        <div class="q-item__label q-item__label--caption text-caption">3 weeks ago</div>
+      </a>
+    </div>
+    """
+    from bs4 import BeautifulSoup
+
+    parsed = scraper._extract_videos(BeautifulSoup(html, "html.parser"))
+    assert parsed["NOVIEWS"]["views"] is None
+    assert parsed["NOVIEWS"]["date"] is not None
+
+
 def test_parse_relative_date_supports_short_units() -> None:
     scraper = BitChuteScraper.__new__(BitChuteScraper)
     assert scraper._parse_relative_date("3 hr ago") is not None
@@ -95,3 +131,32 @@ def test_merge_video_page_signals_preserves_existing_values_when_not_needed() ->
     assert item["comments"] == 11
     assert item["comments_source"] == "card"
     assert item["date"] == original_date
+
+
+def test_merge_video_maps_preserves_live_comments() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    primary = {
+        "ABC": {
+            "title": "Live Title",
+            "views": 100,
+            "comments": 9,
+            "comments_source": "card",
+            "date": None,
+            "url": "https://www.bitchute.com/video/ABC",
+        }
+    }
+    fallback = {
+        "ABC": {
+            "title": "Static Title",
+            "views": 120,
+            "comments": None,
+            "comments_source": None,
+            "date": datetime(2026, 5, 1, 12, 0, 0),
+            "url": "https://www.bitchute.com/video/ABC",
+        }
+    }
+
+    merged = scraper._merge_video_maps(primary, fallback)
+    assert merged["ABC"]["comments"] == 9
+    assert merged["ABC"]["views"] == 100
+    assert merged["ABC"]["date"] == datetime(2026, 5, 1, 12, 0, 0)

@@ -1,6 +1,22 @@
 """Keyword taxonomy definitions for discovery and demographic matching."""
 
 KEYWORD_TAXONOMY: dict[str, list[str]] = {
+    "gold_investment": [
+        "physical gold", "gold ira", "precious metals", "bullion",
+        "silver coins", "gold coins", "gold protects", "gold investment",
+    ],
+    "retirement": [
+        "retirement planning", "social security", "fixed income",
+        "401k", "ira rollover", "retirement savings", "pension",
+    ],
+    "alternative_media_politics": [
+        "independent journalism", "free speech", "censorship",
+        "constitutional rights", "alternative media",
+    ],
+    "preparedness_self_reliance": [
+        "emergency preparedness", "food storage", "self reliance",
+        "survival", "prepper", "water storage",
+    ],
     "conservative_politics_commentary": [
         "america first", "small government", "limited government",
         "constitutional republic", "states rights", "election integrity",

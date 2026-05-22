@@ -28,6 +28,7 @@ celery_app.conf.update(
         "tasks.scrape_rumble",
         "tasks.scrape_bitchute",
         "tasks.compute_velocity",
+        "tasks.discover_channels",
         "tasks.discover_keyword_expansion",
         "tasks.discover_seed_expansion",
         "tasks.promote_discovery_candidates",

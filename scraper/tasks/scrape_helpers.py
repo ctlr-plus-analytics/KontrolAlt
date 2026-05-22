@@ -14,8 +14,6 @@ from scrapers.base import BaseScraper
 
 logger = logging.getLogger(__name__)
 _USAGE_KEY_PREFIX = "scraper:usage:bytes:"
-_KEYWORD_DISCOVERY_HOLD_SOURCE = "auto_keyword_hold"
-_KEYWORD_DISCOVERY_LIVE_SOURCE = "auto_keyword"
 _KEYWORD_DISCOVERY_FAILED_SOURCE = "auto_keyword_failed"
 
 
@@ -96,6 +94,17 @@ def log_scrape_task_attempt(
 ) -> None:
     """Log a retry or final failure for an existing channel URL."""
     try:
+        scraper.supabase.table("channels").update(
+            {
+                "last_scrape_error": str(error),
+                "discovery_status": "blocked"
+                if status == "blocked"
+                else "failed"
+                if status == "failed"
+                else "queued",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ).eq("channel_url", channel_url).execute()
         channel_id = asyncio.run(scraper.get_channel_id(channel_url))
         if channel_id is None:
             channel_id = _ensure_channel_for_logging(scraper, channel_url)
@@ -120,23 +129,13 @@ def log_scrape_task_attempt(
 def deactivate_channel_for_url(scraper: BaseScraper, channel_url: str) -> bool:
     """Set is_active=false for a channel URL when terminal failures are detected."""
     try:
-        # If this channel is on keyword-discovery hold, mark it failed so it
-        # does not remain in hold and get re-queued by hold-aware dispatch.
-        scraper.supabase.table("channels").update(
-            {
-                "is_active": False,
-                "discovery_source": _KEYWORD_DISCOVERY_FAILED_SOURCE,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-        ).eq("channel_url", channel_url).eq(
-            "discovery_source", _KEYWORD_DISCOVERY_HOLD_SOURCE
-        ).execute()
-
         result = (
             scraper.supabase.table("channels")
             .update(
                 {
                     "is_active": False,
+                    "discovery_status": "failed",
+                    "last_discovery_source": _KEYWORD_DISCOVERY_FAILED_SOURCE,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -155,17 +154,16 @@ def deactivate_channel_for_url(scraper: BaseScraper, channel_url: str) -> bool:
 
 
 def release_keyword_discovery_hold(scraper: BaseScraper, channel_url: str) -> None:
-    """Activate held keyword-discovered channels after successful scrape."""
+    """Mark discovered channels as scraped after successful scrape."""
     try:
         scraper.supabase.table("channels").update(
             {
                 "is_active": True,
-                "discovery_source": _KEYWORD_DISCOVERY_LIVE_SOURCE,
+                "has_been_scraped": True,
+                "discovery_status": "scraped",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
-        ).eq("channel_url", channel_url).eq(
-            "discovery_source", _KEYWORD_DISCOVERY_HOLD_SOURCE
-        ).execute()
+        ).eq("channel_url", channel_url).execute()
     except (APIError, TypeError, ValueError) as exc:
         logger.error(
             "Failed to release discovery hold for %s: %s",

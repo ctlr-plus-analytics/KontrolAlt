@@ -1,48 +1,38 @@
-import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
-os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
-os.environ.setdefault("PROXY_LIST", "http://user:pass@example.com:8080")
-os.environ.setdefault("SERP_API_KEY", "serper-key")
-
-from tasks.discover_keyword_expansion import (
-    _canonicalize_channel_url,
-    _query_for_keyword,
-)
+from utils.channel_urls import canonicalize_channel_url, extract_supported_channel_urls
 
 
-def test_canonicalize_channel_url_rumble_channel_path() -> None:
-    canonical, platform = _canonicalize_channel_url(
-        "https://www.rumble.com/c/MacroAlpha/?ref=home"
+def test_canonicalize_rumble_user_channel_path() -> None:
+    candidate = canonicalize_channel_url("https://www.rumble.com/user/MacroAlpha/?ref=home")
+
+    assert candidate is not None
+    assert candidate.channel_url == "https://rumble.com/user/MacroAlpha"
+    assert candidate.platform == "rumble"
+
+
+def test_canonicalize_bitchute_channel_path() -> None:
+    candidate = canonicalize_channel_url("https://bitchute.com/channel/SignalDesk/")
+
+    assert candidate is not None
+    assert candidate.channel_url == "https://bitchute.com/channel/SignalDesk"
+    assert candidate.platform == "bitchute"
+
+
+def test_canonicalize_rejects_bitchute_video_path() -> None:
+    candidate = canonicalize_channel_url("https://bitchute.com/video/abcd/")
+
+    assert candidate is None
+
+
+def test_extract_bare_supported_urls_from_serp_text() -> None:
+    candidates = extract_supported_channel_urls(
+        "Results mention rumble.com/LibertyDesk and old.bitchute.com/channel/SignalDesk."
     )
-    assert canonical == "https://rumble.com/c/MacroAlpha"
-    assert platform == "rumble"
 
-
-def test_canonicalize_channel_url_bitchute_channel_path() -> None:
-    canonical, platform = _canonicalize_channel_url(
-        "https://bitchute.com/channel/SignalDesk/"
-    )
-    assert canonical == "https://bitchute.com/channel/SignalDesk"
-    assert platform == "bitchute"
-
-
-def test_canonicalize_channel_url_rejects_non_channel_paths() -> None:
-    canonical, platform = _canonicalize_channel_url("https://rumble.com/v6abcd-demo")
-    assert canonical is None
-    assert platform is None
-
-
-def test_query_for_keyword_targets_platform_patterns() -> None:
-    rumble_query = _query_for_keyword("gold ira", "rumble")
-    bitchute_query = _query_for_keyword("gold ira", "bitchute")
-
-    assert "site:rumble.com" in rumble_query
-    assert '"/c/"' in rumble_query
-    assert "site:bitchute.com" in bitchute_query
-    assert '"/channel/"' in bitchute_query
+    urls = {candidate.channel_url for candidate in candidates}
+    assert "https://rumble.com/LibertyDesk" in urls
+    assert "https://bitchute.com/channel/SignalDesk" in urls

@@ -85,6 +85,8 @@ class BaseScraper(ABC):
             The saved channel ID, or None if Supabase returned no row.
         """
         data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        data["has_been_scraped"] = True
+        data["discovery_status"] = "scraped"
         result = (
             self.supabase.table("channels")
             .upsert(data, on_conflict="channel_url")
@@ -229,6 +231,40 @@ class BaseScraper(ABC):
             body_text=body_text,
             response_status=response_status,
         )
+        raise ScraperClassifiedError(
+            "parse_no_videos",
+            f"No videos extracted for {channel_url}",
+            terminal=False,
+            retryable=True,
+        )
+
+    def require_scrape_quality(
+        self,
+        *,
+        channel_url: str,
+        video_titles: list[str],
+        avg_views: int | None,
+        page_title: str,
+        current_url: str,
+        body_text: str,
+        response_status: int | None,
+    ) -> None:
+        """Raise when parsed data is too incomplete to safely persist."""
+        self.require_non_empty_videos(
+            channel_url=channel_url,
+            video_titles=video_titles,
+            page_title=page_title,
+            current_url=current_url,
+            body_text=body_text,
+            response_status=response_status,
+        )
+        if avg_views is None:
+            raise ScraperClassifiedError(
+                "parse_missing_avg_views",
+                f"No view counts extracted for {channel_url}",
+                terminal=False,
+                retryable=True,
+            )
 
     def compute_avg(self, values: list[float]) -> int | None:
         """Compute the median of a list of values and return as integer.

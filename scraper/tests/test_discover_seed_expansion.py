@@ -1,54 +1,47 @@
-import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
-os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
-os.environ.setdefault("PROXY_LIST", "http://user:pass@example.com:8080")
-os.environ.setdefault("SERP_API_KEY", "serper-key")
-
-from tasks.discover_seed_expansion import (
-    _canonicalize_supported_channel_url,
-    _collect_candidate_urls,
-)
+from utils.channel_urls import canonicalize_channel_url, extract_supported_channel_urls
 
 
-def test_canonicalize_supported_channel_url_rumble_with_tracking_strips_noise() -> None:
-    canonical, platform = _canonicalize_supported_channel_url(
-        "http://www.rumble.com/c/Alpha/?utm_source=x&ref=abc"
+def test_canonicalize_rumble_channel_path_strips_tracking() -> None:
+    candidate = canonicalize_channel_url("http://www.rumble.com/c/Alpha/?utm_source=x")
+
+    assert candidate is not None
+    assert candidate.channel_url == "https://rumble.com/c/Alpha"
+    assert candidate.platform == "rumble"
+
+
+def test_canonicalize_rumble_custom_channel_url() -> None:
+    candidate = canonicalize_channel_url("https://rumble.com/MacroAlpha")
+
+    assert candidate is not None
+    assert candidate.channel_url == "https://rumble.com/MacroAlpha"
+    assert candidate.platform == "rumble"
+
+
+def test_canonicalize_rejects_rumble_video_url() -> None:
+    candidate = canonicalize_channel_url("https://rumble.com/v6abcd-demo")
+
+    assert candidate is None
+
+
+def test_canonicalize_bitchute_channel_normalizes_subdomain() -> None:
+    candidate = canonicalize_channel_url("https://old.bitchute.com//channel/TestChan//?foo=1")
+
+    assert candidate is not None
+    assert candidate.channel_url == "https://bitchute.com/channel/TestChan"
+    assert candidate.platform == "bitchute"
+
+
+def test_extract_supported_channel_urls_does_not_invent_aliases() -> None:
+    candidates = extract_supported_channel_urls(
+        "Guest on https://rumble.com/c/GoldTalk and https://www.bitchute.com/channel/SignalRoom/"
     )
-    assert canonical == "https://rumble.com/c/Alpha"
-    assert platform == "rumble"
 
-
-def test_canonicalize_supported_channel_url_bitchute_normalizes_host_and_slashes() -> None:
-    canonical, platform = _canonicalize_supported_channel_url(
-        "https://www.bitchute.com//channel/TestChan//?foo=1"
-    )
-    assert canonical == "https://bitchute.com/channel/TestChan"
-    assert platform == "bitchute"
-
-
-def test_collect_candidate_urls_extracts_supported_only() -> None:
-    channel = {
-        "video_titles": [
-            "Guest on https://rumble.com/c/GoldTalk",
-            "Ignore youtube https://youtube.com/@foo",
-        ],
-        "contact_info": [
-            "https://www.bitchute.com/channel/SignalRoom/",
-            "mailto:test@example.com",
-        ],
-        "description": "Also see https://rumble.com/user?channel=MacroView&utm=1",
-    }
-
-    candidates = _collect_candidate_urls(channel)
-
-    assert ("https://rumble.com/c/GoldTalk", "rumble") in candidates
-    assert ("https://rumble.com/user/GoldTalk", "rumble") in candidates
-    assert ("https://bitchute.com/channel/SignalRoom", "bitchute") in candidates
-    assert ("https://rumble.com/user?channel=MacroView", "rumble") in candidates
-    assert len(candidates) == 4
+    urls = {candidate.channel_url for candidate in candidates}
+    assert "https://rumble.com/c/GoldTalk" in urls
+    assert "https://rumble.com/user/GoldTalk" not in urls
+    assert "https://bitchute.com/channel/SignalRoom" in urls

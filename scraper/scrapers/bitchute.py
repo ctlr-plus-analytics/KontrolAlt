@@ -3,8 +3,10 @@
 import logging
 import re
 from datetime import datetime, timedelta
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
+from bs4.element import Tag
 
 from patchright.async_api import Error as PlaywrightError
 
@@ -19,9 +21,13 @@ from utils.keyword_matcher import (
 
 logger = logging.getLogger(__name__)
 
+BITCHUTE_BASE_URL = "https://www.bitchute.com"
+
 
 class BitChuteScraper(BaseScraper):
     """Scraper for BitChute channels using Patchright."""
+
+    VIDEO_PAGE_FALLBACK_LIMIT = 5
 
     async def scrape(self, channel_url: str) -> dict[str, object]:
         """Scrape a single BitChute channel.
@@ -223,11 +229,12 @@ class BitChuteScraper(BaseScraper):
                 await self._open_videos_tab_if_available(page, channel_url)
                 parsed_map = await self._collect_videos_with_scroll(page)
                 if parsed_map:
-                    video_data_map = parsed_map
+                    video_data_map = self._merge_video_maps(video_data_map, parsed_map)
 
                 # Comments and publish dates are most reliable on video pages
                 # when channel-card metadata is partial.
-                for item in list(video_data_map.values())[:20]:
+                fallback_items = list(video_data_map.values())[: self.VIDEO_PAGE_FALLBACK_LIMIT]
+                for item in fallback_items:
                     existing_comments = item.get("comments")
                     existing_date = item.get("date")
                     needs_comment = not (
@@ -341,6 +348,16 @@ class BitChuteScraper(BaseScraper):
                     missing_fields.append("avg_views")
                 if avg_comments is None:
                     missing_fields.append("avg_comments")
+
+                self.require_scrape_quality(
+                    channel_url=channel_url,
+                    video_titles=video_titles,
+                    avg_views=avg_views,
+                    page_title=page_title,
+                    current_url=page.url,
+                    body_text=body_text,
+                    response_status=response_status,
+                )
 
                 channel_data: dict[str, object] = {
                     "platform": "bitchute",
@@ -669,13 +686,15 @@ class BitChuteScraper(BaseScraper):
                 if parsed is not None:
                     comment_count = parsed
 
-            comment_text = await page.locator("#comments-container").first.inner_text()
-            reply_match = re.search(r"Reply[^\d]*(\d+)", comment_text)
-            if comment_count is None and reply_match:
-                try:
-                    comment_count = int(reply_match.group(1))
-                except ValueError:
-                    comment_count = None
+            comments_container = page.locator("#comments-container").first
+            if await comments_container.count() > 0:
+                comment_text = await comments_container.inner_text()
+                reply_match = re.search(r"Reply[^\d]*(\d+)", comment_text)
+                if comment_count is None and reply_match:
+                    try:
+                        comment_count = int(reply_match.group(1))
+                    except ValueError:
+                        comment_count = None
 
             publish_date: datetime | None = None
             for sel in [".q-item__label.q-item__label--caption.text-caption", "time"]:
@@ -715,7 +734,7 @@ class BitChuteScraper(BaseScraper):
         clean_text = text.lower().strip()
         
         # Extract numeric-ish part using regex that finds numbers potentially followed by K or M
-        match = re.search(r"([\d\.,]+)\s*([km])?", clean_text)
+        match = re.search(r"([\d\.,]+)\s*([kmb])?", clean_text)
         if not match:
             return None
         
@@ -729,6 +748,8 @@ class BitChuteScraper(BaseScraper):
                 return int(val * 1000)
             if suffix == "m":
                 return int(val * 1000000)
+            if suffix == "b":
+                return int(val * 1000000000)
             return int(val)
         except (ValueError, TypeError):
             return None
@@ -776,3 +797,258 @@ class BitChuteScraper(BaseScraper):
             return now - timedelta(days=val * 365)
         
         return None
+
+    def _extract_name(self, soup: BeautifulSoup, channel_url: str) -> str:
+        """Extract channel name from visible header, metadata, or URL fallback."""
+        for selector in ["div.text-bold.text-h4", "h1", "[class*='channel'] h1"]:
+            node = soup.select_one(selector)
+            if node is not None:
+                name = node.get_text(" ", strip=True)
+                if name:
+                    return name
+
+        for attrs in ({"property": "og:title"}, {"name": "twitter:title"}):
+            meta = soup.find("meta", attrs=attrs)
+            if isinstance(meta, Tag):
+                name = str(meta.get("content") or "").strip()
+                if name:
+                    return re.sub(r"\s*[-|]\s*BitChute\s*$", "", name).strip()
+
+        return channel_url.rstrip("/").split("/")[-1]
+
+    def _extract_subscribers(self, soup: BeautifulSoup) -> int | None:
+        """Extract subscriber count from header captions or full-page text."""
+        for selector in [
+            ".text-caption.text-grey-8",
+            "[class*='subscriber']",
+            "[aria-label*='subscriber']",
+            "[title*='subscriber']",
+        ]:
+            for node in soup.select(selector):
+                candidates = [
+                    node.get_text(" ", strip=True),
+                    str(node.get("aria-label") or ""),
+                    str(node.get("title") or ""),
+                ]
+                for text in candidates:
+                    if "subscriber" in text.lower():
+                        parsed = self._parse_bitchute_count(text)
+                        if parsed is not None:
+                            return parsed
+
+        match = re.search(
+            r"(\d[\d,]*(?:\.\d+)?\s*[kmb]?)\s+subscribers?\b",
+            soup.get_text(" ", strip=True),
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return self._parse_bitchute_count(match.group(1))
+        return None
+
+    def _extract_description(self, soup: BeautifulSoup) -> str:
+        """Extract full description from about text or metadata."""
+        for selector in ["div.bc-text-break", "[class*='description']", "[class*='about']"]:
+            node = soup.select_one(selector)
+            if node is not None:
+                text = node.get_text(separator="\n", strip=True)
+                if text:
+                    return text
+
+        for attrs in ({"name": "description"}, {"property": "og:description"}):
+            meta = soup.find("meta", attrs=attrs)
+            if isinstance(meta, Tag):
+                text = str(meta.get("content") or "").strip()
+                if text:
+                    return text
+        return ""
+
+    def _extract_external_links(self, soup: BeautifulSoup) -> list[str]:
+        """Extract absolute external links from profile/about markup."""
+        external_links: set[str] = set()
+        for link in soup.select("a[href]"):
+            href = str(link.get("href") or "").strip()
+            if not href or href.startswith(("mailto:", "tel:", "#", "javascript:")):
+                continue
+            absolute = urljoin(BITCHUTE_BASE_URL, href)
+            if absolute.startswith("http") and "bitchute.com" not in absolute:
+                external_links.add(absolute)
+        return sorted(external_links)
+
+    def _extract_videos(self, soup: BeautifulSoup) -> dict[str, dict[str, object]]:
+        """Extract up to 20 videos from several BitChute card variants."""
+        video_data_map: dict[str, dict[str, object]] = {}
+        cards = soup.select(
+            "#video-card, .video-card, .q-card:has(a[href*='/video/']), "
+            "article:has(a[href*='/video/']), li:has(a[href*='/video/'])"
+        )
+        if not cards:
+            anchors = soup.select("a[href*='/video/']")
+            cards = [
+                anchor.find_parent(["article", "li", "div"]) or anchor
+                for anchor in anchors
+            ]
+
+        for card in cards:
+            if len(video_data_map) >= 20 or not isinstance(card, Tag):
+                break
+            link_el = card.select_one("a[href*='/video/']")
+            if link_el is None:
+                continue
+            href = str(link_el.get("href") or "").strip()
+            if "/video/" not in href:
+                continue
+            video_id = href.rstrip("/").split("/")[-1]
+            if not video_id or video_id in video_data_map:
+                continue
+
+            title = self._extract_video_title(card, link_el)
+            views = self._extract_card_count(
+                card,
+                selectors=[
+                    ".q-item__label.q-item__label--caption.text-caption",
+                    ".video-card-info",
+                    ".q-chip",
+                    "[class*='view']",
+                    "[aria-label*='view']",
+                    "[title*='view']",
+                ],
+                label_pattern=r"(\d[\d,]*(?:\.\d+)?\s*[km]?)\s+views?\b",
+                icon_name="visibility",
+            )
+            comments = self._extract_card_count(
+                card,
+                selectors=[
+                    ".video-card-comments",
+                    ".q-item__label--caption",
+                    ".video-card-info",
+                    ".q-chip",
+                    "[class*='comment']",
+                    "[aria-label*='comment']",
+                    "[title*='comment']",
+                ],
+                label_pattern=r"(\d[\d,]*(?:\.\d+)?\s*[km]?)\s+comments?\b",
+                icon_name="comment",
+            )
+            date_val = self._extract_card_date(card)
+
+            video_data_map[video_id] = {
+                "title": title or "Unknown Title",
+                "views": views,
+                "comments": comments,
+                "comments_source": "card" if comments is not None else None,
+                "date": date_val,
+                "url": self._to_absolute_url(href),
+            }
+        return video_data_map
+
+    def _extract_video_title(self, card: Tag, link_el: Tag) -> str:
+        """Extract a video title from text nodes and attributes."""
+        for selector in [
+            ".q-item__label.bc-text-break",
+            ".video-card-title",
+            ".q-item__label",
+            "a.text-bold",
+            ".text-h6",
+            "h3",
+            "h2",
+        ]:
+            node = card.select_one(selector)
+            if node is not None:
+                text = str(node.get("title") or node.get_text(" ", strip=True)).strip()
+                if text and "/video/" not in text:
+                    return text
+        for selector in [".q-img[aria-label]", "img[alt]"]:
+            node = card.select_one(selector)
+            if node is not None:
+                text = str(node.get("aria-label") or node.get("alt") or "").strip()
+                if text:
+                    return text
+        return str(link_el.get("title") or link_el.get_text(" ", strip=True)).strip()
+
+    def _extract_card_count(
+        self,
+        card: Tag,
+        *,
+        selectors: list[str],
+        label_pattern: str,
+        icon_name: str,
+    ) -> int | None:
+        """Extract view/comment counts from selected nodes and full card text."""
+        for selector in selectors:
+            for node in card.select(selector):
+                node_context = " ".join(
+                    [
+                        str(node.get("class") or ""),
+                        str(node.get("aria-label") or ""),
+                        str(node.get("title") or ""),
+                        node.get_text(" ", strip=True),
+                    ]
+                ).lower()
+                has_label = (
+                    "view" in node_context
+                    if icon_name == "visibility"
+                    else "comment" in node_context
+                )
+                has_icon = icon_name in node_context
+                if not has_label and not has_icon:
+                    continue
+                candidates = [
+                    node.get_text(" ", strip=True),
+                    str(node.get("aria-label") or ""),
+                    str(node.get("title") or ""),
+                    str(node.get("data-value") or ""),
+                ]
+                for candidate in candidates:
+                    if icon_name == "visibility" and "comment" in candidate.lower():
+                        continue
+                    parsed = self._parse_bitchute_count(candidate)
+                    if parsed is not None:
+                        return parsed
+
+        match = re.search(label_pattern, card.get_text(" ", strip=True), flags=re.IGNORECASE)
+        if match:
+            return self._parse_bitchute_count(match.group(1))
+        return None
+
+    def _extract_card_date(self, card: Tag) -> datetime | None:
+        """Extract relative publish date from card text or time tags."""
+        for time_node in card.select("time"):
+            for candidate in [
+                str(time_node.get("datetime") or ""),
+                str(time_node.get("title") or ""),
+                time_node.get_text(" ", strip=True),
+            ]:
+                parsed = self._parse_relative_date(candidate)
+                if parsed is not None:
+                    return parsed
+
+        text = card.get_text(" ", strip=True)
+        match = re.search(
+            r"(\d+\s+(?:second|minute|hour|day|week|month|year|sec|min|hr|wk|mo|yr)s?\s+ago|yesterday|just now)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return self._parse_relative_date(match.group(1))
+        return None
+
+    def _merge_video_maps(
+        self,
+        primary: dict[str, dict[str, object]],
+        fallback: dict[str, dict[str, object]],
+    ) -> dict[str, dict[str, object]]:
+        """Merge parser passes without losing fields extracted by either pass."""
+        merged = dict(primary)
+        for video_id, fallback_item in fallback.items():
+            existing = merged.get(video_id)
+            if existing is None:
+                merged[video_id] = fallback_item
+                continue
+            for key, value in fallback_item.items():
+                if existing.get(key) in (None, "", "Unknown Title") and value not in (
+                    None,
+                    "",
+                    "Unknown Title",
+                ):
+                    existing[key] = value
+        return merged

@@ -50,3 +50,37 @@ def test_classify_terminal_page_state_no_match() -> None:
         body_text="recent uploads and followers",
         response_status=200,
     )
+
+
+def test_require_scrape_quality_rejects_empty_video_parse() -> None:
+    scraper = _DummyScraper.__new__(_DummyScraper)
+    with pytest.raises(ScraperClassifiedError) as exc_info:
+        scraper.require_scrape_quality(
+            channel_url="https://rumble.com/c/example",
+            video_titles=[],
+            avg_views=None,
+            page_title="Example Channel",
+            current_url="https://rumble.com/c/example",
+            body_text="recent uploads and followers",
+            response_status=200,
+        )
+
+    assert exc_info.value.reason_code == "parse_no_videos"
+    assert exc_info.value.terminal is False
+    assert exc_info.value.retryable is True
+
+
+def test_require_scrape_quality_rejects_missing_views() -> None:
+    scraper = _DummyScraper.__new__(_DummyScraper)
+    with pytest.raises(ScraperClassifiedError) as exc_info:
+        scraper.require_scrape_quality(
+            channel_url="https://www.bitchute.com/channel/example",
+            video_titles=["Example Video"],
+            avg_views=None,
+            page_title="Example Channel",
+            current_url="https://www.bitchute.com/channel/example",
+            body_text="example video 2 days ago",
+            response_status=200,
+        )
+
+    assert exc_info.value.reason_code == "parse_missing_avg_views"
