@@ -56,13 +56,13 @@ def _default_settings_row() -> dict[str, object]:
         "velocity_weekly_min_avg_views": 0,
         "velocity_weekly_min_subscribers": 0,
         "velocity_weekly_stale_hours": 144,
-        "scrape_dispatch_batch_size": 4,
-        "scrape_dispatch_pause_seconds": 2,
+        "scrape_dispatch_batch_size": 1,
+        "scrape_dispatch_pause_seconds": 5,
         "scrape_run_max_channels": 0,
         "scrape_daily_byte_budget_mb": 0,
-        "scrape_retry_base_delay_seconds": 60,
-        "scrape_retry_jitter_min": 0.8,
-        "scrape_retry_jitter_max": 1.2,
+        "scrape_retry_base_delay_seconds": 120,
+        "scrape_retry_jitter_min": 1.0,
+        "scrape_retry_jitter_max": 1.8,
         "scrape_circuit_breaker_fail_threshold": 5,
         "scrape_circuit_breaker_window_seconds": 1800,
         "scrape_circuit_breaker_cooldown_seconds": 1800,
@@ -147,17 +147,17 @@ def _to_settings_response(row: dict[str, object]) -> SystemSettingsResponse:
         velocity_weekly_stale_hours=int(
             row.get("velocity_weekly_stale_hours") or 144
         ),
-        scrape_dispatch_batch_size=int(row.get("scrape_dispatch_batch_size") or 4),
+        scrape_dispatch_batch_size=int(row.get("scrape_dispatch_batch_size") or 1),
         scrape_dispatch_pause_seconds=float(
-            row.get("scrape_dispatch_pause_seconds") or 2
+            row.get("scrape_dispatch_pause_seconds") or 5
         ),
         scrape_run_max_channels=int(row.get("scrape_run_max_channels") or 0),
         scrape_daily_byte_budget_mb=int(row.get("scrape_daily_byte_budget_mb") or 0),
         scrape_retry_base_delay_seconds=int(
-            row.get("scrape_retry_base_delay_seconds") or 60
+            row.get("scrape_retry_base_delay_seconds") or 120
         ),
-        scrape_retry_jitter_min=float(row.get("scrape_retry_jitter_min") or 0.8),
-        scrape_retry_jitter_max=float(row.get("scrape_retry_jitter_max") or 1.2),
+        scrape_retry_jitter_min=float(row.get("scrape_retry_jitter_min") or 1.0),
+        scrape_retry_jitter_max=float(row.get("scrape_retry_jitter_max") or 1.8),
         scrape_circuit_breaker_fail_threshold=int(
             row.get("scrape_circuit_breaker_fail_threshold") or 5
         ),

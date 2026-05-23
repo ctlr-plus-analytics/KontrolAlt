@@ -13,6 +13,7 @@ from postgrest.exceptions import APIError
 
 from worker import celery_app
 from core.config import scraper_settings
+from core.circuit_breaker import is_open
 from core.supabase import get_supabase_client
 from core.system_settings import get_runtime_settings
 from tasks.scrape_bitchute import scrape_bitchute_channel
@@ -101,16 +102,22 @@ def _fallback_name(channel_url: str) -> str:
 
 
 def _existing_channel_by_url(client, channel_url: str) -> dict[str, object] | None:
-    result = (
-        client.table("channels")
-        .select(
-            "id,channel_url,name,has_been_scraped,discovery_confidence,discovery_evidence_count"
+    try:
+        result = (
+            client.table("channels")
+            .select(
+                "id,channel_url,name,has_been_scraped,discovery_confidence,discovery_evidence_count"
+            )
+            .eq("channel_url", channel_url)
+            .maybe_single()
+            .execute()
         )
-        .eq("channel_url", channel_url)
-        .maybe_single()
-        .execute()
-    )
-    return result.data if isinstance(result.data, dict) else None
+    except APIError:
+        logger.warning("Failed to look up existing channel by URL: %s", channel_url)
+        return None
+
+    data = getattr(result, "data", None)
+    return data if isinstance(data, dict) else None
 
 
 def _iter_channel_rows(client, columns: str):
@@ -210,10 +217,10 @@ def _collect_known_channel_candidates(
     channel: dict[str, object],
 ) -> list[tuple[ChannelUrlCandidate, str]]:
     field_blobs = {
-        "video_titles": _normalize_text_values(channel.get("video_titles")),
         "contact_info": _normalize_text_values(channel.get("contact_info")),
         "secondary_urls": _normalize_text_values(channel.get("secondary_urls")),
         "description": _normalize_text_values(channel.get("description")),
+        "video_titles": _normalize_text_values(channel.get("video_titles")),
         "channel_url": _normalize_text_values(channel.get("channel_url")),
     }
 
@@ -535,8 +542,16 @@ def _discover_from_known_channels(client) -> dict[str, object]:
     refreshed = 0
     duplicates = 0
     invalid = 0
+    self_links = 0
     new_urls: list[dict[str, object]] = []
     field_metrics: dict[str, int] = {
+        "video_titles": 0,
+        "contact_info": 0,
+        "secondary_urls": 0,
+        "description": 0,
+        "channel_url": 0,
+    }
+    self_link_field_metrics: dict[str, int] = {
         "video_titles": 0,
         "contact_info": 0,
         "secondary_urls": 0,
@@ -550,15 +565,20 @@ def _discover_from_known_channels(client) -> dict[str, object]:
     for channel in _iter_channel_rows(client, columns):
         source_channels += 1
         source_channel_id = str(channel.get("id") or "")
+        source_channel_url = str(channel.get("channel_url") or "")
         for candidate, source_field in _collect_known_channel_candidates(channel):
+            if candidate.channel_url == source_channel_url:
+                self_links += 1
+                self_link_field_metrics[source_field] = (
+                    self_link_field_metrics.get(source_field, 0) + 1
+                )
+                continue
+
             discovered += 1
             field_metrics[source_field] = field_metrics.get(source_field, 0) + 1
             platform_metrics[candidate.platform] = platform_metrics.get(candidate.platform, 0) + 1
             if inserted >= insert_limit:
                 break
-            if candidate.channel_url == str(channel.get("channel_url") or ""):
-                duplicates += 1
-                continue
 
             try:
                 confidence = _seed_discovery_confidence(source_field)
@@ -580,6 +600,7 @@ def _discover_from_known_channels(client) -> dict[str, object]:
                 continue
             if existed:
                 refreshed += 1
+                duplicates += 1
             else:
                 inserted += 1
                 inserted_platform_metrics[candidate.platform] = (
@@ -602,7 +623,9 @@ def _discover_from_known_channels(client) -> dict[str, object]:
         "refreshed": refreshed,
         "duplicates": duplicates,
         "invalid": invalid,
+        "self_links": self_links,
         "field_metrics": field_metrics,
+        "self_link_field_metrics": self_link_field_metrics,
         "platform_metrics": platform_metrics,
         "inserted_platform_metrics": inserted_platform_metrics,
         "new_urls": new_urls,
@@ -835,6 +858,13 @@ def queue_discovered_channel_scrapes(new_urls: list[dict[str, object]]) -> int:
         if not channel_url or channel_url in seen:
             continue
         seen.add(channel_url)
+        if platform in {"rumble", "bitchute"} and is_open(platform):
+            logger.warning(
+                "Skipping discovered %s scrape due to open circuit breaker: %s",
+                platform,
+                channel_url,
+            )
+            continue
         if platform == "rumble":
             scrape_rumble_channel.delay(channel_url)
             queued += 1
@@ -876,7 +906,9 @@ def discover_channels_now(*, queue_scrapes: bool = False) -> dict[str, object]:
             "refreshed": 0,
             "duplicates": 0,
             "invalid": 1,
+            "self_links": 0,
             "field_metrics": {},
+            "self_link_field_metrics": {},
             "platform_metrics": {},
             "inserted_platform_metrics": {},
             "new_urls": [],

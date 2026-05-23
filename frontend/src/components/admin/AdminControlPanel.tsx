@@ -85,7 +85,7 @@ interface OperationalForm {
 }
 
 const DEFAULT_OPERATIONAL_FORM: OperationalForm = {
-  scrape_dispatch_batch_size: 4,
+  scrape_dispatch_batch_size: 8,
   scrape_dispatch_pause_seconds: 2,
   scrape_run_max_channels: 0,
   scrape_daily_byte_budget_mb: 0,

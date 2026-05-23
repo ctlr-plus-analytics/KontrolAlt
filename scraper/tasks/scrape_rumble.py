@@ -9,12 +9,14 @@ from postgrest.exceptions import APIError
 
 from worker import celery_app
 from core.config import scraper_settings
-from core.circuit_breaker import record_failure, record_success
+from core.circuit_breaker import is_open, record_failure, record_success
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
 from core.supabase import get_supabase_client
 from models import ScrapeTaskArgs, ScrapeTaskResult
 from scrapers.rumble import RumbleScraper
 from tasks.scrape_helpers import (
+    acquire_scrape_lock,
+    blocked_retry_countdown_seconds,
     daily_budget_bytes,
     deactivate_channel_for_url,
     get_daily_bytes_used,
@@ -22,6 +24,7 @@ from tasks.scrape_helpers import (
     has_retries_remaining,
     log_scrape_task_attempt,
     release_keyword_discovery_hold,
+    release_scrape_lock,
     record_daily_bytes_used,
     retry_countdown_seconds,
 )
@@ -49,8 +52,29 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
     args = ScrapeTaskArgs(channel_url=channel_url)
     channel_url = args.channel_url
     logger.info("Starting Rumble scrape: %s", channel_url)
+    if is_open("rumble"):
+        logger.warning(
+            "Skipping Rumble scrape due to open circuit breaker: %s",
+            channel_url,
+        )
+        return ScrapeTaskResult(
+            status="failed",
+            channel_url=channel_url,
+            error="Circuit breaker open for rumble",
+        ).model_dump(mode="json")
+    if not acquire_scrape_lock(channel_url):
+        logger.info("Skipping duplicate in-flight Rumble scrape: %s", channel_url)
+        return ScrapeTaskResult(
+            status="skipped",
+            channel_url=channel_url,
+            error="Duplicate in-flight scrape skipped",
+        ).model_dump(mode="json")
     scraper = RumbleScraper()
     try:
+        scraper._session_key = (
+            f"{channel_url}|attempt:{int(self.request.retries or 0)}|"
+            f"task:{self.request.id}"
+        )
         result = asyncio.run(scraper.scrape(channel_url))
         metrics = result.get("_scrape_metrics", {}) if isinstance(result, dict) else {}
         bytes_est = int(metrics.get("bytes_est", 0) or 0)
@@ -79,7 +103,7 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
     except ScraperBlockedError as exc:
         if not has_retries_remaining_for_block(self):
             record_failure("rumble")
-            log_scrape_task_attempt(scraper, channel_url, "failed", exc)
+            log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
             logger.error(
                 "Rumble scrape blocked through final retry: %s - %s",
                 channel_url,
@@ -91,7 +115,7 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
                 error=str(exc),
             ).model_dump(mode="json")
 
-        log_scrape_task_attempt(scraper, channel_url, "blocked", exc)
+        log_scrape_task_attempt(scraper, channel_url, "blocked", exc, self)
         logger.warning(
             "Rumble scrape blocked (attempt %d): %s - %s",
             self.request.retries + 1,
@@ -100,13 +124,13 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
         )
         raise self.retry(
             exc=exc,
-            countdown=retry_countdown_seconds(self),
+            countdown=blocked_retry_countdown_seconds(self),
         )
     except ScraperClassifiedError as exc:
         if exc.terminal and not exc.retryable:
             record_failure("rumble")
             deactivate_channel_for_url(scraper, channel_url)
-            log_scrape_task_attempt(scraper, channel_url, "failed", exc)
+            log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
             logger.error(
                 "Rumble scrape terminal classified failure: %s - %s",
                 channel_url,
@@ -120,14 +144,14 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
 
         if not has_retries_remaining(self):
             record_failure("rumble")
-            log_scrape_task_attempt(scraper, channel_url, "failed", exc)
+            log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
             return ScrapeTaskResult(
                 status="failed",
                 channel_url=channel_url,
                 error=str(exc),
             ).model_dump(mode="json")
 
-        log_scrape_task_attempt(scraper, channel_url, "retry", exc)
+        log_scrape_task_attempt(scraper, channel_url, "retry", exc, self)
         raise self.retry(
             exc=exc,
             countdown=retry_countdown_seconds(self),
@@ -135,7 +159,7 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
     except (APIError, PlaywrightError, RuntimeError, TypeError, ValueError) as exc:
         if not has_retries_remaining(self):
             record_failure("rumble")
-            log_scrape_task_attempt(scraper, channel_url, "failed", exc)
+            log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
             logger.error(
                 "Rumble scrape permanently failed after retries: %s - %s",
                 channel_url,
@@ -147,7 +171,7 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
                 error=str(exc),
             ).model_dump(mode="json")
 
-        log_scrape_task_attempt(scraper, channel_url, "retry", exc)
+        log_scrape_task_attempt(scraper, channel_url, "retry", exc, self)
         logger.error(
             "Rumble scrape failed (attempt %d): %s - %s",
             self.request.retries + 1,
@@ -161,7 +185,7 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
     except Exception as exc:
         if not has_retries_remaining(self):
             record_failure("rumble")
-            log_scrape_task_attempt(scraper, channel_url, "failed", exc)
+            log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
             logger.exception(
                 "Rumble scrape failed with unexpected error after retries: %s",
                 channel_url,
@@ -172,7 +196,7 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
                 error=str(exc),
             ).model_dump(mode="json")
 
-        log_scrape_task_attempt(scraper, channel_url, "retry", exc)
+        log_scrape_task_attempt(scraper, channel_url, "retry", exc, self)
         logger.exception(
             "Rumble scrape failed with unexpected error (attempt %d): %s",
             self.request.retries + 1,
@@ -182,6 +206,8 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
             exc=exc,
             countdown=retry_countdown_seconds(self),
         )
+    finally:
+        release_scrape_lock(channel_url)
 
 
 @celery_app.task(name="scraper.tasks.scrape_rumble_all")
@@ -205,6 +231,12 @@ def scrape_rumble_all() -> dict[str, object]:
     except APIError as exc:
         logger.error("Failed to fetch Rumble channel URLs: %s", exc)
         return {"queued": 0, "error": str(exc)}
+
+    if is_open("rumble"):
+        logger.warning(
+            "Skipping batch Rumble scrape dispatch due to open circuit breaker"
+        )
+        return {"queued": 0, "skipped": "circuit_breaker_open"}
 
     for url in urls:
         scrape_rumble_channel.delay(url)

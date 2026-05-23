@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -21,6 +22,9 @@ from core.supabase import get_supabase_client
 logger = logging.getLogger(__name__)
 _SETTINGS_TABLE = "system_settings"
 _SETTINGS_KEY = "global"
+_SETTINGS_CACHE_TTL_SECONDS = 60.0
+_cached_settings: RuntimeSettings | None = None
+_cached_settings_at: float = 0.0
 _HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
 )
@@ -61,13 +65,17 @@ class RuntimeSettings:
     velocity_weekly_min_avg_views: float = 0.0
     velocity_weekly_min_subscribers: int = 0
     velocity_weekly_stale_hours: int = 144
-    scrape_dispatch_batch_size: int = 4
-    scrape_dispatch_pause_seconds: float = 2.0
+    scrape_dispatch_batch_size: int = 1
+    scrape_dispatch_pause_seconds: float = 5.0
     scrape_run_max_channels: int = 0
     scrape_daily_byte_budget_mb: int = 0
-    scrape_retry_base_delay_seconds: int = 60
-    scrape_retry_jitter_min: float = 0.8
-    scrape_retry_jitter_max: float = 1.2
+    scrape_retry_base_delay_seconds: int = 120
+    scrape_retry_jitter_min: float = 1.0
+    scrape_retry_jitter_max: float = 1.8
+    scrape_blocked_retry_multiplier: float = 2.0
+    scrape_blocked_retry_min_seconds: int = 180
+    scrape_platform_slot_limit_rumble: int = 1
+    scrape_platform_slot_limit_bitchute: int = 1
     scrape_circuit_breaker_fail_threshold: int = 5
     scrape_circuit_breaker_window_seconds: int = 1800
     scrape_circuit_breaker_cooldown_seconds: int = 1800
@@ -84,6 +92,10 @@ class RuntimeSettings:
     scraper_content_wait_min_bytes: int = 5000
     scraper_content_wait_timeout_seconds: float = 20.0
     scraper_content_wait_poll_seconds: float = 1.5
+    scraper_challenge_second_cycle_enabled: bool = True
+    scraper_challenge_second_cycle_pre_reload_delay_seconds: float = 10.0
+    scraper_challenge_second_cycle_post_reload_delay_seconds: float = 8.0
+    scraper_challenge_second_cycle_wait_timeout_seconds: float = 25.0
     discovery_serper_query_limit: int = 480
     discovery_results_per_query: int = 20
     discovery_max_pages_per_query: int = 8
@@ -159,6 +171,11 @@ def _parse_gate0_competitors(value: object) -> tuple[Gate0CompetitorSetting, ...
 
 def get_runtime_settings() -> RuntimeSettings:
     """Fetch runtime settings with safe defaults on any read error."""
+    global _cached_settings, _cached_settings_at
+    now = time.monotonic()
+    if _cached_settings is not None and now - _cached_settings_at < _SETTINGS_CACHE_TTL_SECONDS:
+        return _cached_settings
+
     try:
         client = get_supabase_client()
         result = (
@@ -184,7 +201,7 @@ def get_runtime_settings() -> RuntimeSettings:
         )
         if not priority:
             priority = ("rumble", "bitchute")
-        return RuntimeSettings(
+        settings = RuntimeSettings(
             daily_scrape_utc_time=raw_time[:5],
             gate0_enabled=bool(row.get("gate0_enabled", True)),
             discovery_enabled=bool(row.get("discovery_enabled", True)),
@@ -212,10 +229,10 @@ def get_runtime_settings() -> RuntimeSettings:
                 row.get("velocity_weekly_stale_hours"), 144
             ),
             scrape_dispatch_batch_size=max(
-                1, _as_non_negative_int(row.get("scrape_dispatch_batch_size"), 4)
+                1, _as_non_negative_int(row.get("scrape_dispatch_batch_size"), 1)
             ),
             scrape_dispatch_pause_seconds=_as_non_negative_float(
-                row.get("scrape_dispatch_pause_seconds"), 2.0
+                row.get("scrape_dispatch_pause_seconds"), 5.0
             ),
             scrape_run_max_channels=_as_non_negative_int(
                 row.get("scrape_run_max_channels"), 0
@@ -225,14 +242,28 @@ def get_runtime_settings() -> RuntimeSettings:
             ),
             scrape_retry_base_delay_seconds=max(
                 1,
-                _as_non_negative_int(row.get("scrape_retry_base_delay_seconds"), 60),
+                _as_non_negative_int(row.get("scrape_retry_base_delay_seconds"), 120),
             ),
             scrape_retry_jitter_min=_as_non_negative_float(
-                row.get("scrape_retry_jitter_min"), 0.8
+                row.get("scrape_retry_jitter_min"), 1.0
             ),
             scrape_retry_jitter_max=max(
-                _as_non_negative_float(row.get("scrape_retry_jitter_min"), 0.8),
-                _as_non_negative_float(row.get("scrape_retry_jitter_max"), 1.2),
+                _as_non_negative_float(row.get("scrape_retry_jitter_min"), 1.0),
+                _as_non_negative_float(row.get("scrape_retry_jitter_max"), 1.8),
+            ),
+            scrape_blocked_retry_multiplier=max(
+                1.0,
+                _as_non_negative_float(row.get("scrape_blocked_retry_multiplier"), 2.0),
+            ),
+            scrape_blocked_retry_min_seconds=max(
+                1,
+                _as_non_negative_int(row.get("scrape_blocked_retry_min_seconds"), 180),
+            ),
+            scrape_platform_slot_limit_rumble=_as_non_negative_int(
+                row.get("scrape_platform_slot_limit_rumble"), 1
+            ),
+            scrape_platform_slot_limit_bitchute=_as_non_negative_int(
+                row.get("scrape_platform_slot_limit_bitchute"), 1
             ),
             scrape_circuit_breaker_fail_threshold=max(
                 1,
@@ -284,6 +315,21 @@ def get_runtime_settings() -> RuntimeSettings:
                     row.get("scraper_content_wait_poll_seconds"), 1.5
                 ),
             ),
+            scraper_challenge_second_cycle_enabled=bool(
+                row.get("scraper_challenge_second_cycle_enabled", True)
+            ),
+            scraper_challenge_second_cycle_pre_reload_delay_seconds=_as_non_negative_float(
+                row.get("scraper_challenge_second_cycle_pre_reload_delay_seconds"), 10.0
+            ),
+            scraper_challenge_second_cycle_post_reload_delay_seconds=_as_non_negative_float(
+                row.get("scraper_challenge_second_cycle_post_reload_delay_seconds"), 8.0
+            ),
+            scraper_challenge_second_cycle_wait_timeout_seconds=max(
+                0.1,
+                _as_non_negative_float(
+                    row.get("scraper_challenge_second_cycle_wait_timeout_seconds"), 25.0
+                ),
+            ),
             discovery_serper_query_limit=_as_non_negative_int(
                 row.get("discovery_serper_query_limit"), 480
             ),
@@ -317,6 +363,9 @@ def get_runtime_settings() -> RuntimeSettings:
                 row.get("discovery_verify_timeout_seconds"), 15.0
             ),
         )
+        _cached_settings = settings
+        _cached_settings_at = now
+        return settings
     except (
         APIError,
         SupabaseException,
@@ -326,4 +375,7 @@ def get_runtime_settings() -> RuntimeSettings:
         ValueError,
     ) as exc:
         logger.warning("Failed to load runtime settings; using defaults: %s", exc)
-        return RuntimeSettings(settings_loaded=False)
+        settings = RuntimeSettings(settings_loaded=False)
+        _cached_settings = settings
+        _cached_settings_at = now
+        return settings

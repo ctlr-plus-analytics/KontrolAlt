@@ -26,16 +26,28 @@ class _ScrapeSignature(Protocol):
 
 
 def _stage_scrape_signatures(
-    scrape_signatures: list[_ScrapeSignature],
+    scrape_signatures: list[tuple[str, _ScrapeSignature]],
 ) -> list[_ScrapeSignature]:
     """Apply configured dispatch pacing to a scrape signature list."""
     runtime = get_runtime_settings()
     batch_size = max(1, runtime.scrape_dispatch_batch_size)
     pause_s = max(0.0, runtime.scrape_dispatch_pause_seconds)
+    # BitChute is currently far more block-sensitive; pace starts to avoid
+    # simultaneous challenge hits across multiple workers.
+    platform_min_gap_s: dict[str, int] = {
+        "bitchute": 20,
+        "rumble": 4,
+    }
+    platform_seen: dict[str, int] = {}
     staged: list[object] = []
-    for idx, sig in enumerate(scrape_signatures):
+    for idx, (platform, sig) in enumerate(scrape_signatures):
         stage = idx // batch_size
-        delay = int(stage * pause_s)
+        batch_delay = int(stage * pause_s)
+        seen_count = platform_seen.get(platform, 0)
+        gap = platform_min_gap_s.get(platform, 0)
+        platform_delay = seen_count * gap
+        delay = max(batch_delay, platform_delay)
+        platform_seen[platform] = seen_count + 1
         staged.append(sig.set(countdown=delay))
     return staged
 
@@ -104,24 +116,35 @@ def _latest_snapshot_by_channel_id(channel_ids: list[str]) -> dict[str, datetime
     if not channel_ids:
         return {}
 
+    unique_ids = list(dict.fromkeys(channel_ids))
+    chunk_size = 200
     client = get_supabase_client()
-    snapshots_result = (
-        client.table("channel_snapshots")
-        .select("channel_id,scraped_at")
-        .in_("channel_id", channel_ids)
-        .order("channel_id")
-        .order("scraped_at", desc=True)
-        .execute()
-    )
-
     latest: dict[str, datetime] = {}
-    for row in snapshots_result.data or []:
-        channel_id = str(row.get("channel_id") or "")
-        if not channel_id or channel_id in latest:
-            continue
-        parsed = _parse_datetime(row.get("scraped_at"))
-        if parsed is not None:
-            latest[channel_id] = parsed
+    try:
+        for idx in range(0, len(unique_ids), chunk_size):
+            chunk_ids = unique_ids[idx : idx + chunk_size]
+            snapshots_result = (
+                client.table("channel_snapshots")
+                .select("channel_id,scraped_at")
+                .in_("channel_id", chunk_ids)
+                .order("channel_id")
+                .order("scraped_at", desc=True)
+                .execute()
+            )
+            for row in snapshots_result.data or []:
+                channel_id = str(row.get("channel_id") or "")
+                if not channel_id or channel_id in latest:
+                    continue
+                parsed = _parse_datetime(row.get("scraped_at"))
+                if parsed is not None:
+                    latest[channel_id] = parsed
+    except APIError as exc:
+        logger.warning(
+            "Failed to fetch latest channel snapshots; falling back to no-history mode: %s",
+            exc,
+            exc_info=True,
+        )
+        return {}
     return latest
 
 
@@ -336,7 +359,7 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
         logger.error("Failed to fetch weekly velocity channels: %s", exc, exc_info=True)
         return {"queued": 0, "error": str(exc)}
 
-    scrape_signatures = []
+    scrape_signatures: list[tuple[str, _ScrapeSignature]] = []
     for channel in channels:
         channel_url = str(channel.get("channel_url") or "")
         platform = str(channel.get("platform") or "")
@@ -350,9 +373,9 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
             )
             continue
         if platform == "rumble":
-            scrape_signatures.append(scrape_rumble_channel.s(channel_url))
+            scrape_signatures.append((platform, scrape_rumble_channel.s(channel_url)))
         elif platform == "bitchute":
-            scrape_signatures.append(scrape_bitchute_channel.s(channel_url))
+            scrape_signatures.append((platform, scrape_bitchute_channel.s(channel_url)))
         else:
             logger.warning("Unsupported platform skipped: %s", platform)
 
@@ -401,7 +424,7 @@ def run_daily_scrape() -> dict[str, object]:
         logger.error("Failed to fetch active channel URLs: %s", exc, exc_info=True)
         return {"queued": 0, "error": str(exc)}
 
-    scrape_signatures = []
+    scrape_signatures: list[tuple[str, _ScrapeSignature]] = []
     for channel in channels:
         channel_url = str(channel.get("channel_url") or "")
         platform = str(channel.get("platform") or "")
@@ -415,9 +438,9 @@ def run_daily_scrape() -> dict[str, object]:
             )
             continue
         if platform == "rumble":
-            scrape_signatures.append(scrape_rumble_channel.s(channel_url))
+            scrape_signatures.append((platform, scrape_rumble_channel.s(channel_url)))
         elif platform == "bitchute":
-            scrape_signatures.append(scrape_bitchute_channel.s(channel_url))
+            scrape_signatures.append((platform, scrape_bitchute_channel.s(channel_url)))
         else:
             logger.warning("Unsupported platform skipped: %s", platform)
 

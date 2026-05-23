@@ -55,3 +55,25 @@ def test_extract_supported_channel_urls_reads_contextual_platform_mentions() -> 
     urls = {candidate.channel_url for candidate in candidates}
     assert "https://rumble.com/LibertyDesk" in urls
     assert "https://bitchute.com/channel/SignalRoom" in urls
+
+
+def test_extract_supported_channel_urls_does_not_parse_rumble_channel_as_path() -> None:
+    candidates = extract_supported_channel_urls(
+        "Find us on Rumble channel LibertyDesk for new videos."
+    )
+
+    urls = {candidate.channel_url for candidate in candidates}
+    assert "https://rumble.com/LibertyDesk" in urls
+    assert "https://rumble.com/c/hannel" not in urls
+
+
+def test_canonicalize_rejects_common_rumble_root_noise() -> None:
+    urls = [
+        "https://rumble.com/that",
+        "https://rumble.com/for",
+        "https://rumble.com/to",
+        "https://rumble.com/Of",
+        "https://rumble.com/DOWNLOAD",
+    ]
+
+    assert [canonicalize_channel_url(url) for url in urls] == [None] * len(urls)

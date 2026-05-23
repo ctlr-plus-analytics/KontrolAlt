@@ -16,6 +16,35 @@ if "httpx" not in sys.modules:
     httpx_stub.HTTPError = Exception
     httpx_stub.Client = object
     sys.modules["httpx"] = httpx_stub
+if "redis" not in sys.modules:
+    redis_stub = types.ModuleType("redis")
+
+    class RedisError(Exception):
+        pass
+
+    class Redis:
+        @staticmethod
+        def from_url(*_args, **_kwargs):
+            return Redis()
+
+        def exists(self, *_args, **_kwargs):
+            return 0
+
+        def incr(self, *_args, **_kwargs):
+            return 0
+
+        def expire(self, *_args, **_kwargs):
+            return None
+
+        def set(self, *_args, **_kwargs):
+            return None
+
+        def delete(self, *_args, **_kwargs):
+            return None
+
+    redis_stub.Redis = Redis
+    redis_stub.RedisError = RedisError
+    sys.modules["redis"] = redis_stub
 if "postgrest.exceptions" not in sys.modules:
     postgrest_stub = types.ModuleType("postgrest")
     exceptions_stub = types.ModuleType("postgrest.exceptions")
@@ -40,7 +69,12 @@ if "celery" not in sys.modules:
 
             return decorator
 
+    class Task:
+        pass
+
     celery_stub.Celery = Celery
+    celery_stub.Task = Task
+    celery_stub.chord = lambda *_args, **_kwargs: None
     sys.modules["celery"] = celery_stub
 if "worker" not in sys.modules:
     worker_stub = types.ModuleType("worker")
@@ -142,6 +176,13 @@ class FakeQuery:
         return FakeResult(rows)
 
 
+class FakeNoneResponseQuery(FakeQuery):
+    def execute(self):
+        if self.single:
+            return None
+        return super().execute()
+
+
 class FakeTable:
     def __init__(self, rows):
         self.rows = rows
@@ -158,6 +199,11 @@ class FakeTable:
         return FakeQuery(self).insert(payload)
 
 
+class FakeNoneResponseTable(FakeTable):
+    def select(self, columns):
+        return FakeNoneResponseQuery(self).select(columns)
+
+
 class FakeClient:
     def __init__(self, rows):
         self.channels = FakeTable(rows)
@@ -165,6 +211,11 @@ class FakeClient:
     def table(self, name):
         assert name == "channels"
         return self.channels
+
+
+class FakeNoneResponseClient(FakeClient):
+    def __init__(self, rows):
+        self.channels = FakeNoneResponseTable(rows)
 
 
 def test_iter_channel_rows_reads_all_pages(monkeypatch) -> None:
@@ -175,6 +226,16 @@ def test_iter_channel_rows_reads_all_pages(monkeypatch) -> None:
     result = list(discover_channels._iter_channel_rows(client, "id"))
 
     assert result == rows
+
+
+def test_existing_channel_by_url_handles_missing_response() -> None:
+    client = FakeNoneResponseClient([])
+
+    result = discover_channels._existing_channel_by_url(
+        client, "https://rumble.com/c/hannel"
+    )
+
+    assert result is None
 
 
 def test_extract_serp_candidates_reads_snippet_urls() -> None:
@@ -430,6 +491,7 @@ def test_queue_discovered_channel_scrapes_marks_rows_queued(monkeypatch) -> None
 
     monkeypatch.setattr(discover_channels, "get_supabase_client", lambda: client)
     monkeypatch.setattr(discover_channels, "scrape_rumble_channel", FakeTask)
+    monkeypatch.setattr(discover_channels, "is_open", lambda _platform: False)
 
     queued = discover_channels.queue_discovered_channel_scrapes(
         [{"channel_url": "https://rumble.com/SignalDesk", "platform": "rumble"}]
@@ -453,6 +515,7 @@ def test_queue_discovered_channel_scrapes_prioritizes_confidence(monkeypatch) ->
     monkeypatch.setattr(discover_channels, "_SCRAPE_NEW_LIMIT", 2)
     monkeypatch.setattr(discover_channels, "get_supabase_client", lambda: client)
     monkeypatch.setattr(discover_channels, "scrape_rumble_channel", FakeTask)
+    monkeypatch.setattr(discover_channels, "is_open", lambda _platform: False)
 
     queued = discover_channels.queue_discovered_channel_scrapes(
         [
@@ -476,6 +539,32 @@ def test_queue_discovered_channel_scrapes_prioritizes_confidence(monkeypatch) ->
 
     assert queued == 2
     assert queued_urls == ["https://rumble.com/High", "https://rumble.com/Mid"]
+
+
+def test_queue_discovered_channel_scrapes_skips_open_breaker(monkeypatch) -> None:
+    client = FakeClient([])
+    queued_urls = []
+
+    class FakeTask:
+        @staticmethod
+        def delay(channel_url):
+            queued_urls.append(channel_url)
+
+    monkeypatch.setattr(discover_channels, "get_supabase_client", lambda: client)
+    monkeypatch.setattr(discover_channels, "scrape_rumble_channel", FakeTask)
+    monkeypatch.setattr(
+        discover_channels,
+        "is_open",
+        lambda platform: platform == "rumble",
+    )
+
+    queued = discover_channels.queue_discovered_channel_scrapes(
+        [{"channel_url": "https://rumble.com/SignalDesk", "platform": "rumble"}]
+    )
+
+    assert queued == 0
+    assert queued_urls == []
+    assert client.channels.updates == []
 
 
 def test_seed_discovery_extracts_messy_platform_mentions() -> None:
@@ -511,8 +600,12 @@ def test_seed_discovery_inserts_directly_and_reports_source_metrics(monkeypatch)
     result = discover_channels._discover_from_known_channels(client)
 
     assert result["inserted"] == 1
+    assert result["discovered"] == 1
+    assert result["self_links"] == 1
     assert result["field_metrics"]["description"] == 1
-    assert result["platform_metrics"]["rumble"] == 2
+    assert result["field_metrics"]["channel_url"] == 0
+    assert result["self_link_field_metrics"]["channel_url"] == 1
+    assert result["platform_metrics"]["rumble"] == 1
     assert result["inserted_platform_metrics"]["rumble"] == 1
     assert client.channels.inserts[0]["channel_url"] == "https://rumble.com/SignalDesk"
     assert client.channels.inserts[0]["discovery_confidence"] == 0.92
@@ -545,6 +638,8 @@ def test_seed_discovery_refreshes_existing_without_overwriting_scraped_name(monk
     result = discover_channels._discover_from_known_channels(client)
 
     assert result["refreshed"] == 1
+    assert result["duplicates"] == 1
+    assert result["self_links"] == 2
     updated_row = next(row for row in client.channels.rows if row.get("id") == "existing-1")
     assert updated_row["name"] == "Scraped Signal Desk"
     assert updated_row["discovery_confidence"] == 0.92
@@ -579,5 +674,6 @@ def test_seed_discovery_insert_limit_counts_insertions_not_self_duplicates(
     result = discover_channels._discover_from_known_channels(client)
 
     assert result["inserted"] == 1
-    assert result["duplicates"] >= 0
+    assert result["duplicates"] == 0
+    assert result["self_links"] == 1
     assert len(client.channels.inserts) == 1

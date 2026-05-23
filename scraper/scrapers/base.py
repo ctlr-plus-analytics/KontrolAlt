@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from uuid import UUID
 
-from patchright.async_api import Error as PlaywrightError, Page
+from playwright.async_api import Error as PlaywrightError, Page
 
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
 from core.supabase import get_supabase_client
@@ -62,6 +62,7 @@ class BaseScraper(ABC):
 
     def __init__(self) -> None:
         self.supabase = get_supabase_client()
+        self._session_key: str | None = None
 
     @abstractmethod
     async def scrape(self, channel_url: str) -> dict[str, object]:
@@ -172,14 +173,16 @@ class BaseScraper(ABC):
 
         combined = f"{title} {current_url} {body_text}"
         
-        # If we successfully loaded a large DOM, the CF elements might be hidden but present.
-        # Only check for blocking markers if the page content is suspiciously small.
-        if html_len < 30000:
-            for marker in _BLOCKED_MARKERS:
-                if marker in combined:
-                    raise ScraperBlockedError(
-                        f"Blocked while scraping {channel_url}: marker={marker}"
-                    )
+        for marker in _BLOCKED_MARKERS:
+            # For large pages, only hard-block on stronger markers that almost always
+            # indicate challenge pages.
+            if marker in combined and (
+                html_len < 30000
+                or marker in {"cf-browser-verification", "challenge-platform", "captcha"}
+            ):
+                raise ScraperBlockedError(
+                    f"Blocked while scraping {channel_url}: marker={marker}"
+                )
 
     def classify_terminal_page_state(
         self,
@@ -199,6 +202,10 @@ class BaseScraper(ABC):
                 f"HTTP 404 for {channel_url}",
                 terminal=True,
                 retryable=False,
+            )
+        if response_status in {401, 403, 429, 503}:
+            raise ScraperBlockedError(
+                f"Blocked status while scraping {channel_url}: http_status={response_status}"
             )
 
         for reason_code, markers in _TERMINAL_MARKERS.items():

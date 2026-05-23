@@ -25,7 +25,7 @@ RUMBLE_HANDLE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 RUMBLE_PATH_MENTION_PATTERN = re.compile(
-    r"\brumble\s+(?:com\s+)?(?:/)?(c|user)\s*/?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{1,127})\b",
+    r"\brumble\s+(?:com\s+)?(?:/)?(c|user)\b\s*/?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{1,127})\b",
     re.IGNORECASE,
 )
 BITCHUTE_HANDLE_PATTERN = re.compile(
@@ -64,6 +64,33 @@ _RUMBLE_SYSTEM_PATHS = {
     "user",
     "videos",
 }
+_RUMBLE_RESERVED_ROOT_SLUGS = _RUMBLE_SYSTEM_PATHS | {
+    "and",
+    "api",
+    "app",
+    "channel",
+    "channels",
+    "contact",
+    "download",
+    "downloads",
+    "for",
+    "from",
+    "help",
+    "home",
+    "jobs",
+    "live",
+    "news",
+    "of",
+    "on",
+    "privacy",
+    "support",
+    "that",
+    "the",
+    "to",
+    "tv",
+    "watch",
+    "with",
+}
 _BITCHUTE_SYSTEM_PATHS = {
     "all",
     "category",
@@ -99,6 +126,10 @@ def _is_valid_slug(slug: str) -> bool:
     return bool(_SLUG_PATTERN.match(slug))
 
 
+def _is_valid_rumble_root_slug(slug: str) -> bool:
+    return _is_valid_slug(slug) and slug.lower() not in _RUMBLE_RESERVED_ROOT_SLUGS
+
+
 def _canonicalize_rumble(parts: list[str]) -> str | None:
     if not parts:
         return None
@@ -115,7 +146,7 @@ def _canonicalize_rumble(parts: list[str]) -> str | None:
     if first in _RUMBLE_SYSTEM_PATHS:
         return None
 
-    if len(parts) >= 1 and _is_valid_slug(parts[0]):
+    if len(parts) >= 1 and _is_valid_rumble_root_slug(parts[0]):
         return f"/{parts[0]}"
 
     return None
@@ -178,11 +209,11 @@ def extract_supported_channel_urls(text: str) -> list[ChannelUrlCandidate]:
         raw_urls.add(f"https://rumble.com/{match.group(1).lower()}/{match.group(2)}")
     for match in RUMBLE_HANDLE_PATTERN.finditer(text):
         slug = match.group(1)
-        if slug.lower() not in _RUMBLE_SYSTEM_PATHS:
+        if _is_valid_rumble_root_slug(slug):
             raw_urls.add(f"https://rumble.com/{slug}")
     for match in RUMBLE_CONTEXT_HANDLE_PATTERN.finditer(text):
         slug = match.group(1)
-        if slug.lower() not in _RUMBLE_SYSTEM_PATHS:
+        if _is_valid_rumble_root_slug(slug):
             raw_urls.add(f"https://rumble.com/{slug}")
     for match in BITCHUTE_PATH_MENTION_PATTERN.finditer(text):
         raw_urls.add(f"https://bitchute.com/channel/{match.group(1)}")

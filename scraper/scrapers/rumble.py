@@ -12,6 +12,7 @@ from patchright.async_api import Error as PlaywrightError
 
 from core.browser import BrowserTelemetry, human_delay, launch_browser, wait_for_content
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
+from core.system_settings import get_runtime_settings
 from scrapers.base import BaseScraper
 from utils.contact_extractor import extract_emails, extract_urls
 from utils.keyword_matcher import compute_channel_demographic, compute_comment_tier
@@ -121,7 +122,8 @@ class RumbleScraper(BaseScraper):
         """Scrape a single Rumble channel."""
         try:
             telemetry = BrowserTelemetry()
-            async with launch_browser(session_key=channel_url, telemetry=telemetry) as context:
+            session_key = self._session_key or channel_url
+            async with launch_browser(session_key=session_key, telemetry=telemetry) as context:
                 page = await context.new_page()
                 response = await page.goto(
                     channel_url, wait_until="domcontentloaded", timeout=45000
@@ -134,6 +136,27 @@ class RumbleScraper(BaseScraper):
                     await page.reload(wait_until="domcontentloaded", timeout=45000)
                     await human_delay(5.0, 8.0)
                     content_ok = await wait_for_content(page, min_bytes=5000, timeout_s=20.0)
+                runtime = get_runtime_settings()
+                if not content_ok and runtime.scraper_challenge_second_cycle_enabled:
+                    logger.warning(
+                        "Rumble: second settle cycle for potential CF challenge %s",
+                        channel_url,
+                    )
+                    second_pre = max(
+                        0.0, runtime.scraper_challenge_second_cycle_pre_reload_delay_seconds
+                    )
+                    second_post = max(
+                        0.0, runtime.scraper_challenge_second_cycle_post_reload_delay_seconds
+                    )
+                    second_wait = max(
+                        0.1, runtime.scraper_challenge_second_cycle_wait_timeout_seconds
+                    )
+                    await human_delay(second_pre, second_pre)
+                    await page.reload(wait_until="domcontentloaded", timeout=45000)
+                    await human_delay(second_post, second_post)
+                    content_ok = await wait_for_content(
+                        page, min_bytes=5000, timeout_s=second_wait
+                    )
 
                 await self.ensure_not_blocked(page, channel_url)
                 if not content_ok:
@@ -155,6 +178,10 @@ class RumbleScraper(BaseScraper):
                 video_data_map = await self._collect_videos_with_scroll(page)
                 html = await page.content()
                 soup = BeautifulSoup(html, "html.parser")
+                if not video_data_map:
+                    # Fallback: build a minimal recent-video set from anchors when
+                    # card selectors drift, then enrich from video pages below.
+                    video_data_map = self._extract_videos_from_anchors(soup)
                 page_title = await page.title() or ""
                 response_status = response.status if response is not None else None
                 body_text = soup.get_text(" ", strip=True).lower()
@@ -527,6 +554,33 @@ class RumbleScraper(BaseScraper):
                 "views": views,
                 "comments": comments,
                 "date": date_val,
+                "url": video_url,
+            }
+        return video_map
+
+    def _extract_videos_from_anchors(
+        self, soup: BeautifulSoup
+    ) -> dict[str, dict[str, object]]:
+        """Build minimal video entries from page anchors when card parsing fails."""
+        video_map: dict[str, dict[str, object]] = {}
+        for anchor in soup.select("a[href*='/v']"):
+            if len(video_map) >= self.VIDEO_COLLECTION_LIMIT:
+                break
+            if not isinstance(anchor, Tag):
+                continue
+            href = str(anchor.get("href") or "")
+            if not self._is_video_href(href):
+                continue
+            video_url = urljoin(RUMBLE_BASE_URL, href)
+            video_id = video_url.rstrip("/").split("/")[-1]
+            if not video_id or video_id in video_map:
+                continue
+            title = self._extract_video_title(anchor, anchor)
+            video_map[video_id] = {
+                "title": title or "Unknown Title",
+                "views": None,
+                "comments": None,
+                "date": None,
                 "url": video_url,
             }
         return video_map

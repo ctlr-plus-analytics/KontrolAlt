@@ -1,9 +1,15 @@
 """Celery app definition and entry point for the scraper worker."""
 
+import logging
+
 from celery import Celery
 
 from core.config import scraper_settings
 from schedules.beat_schedule import CELERY_BEAT_SCHEDULE
+
+# Reduce noisy request logs from HTTP clients used by Supabase/PostgREST.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 celery_app = Celery(
     "kontrol_alt_scraper",

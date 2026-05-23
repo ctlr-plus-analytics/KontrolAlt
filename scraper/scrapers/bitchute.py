@@ -8,10 +8,11 @@ from urllib.parse import urljoin, urlsplit
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
-from patchright.async_api import Error as PlaywrightError
+from playwright.async_api import Error as PlaywrightError
 
 from core.browser import BrowserTelemetry, human_delay, launch_browser, wait_for_content
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
+from core.system_settings import get_runtime_settings
 from scrapers.base import BaseScraper
 from utils.contact_extractor import extract_emails, extract_urls
 from utils.keyword_matcher import (
@@ -46,7 +47,8 @@ class BitChuteScraper(BaseScraper):
         """
         try:
             telemetry = BrowserTelemetry()
-            async with launch_browser(session_key=channel_url, telemetry=telemetry) as context:
+            session_key = self._session_key or channel_url
+            async with launch_browser(session_key=session_key, telemetry=telemetry) as context:
                 page = await context.new_page()
 
                 # Navigate — use domcontentloaded then actively wait for
@@ -66,6 +68,27 @@ class BitChuteScraper(BaseScraper):
                     await page.reload(wait_until="domcontentloaded", timeout=90000)
                     await human_delay(5.0, 8.0)
                     content_ok = await wait_for_content(page, min_bytes=5000, timeout_s=20.0)
+                runtime = get_runtime_settings()
+                if not content_ok and runtime.scraper_challenge_second_cycle_enabled:
+                    logger.warning(
+                        "BitChute: second settle cycle for potential CF challenge %s",
+                        channel_url,
+                    )
+                    second_pre = max(
+                        0.0, runtime.scraper_challenge_second_cycle_pre_reload_delay_seconds
+                    )
+                    second_post = max(
+                        0.0, runtime.scraper_challenge_second_cycle_post_reload_delay_seconds
+                    )
+                    second_wait = max(
+                        0.1, runtime.scraper_challenge_second_cycle_wait_timeout_seconds
+                    )
+                    await human_delay(second_pre, second_pre)
+                    await page.reload(wait_until="domcontentloaded", timeout=90000)
+                    await human_delay(second_post, second_post)
+                    content_ok = await wait_for_content(
+                        page, min_bytes=5000, timeout_s=second_wait
+                    )
 
                 await self.ensure_not_blocked(page, channel_url)
 
@@ -244,24 +267,30 @@ class BitChuteScraper(BaseScraper):
                 # when channel-card metadata is partial.
                 fallback_items = list(video_data_map.values())[: self.VIDEO_PAGE_FALLBACK_LIMIT]
                 for item in fallback_items:
+                    existing_views = item.get("views")
                     existing_comments = item.get("comments")
                     existing_date = item.get("date")
+                    needs_views = not (
+                        isinstance(existing_views, (int, float)) and existing_views > 0
+                    )
                     needs_comment = not (
                         isinstance(existing_comments, (int, float)) and existing_comments > 0
                     )
                     needs_date = existing_date is None
-                    if not needs_comment and not needs_date:
+                    if not needs_views and not needs_comment and not needs_date:
                         continue
                     video_url = str(item.get("url") or "")
                     if not video_url:
                         continue
-                    comment_count, publish_date = await self._extract_video_page_signals(
+                    view_count, comment_count, publish_date = await self._extract_video_page_signals(
                         context, video_url
                     )
                     self._merge_video_page_signals(
                         item=item,
+                        needs_views=needs_views,
                         needs_comment=needs_comment,
                         needs_date=needs_date,
+                        view_count=view_count,
                         comment_count=comment_count,
                         publish_date=publish_date,
                     )
@@ -446,63 +475,6 @@ class BitChuteScraper(BaseScraper):
             )
             raise
 
-    def _extract_name(self, soup, channel_url: str) -> str:
-        """Extract channel name from DOM or meta tags."""
-        name = ""
-        name_el = soup.select_one("div.text-bold.text-h4")
-        if name_el:
-            name = name_el.get_text(strip=True)
-        
-        if not name:
-            og_title = soup.find("meta", property="og:title")
-            if og_title:
-                name = og_title.get("content", "").strip()
-        
-        if not name:
-            name = channel_url.rstrip("/").split("/")[-1]
-        return name
-
-    def _extract_subscribers(self, soup) -> int | None:
-        """Extract subscriber count from the caption text."""
-        subscriber_count: int | None = None
-        sub_text_el = soup.select_one(".text-caption.text-grey-8")
-        if sub_text_el:
-            text = sub_text_el.get_text(strip=True)
-            # text like "18.3K subscribers • 7,550 videos"
-            parts = re.split(r"[^a-zA-Z\d\.\,KM\s]", text)
-            for part in parts:
-                part = part.strip()
-                if "subscriber" in part.lower():
-                    subscriber_count = self._parse_bitchute_count(part)
-                    break
-        return subscriber_count
-
-    def _extract_description(self, soup) -> str:
-        """Extract full description from DOM or meta fallback."""
-        description = ""
-        desc_el = soup.select_one("div.bc-text-break")
-        if desc_el:
-            description = desc_el.get_text(separator="\n", strip=True)
-        
-        # Fallback to meta description if DOM is empty or looks like a summary
-        if not description or len(description) < 50:
-            meta_desc = soup.find("meta", attrs={"name": "description"})
-            if meta_desc:
-                meta_content = meta_desc.get("content", "").strip()
-                if len(meta_content) > len(description):
-                    description = meta_content
-        return description
-
-    def _extract_external_links(self, soup) -> list[str]:
-        """Extract all external http(s) links that aren't bitchute.com."""
-        external_links: list[str] = []
-        all_links = soup.select("a[href]")
-        for link in all_links:
-            href = link.get("href", "")
-            if href.startswith("http") and "bitchute.com" not in href:
-                external_links.append(href)
-        return sorted(list(set(external_links)))
-
     async def _extract_comments_from_card(self, card) -> int | None:
         """Extract comment count from a BitChute video card using multiple fallbacks."""
         # Selector-first strategy: common Quasar and card metadata nodes.
@@ -546,75 +518,6 @@ class BitChuteScraper(BaseScraper):
                 return self._parse_bitchute_count(f"{number}{suffix}")
 
         return None
-
-    def _extract_videos(self, soup) -> dict[str, dict[str, object]]:
-        """Extract recent videos from modern channel-card markup."""
-        video_data_map: dict[str, dict[str, object]] = {}
-        video_cards = soup.select("#video-card")
-        for card in video_cards[: self.VIDEO_COLLECTION_LIMIT]:
-            link_el = card.select_one("a[href*='/video/']")
-            if link_el is None:
-                continue
-            href = str(link_el.get("href") or "").strip()
-            if "/video/" not in href:
-                continue
-            video_id = href.rstrip("/").split("/")[-1]
-            if not video_id:
-                continue
-
-            title = ""
-            title_el = card.select_one(".q-item__label.bc-text-break")
-            if title_el is not None:
-                title = title_el.get_text(strip=True)
-            if not title:
-                img_el = card.select_one(".q-img[aria-label]")
-                if img_el is not None:
-                    title = str(img_el.get("aria-label") or "").strip()
-
-            views: int | None = None
-            date_val: datetime | None = None
-            for label in card.select(".q-item__label.q-item__label--caption.text-caption"):
-                text = " ".join(label.get_text(" ", strip=True).split())
-                if "view" in text.lower():
-                    views = self._parse_bitchute_count(text)
-                    # Example: "651 Views - 6 months ago" or "651 Views – 6 months ago"
-                    date_match = re.search(r"(?:-|–|â€“)\s*(.+)$", text)
-                    if date_match:
-                        date_val = self._parse_relative_date(date_match.group(1))
-                # Some cards show date in a separate caption line.
-                if date_val is None and (
-                    "ago" in text.lower()
-                    or "yesterday" in text.lower()
-                    or "published" in text.lower()
-                    or "just now" in text.lower()
-                ):
-                    date_val = self._parse_relative_date(text)
-
-            # Fallback: overlay chip format with visibility icon and numeric caption.
-            if views is None:
-                for icon in card.select(".q-chip .q-icon"):
-                    icon_text = icon.get_text(strip=True).lower()
-                    if icon_text != "visibility":
-                        continue
-                    chip = icon.find_parent(class_="q-chip")
-                    if chip is None:
-                        continue
-                    value_el = chip.select_one(".text-caption")
-                    if value_el is None:
-                        continue
-                    views = self._parse_bitchute_count(value_el.get_text(" ", strip=True))
-                    if views is not None:
-                        break
-
-            video_data_map[video_id] = {
-                "title": title or "Unknown Title",
-                "views": views,
-                "comments": None,
-                "comments_source": None,
-                "date": date_val,
-                "url": self._to_absolute_url(href),
-            }
-        return video_data_map
 
     async def _collect_videos_with_scroll(self, page) -> dict[str, dict[str, object]]:
         """Collect a deeper recent-video window by repeatedly snapshotting page HTML."""
@@ -808,12 +711,16 @@ class BitChuteScraper(BaseScraper):
     def _merge_video_page_signals(
         self,
         item: dict[str, object],
+        needs_views: bool,
         needs_comment: bool,
         needs_date: bool,
+        view_count: int | None,
         comment_count: int | None,
         publish_date: datetime | None,
     ) -> None:
         """Merge fallback video-page signals into a video item."""
+        if needs_views and view_count is not None:
+            item["views"] = view_count
         if needs_comment and comment_count is not None:
             item["comments"] = comment_count
             item["comments_source"] = "video_page"
@@ -822,8 +729,8 @@ class BitChuteScraper(BaseScraper):
 
     async def _extract_video_page_signals(
         self, context, video_url: str
-    ) -> tuple[int | None, datetime | None]:
-        """Open a video page and extract comment count + publish date."""
+    ) -> tuple[int | None, int | None, datetime | None]:
+        """Open a video page and extract views, comment count, and publish date."""
         page = await context.new_page()
         try:
             await human_delay(2.0, 4.0)
@@ -832,6 +739,9 @@ class BitChuteScraper(BaseScraper):
             await wait_for_content(page, min_bytes=5000, timeout_s=20.0)
             await page.mouse.wheel(0, 2800)
             await human_delay(2.0, 4.0)
+
+            soup = BeautifulSoup(await page.content(), "html.parser")
+            view_count = self._extract_views_from_video_page_soup(soup)
 
             comment_count: int | None = None
             count_locator = page.locator("#comments-container .navigation .count .value").first
@@ -873,12 +783,45 @@ class BitChuteScraper(BaseScraper):
                 if date_match:
                     publish_date = self._parse_bitchute_date(date_match.group(1))
 
-            return comment_count, publish_date
+            return view_count, comment_count, publish_date
         except Exception as exc:
             logger.debug("BitChute: Could not extract video signals from %s: %s", video_url, exc)
-            return None, None
+            return None, None, None
         finally:
             await page.close()
+
+    def _extract_views_from_video_page_soup(self, soup: BeautifulSoup) -> int | None:
+        """Extract video views from common BitChute video-page regions."""
+        for selector in [
+            ".q-chip",
+            ".q-item__label.q-item__label--caption.text-caption",
+            "[class*='view']",
+            "[aria-label*='view']",
+            "[title*='view']",
+        ]:
+            for node in soup.select(selector):
+                text = node.get_text(" ", strip=True)
+                context = " ".join(
+                    [
+                        str(node.get("class") or ""),
+                        str(node.get("aria-label") or ""),
+                        str(node.get("title") or ""),
+                        text,
+                    ]
+                ).lower()
+                if "view" not in context and "visibility" not in context:
+                    continue
+                parsed = self._parse_bitchute_count(text)
+                if parsed is not None:
+                    return parsed
+        match = re.search(
+            r"(\d[\d,]*(?:\.\d+)?\s*[kmb]?)\s+views?\b",
+            soup.get_text(" ", strip=True),
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return self._parse_bitchute_count(match.group(1))
+        return None
 
     def _parse_bitchute_count(self, text: str) -> int | None:
         """Parse counts like '18.3K', '1,445', '12.9K views' with extreme resilience."""

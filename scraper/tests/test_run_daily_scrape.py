@@ -37,7 +37,7 @@ def test_stage_scrape_signatures_batches_by_runtime_settings(
     monkeypatch.setattr(
         "tasks.run_daily_scrape.get_runtime_settings",
         lambda: RuntimeSettings(
-            scrape_dispatch_batch_size=4,
+            scrape_dispatch_batch_size=8,
             scrape_dispatch_pause_seconds=2.0,
         ),
     )
@@ -51,11 +51,11 @@ def test_stage_scrape_signatures_batches_by_runtime_settings(
         0,
         0,
         0,
+        0,
+        0,
+        0,
+        0,
         2,
-        2,
-        2,
-        2,
-        4,
     ]
 
 

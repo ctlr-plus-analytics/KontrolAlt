@@ -33,10 +33,11 @@ class ScraperSettings(BaseSettings):
     # Proxies (comma-separated)
     proxy_list: str
     proxy_session_minutes: int = 10
+    proxy_active_since_minutes: int = 0
     proxy_platform_filter: str | None = None
 
     # Scrape pacing / quota guardrails
-    scrape_dispatch_batch_size: int = 4
+    scrape_dispatch_batch_size: int = 8
     scrape_dispatch_pause_seconds: float = 2.0
     scrape_run_max_channels: int = 0
     scrape_run_max_retries_per_channel: int = 1
@@ -58,6 +59,13 @@ class ScraperSettings(BaseSettings):
     def validate_proxy_session_minutes(cls, value: int) -> int:
         if value < 1 or value > 1440:
             raise ValueError("PROXY_SESSION_MINUTES must be between 1 and 1440")
+        return value
+
+    @field_validator("proxy_active_since_minutes")
+    @classmethod
+    def validate_proxy_active_since_minutes(cls, value: int) -> int:
+        if value < 0 or value > 1440:
+            raise ValueError("PROXY_ACTIVE_SINCE_MINUTES must be between 0 and 1440")
         return value
 
     @field_validator("scrape_run_max_retries_per_channel")

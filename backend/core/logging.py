@@ -24,6 +24,10 @@ def _configure_root_logger() -> None:
         root.addHandler(handler)
     root.setLevel(level)
 
+    # Suppress verbose per-request client logs from Supabase HTTP stack.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 # Run once on import
 _configure_root_logger()
