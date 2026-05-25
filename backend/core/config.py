@@ -36,6 +36,7 @@ class Settings(BaseSettings):
 
     # CORS
     frontend_origin: str
+    frontend_origin_regex: str | None = None
 
     # App
     app_env: str = "development"

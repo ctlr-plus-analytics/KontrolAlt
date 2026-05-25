@@ -31,9 +31,9 @@ _EXCLUDED_CONTACT_DOMAINS = {
 
 BITCHUTE_CHANNEL = {
     "channel_name": {
-        "primary": "span.q-btn__content span.block",
+        "primary": "div.q-card__section.q-card__section--vert.q-pt-none > div.row.text-bold.text-h4",
         "fallbacks": [
-            "div.q-card__section.q-card__section--vert.q-pt-none > div.row.text-bold.text-h4"
+            "span.q-btn__content span.block"
         ],
         "extract": "text()",
         "normalize": "strip()",
@@ -400,10 +400,6 @@ class BitChuteScraper(BaseScraper):
                     body_text=home_body_text,
                     response_status=response_status,
                 )
-                name = self._extract_name(home_soup, channel_base_url, home_page_title)
-                subscriber_count = self._extract_subscribers(home_soup)
-                about_task = asyncio.create_task(self._fetch_about_with_retry(context, about_url))
-
                 # Since videos tab URL is identical to the base URL on BitChute,
                 # we don't need to perform an extra goto navigation if we are already there.
                 if page.url != videos_url:
@@ -449,14 +445,11 @@ class BitChuteScraper(BaseScraper):
                     response_status=None,
                 )
 
-                description, about_socials, about_contact_soup, about_error_reasons = await about_task
-
-                if about_error_reasons:
-                    logger.info(
-                        "BitChute About fetch diagnostics for %s: %s",
-                        channel_url,
-                        "; ".join(about_error_reasons),
-                    )
+                name = self._extract_name(soup, channel_base_url, page_title)
+                subscriber_count = self._extract_subscribers(soup)
+                description = self._extract_description(soup)
+                about_socials = self._extract_external_links(soup, channel_base_url)
+                about_contact_soup = soup
 
                 (
                     comment_pages_attempted,
@@ -471,14 +464,12 @@ class BitChuteScraper(BaseScraper):
                 stage_marks.append(("video_page_comments", perf_counter() - stage_t0))
 
                 if subscriber_count is None:
-                    if about_contact_soup is not None:
-                        subscriber_count = self._extract_subscribers(about_contact_soup)
-                    if subscriber_count is None and video_page_subscribers is not None:
+                    if video_page_subscribers is not None:
                         subscriber_count = video_page_subscribers
 
                 if not description:
                     logger.info(
-                        "BitChute About selector did not return description for %s; using video page fallback description",
+                        "BitChute selector did not return description for %s; using video page fallback description",
                         channel_url,
                     )
                     description = video_page_description or ""
@@ -523,7 +514,13 @@ class BitChuteScraper(BaseScraper):
 
                 avg_views = self.compute_avg(view_counts)
                 avg_comments = self.compute_avg(comment_counts)
-                if avg_comments is None:
+                is_empty_channel = (
+                    not video_titles and self._has_empty_channel_marker(body_text)
+                )
+                if not video_titles and not is_empty_channel:
+                    # Let require_scrape_quality handle empty videos
+                    pass
+                elif avg_comments is None:
                     reason = (
                         "parse_missing_avg_comments_cf_blocked"
                         if comment_pages_attempted > 0 and comment_pages_attempted == comment_pages_blocked
@@ -680,55 +677,8 @@ class BitChuteScraper(BaseScraper):
             return channel_base_url
         return f"{channel_base_url.rstrip('/')}/{tab.strip('/')}"
 
-    async def _fetch_about_with_retry(
-        self, context, about_url: str
-    ) -> tuple[str, list[str], BeautifulSoup, list[str]]:
-        description = ""
-        socials: list[str] = []
-        error_reasons: list[str] = []
-        about_soup = BeautifulSoup("", "lxml")
-        for attempt in range(1, self.ABOUT_FETCH_ATTEMPTS + 1):
-            about_page = await context.new_page()
-            try:
-                response = await guarded_goto(
-                    about_page,
-                    about_url,
-                    session_key=self._session_key or about_url,
-                    wait_until="domcontentloaded",
-                    timeout=self.ABOUT_NAV_TIMEOUT_MS,
-                )
-                if response is None:
-                    error_reasons.append(f"attempt={attempt}:goto_no_response")
-                elif response.status >= 400:
-                    error_reasons.append(f"attempt={attempt}:http_{response.status}")
-                content_ok = await wait_for_content(
-                    about_page, min_bytes=3000, timeout_s=self.ABOUT_CONTENT_TIMEOUT_S
-                )
-                if not content_ok:
-                    error_reasons.append(f"attempt={attempt}:content_timeout")
-                    continue
-                about_html = await about_page.content()
-                if len(about_html) < 1000:
-                    error_reasons.append(f"attempt={attempt}:cf_stub")
-                    continue
-                about_soup = BeautifulSoup(about_html, "lxml")
-                attempt_description = self._extract_description(about_soup)
-                attempt_socials = self._extract_external_links(about_soup, about_url)
-                if not attempt_description:
-                    error_reasons.append(f"attempt={attempt}:description_empty")
-                if not attempt_socials:
-                    error_reasons.append(f"attempt={attempt}:socials_empty")
-                if attempt_description:
-                    description = attempt_description
-                if attempt_socials:
-                    socials = attempt_socials
-                if description and socials:
-                    break
-            except Exception as exc:
-                error_reasons.append(f"attempt={attempt}:exception:{type(exc).__name__}")
-            finally:
-                await about_page.close()
-        return description, socials, about_soup, error_reasons
+    # About page fetching is disabled on BitChute (as BitChute does not have a separate about subpath).
+    # All metadata is extracted from the fully rendered main channel page directly.
 
     def _extract_name(self, soup: BeautifulSoup, channel_url: str, page_title: str) -> str:
         """Extract channel name from the channel-home header selector."""

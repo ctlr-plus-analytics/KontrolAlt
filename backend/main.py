@@ -61,12 +61,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Accept a comma-separated list in FRONTEND_ORIGIN for multi-env deploys
+# (for example Vercel production + preview URLs).
+allowed_origins = [
+    origin.strip()
+    for origin in settings.frontend_origin.split(",")
+    if origin.strip()
+]
+
 # ---------------------------------------------------------------------------
 # CORS — allow the Next.js frontend origin
 # ---------------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin],
+    allow_origins=allowed_origins,
+    allow_origin_regex=settings.frontend_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -174,11 +174,9 @@ def get_consistent_browser_profile(proxy_country: str | None = None) -> dict[str
             )
         ),
         "extra_http_headers": {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": f"{locale},en;q=0.5",
             "Accept-Encoding": "gzip, deflate, br",
             "DNT": "1",
-            "Upgrade-Insecure-Requests": "1",
         },
     }
 
