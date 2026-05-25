@@ -71,9 +71,9 @@ class ScraperSettings(BaseSettings):
     @field_validator("scrape_run_max_retries_per_channel")
     @classmethod
     def validate_scrape_run_max_retries_per_channel(cls, value: int) -> int:
-        """Enforce one retry before permanent channel deactivation."""
-        if value != 1:
-            raise ValueError("SCRAPE_RUN_MAX_RETRIES_PER_CHANNEL must be set to 1")
+        """Ensure retry count is within a reasonable range."""
+        if value < 0 or value > 5:
+            raise ValueError("SCRAPE_RUN_MAX_RETRIES_PER_CHANNEL must be between 0 and 5")
         return value
 
 

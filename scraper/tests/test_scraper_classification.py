@@ -58,7 +58,13 @@ def test_require_scrape_quality_rejects_empty_video_parse() -> None:
         scraper.require_scrape_quality(
             channel_url="https://rumble.com/c/example",
             video_titles=[],
+            subscriber_count=0,
             avg_views=None,
+            avg_comments=0,
+            posts_per_week=0.0,
+            last_active_date=None,
+            contact_info=["https://example.com"],
+            secondary_urls=["https://example.com"],
             page_title="Example Channel",
             current_url="https://rumble.com/c/example",
             body_text="recent uploads and followers",
@@ -76,7 +82,13 @@ def test_require_scrape_quality_rejects_missing_views() -> None:
         scraper.require_scrape_quality(
             channel_url="https://www.bitchute.com/channel/example",
             video_titles=["Example Video"],
+            subscriber_count=0,
             avg_views=None,
+            avg_comments=0,
+            posts_per_week=0.0,
+            last_active_date=None,
+            contact_info=["https://example.com"],
+            secondary_urls=["https://example.com"],
             page_title="Example Channel",
             current_url="https://www.bitchute.com/channel/example",
             body_text="example video 2 days ago",
@@ -84,3 +96,44 @@ def test_require_scrape_quality_rejects_missing_views() -> None:
         )
 
     assert exc_info.value.reason_code == "parse_missing_avg_views"
+
+
+def test_require_scrape_quality_allows_explicit_empty_channel_with_zero_metrics() -> None:
+    scraper = _DummyScraper.__new__(_DummyScraper)
+    scraper.require_scrape_quality(
+        channel_url="https://www.bitchute.com/channel/empty-example",
+        video_titles=[],
+        subscriber_count=0,
+        avg_views=0,
+        avg_comments=0,
+        posts_per_week=0.0,
+        last_active_date=None,
+        contact_info=["https://example.com"],
+        secondary_urls=["https://example.com"],
+        page_title="Empty Channel",
+        current_url="https://www.bitchute.com/channel/empty-example",
+        body_text="0 videos no videos yet",
+        response_status=200,
+        allow_empty_channel=True,
+    )
+
+
+def test_require_scrape_quality_allows_empty_contact_info_and_secondary_urls() -> None:
+    """Channels with no external links, emails, or social profiles should
+    pass the quality gate — many legitimate channels have no outbound links."""
+    scraper = _DummyScraper.__new__(_DummyScraper)
+    scraper.require_scrape_quality(
+        channel_url="https://www.bitchute.com/channel/example",
+        video_titles=["Example Video"],
+        subscriber_count=100,
+        avg_views=500,
+        avg_comments=10,
+        posts_per_week=1.0,
+        last_active_date="2026-05-01",
+        contact_info=[],
+        secondary_urls=[],
+        page_title="Example Channel",
+        current_url="https://www.bitchute.com/channel/example",
+        body_text="example video 2 days ago",
+        response_status=200,
+    )

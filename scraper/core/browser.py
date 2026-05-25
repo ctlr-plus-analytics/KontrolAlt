@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import logging
+import math
 import os
 import random
 from contextlib import asynccontextmanager
@@ -13,11 +14,34 @@ from urllib.parse import unquote, urlsplit
 from playwright.async_api import BrowserContext
 from camoufox.async_api import AsyncCamoufox
 
+from core.cf_bypass import acquire_session_request_slot, get_consistent_browser_profile, human_delay_value
 from core.config import scraper_settings
 from core.proxy import get_random_proxy
 from core.system_settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
+_HEAVY_MEDIA_URL_MARKERS = (
+    ".m3u8",
+    ".mp4",
+    ".webm",
+    ".m4s",
+    ".ts",
+    ".mp3",
+    ".aac",
+    ".mov",
+    ".mkv",
+)
+_BLOCKED_URL_PATTERNS = (
+    "**/*google-analytics*",
+    "**/*googlesyndication*",
+    "**/*doubleclick*",
+    "**/*facebook.com/tr*",
+    "**/*hotjar*",
+    "**/*segment.io*",
+    "**/*mixpanel*",
+    "**/*sentry.io*",
+    "**/*cloudflareinsights.com*",
+)
 
 
 @dataclass
@@ -27,10 +51,25 @@ class BrowserTelemetry:
     response_header_bytes: int = 0
     response_body_bytes_est: int = 0
     response_count: int = 0
+    geoip_enabled: bool = False
 
     @property
     def total_bytes_est(self) -> int:
         return self.response_header_bytes + self.response_body_bytes_est
+
+
+def _blocked_resource_types() -> set[str]:
+    """Return resource types to block for bandwidth-heavy scraping flows."""
+    runtime = get_runtime_settings()
+    blocked: set[str] = set()
+    if runtime.scraper_block_resource_images:
+        blocked.add("image")
+    if runtime.scraper_block_resource_media:
+        blocked.add("media")
+        blocked.add("texttrack")
+    if runtime.scraper_block_resource_fonts:
+        blocked.add("font")
+    return blocked
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +88,10 @@ def _resolve_headless_mode() -> bool | str:
         
     display = os.environ.get("DISPLAY", "").strip()
     if not display:
+        # Camoufox virtual display is Linux-only. On Windows/macOS, preserve
+        # true headed mode when explicitly requested.
+        if os.name == "nt":
+            return False
         logger.warning(
             "BROWSER_HEADLESS=false but DISPLAY is unset; fallback to headless=virtual"
         )
@@ -56,11 +99,18 @@ def _resolve_headless_mode() -> bool | str:
     return False
 
 
-def build_session_id(key: str) -> str:
-    """Build a deterministic sticky-session id from a channel key."""
-    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
-    # Evomi session ids must be 6-10 chars; keep deterministic 10-char value.
-    return f"ka{digest[:8]}"
+def _resolve_camoufox_geoip_enabled(*, has_proxy: bool) -> bool:
+    """Resolve whether Camoufox GeoIP should be enabled.
+
+    With proxies, Camoufox recommends GeoIP enabled for fingerprint coherence.
+    Allow explicit env override; otherwise default to enabled when proxying.
+    """
+    if has_proxy:
+        # Always enable GeoIP for proxied sessions to avoid Camoufox proxy leak warnings
+        # and keep locale/timezone behavior coherent with residential proxy routing.
+        return True
+    raw = os.environ.get("CAMOUFOX_GEOIP", "false").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _parse_attempt_from_session_key(session_key: str | None) -> int:
@@ -87,18 +137,21 @@ async def human_delay(min_s: float = 2.0, max_s: float = 8.0) -> None:
         max_s: Maximum delay in seconds.
     """
     runtime = get_runtime_settings()
-    configured_min = runtime.scraper_human_delay_min_seconds
-    configured_max = runtime.scraper_human_delay_max_seconds
-    resolved_min = max(0.0, max(min_s, configured_min))
-    resolved_max = max(resolved_min, max_s, configured_max)
-    await asyncio.sleep(random.uniform(resolved_min, resolved_max))
+    resolved_min = max(0.0, max(min_s, runtime.scraper_human_delay_min_seconds))
+    resolved_max = max(resolved_min, max(max_s, runtime.scraper_human_delay_max_seconds))
+    value = human_delay_value()
+    if value < resolved_min:
+        value = resolved_min
+    if value > resolved_max:
+        value = resolved_max
+    await asyncio.sleep(value)
 
 
 async def wait_for_content(
     page,
-    min_bytes: int = 5000,
-    timeout_s: float = 20.0,
-    poll_interval_s: float = 1.5,
+    min_bytes: int | None = None,
+    timeout_s: float | None = None,
+    poll_interval_s: float | None = None,
 ) -> bool:
     """Poll until the page HTML is large enough to contain real content.
 
@@ -106,11 +159,14 @@ async def wait_for_content(
     are > 50 KB. This helper waits up to ``timeout_s`` seconds for the
     page content to grow beyond ``min_bytes``, indicating the CF challenge
     has been resolved and the real page has loaded.
+
+    When parameters are ``None`` (the default), values are sourced from
+    runtime settings.  Callers may pass explicit values to override.
     """
     runtime = get_runtime_settings()
-    min_bytes = runtime.scraper_content_wait_min_bytes
-    timeout_s = runtime.scraper_content_wait_timeout_seconds
-    poll_interval_s = runtime.scraper_content_wait_poll_seconds
+    min_bytes = min_bytes if min_bytes is not None else runtime.scraper_content_wait_min_bytes
+    timeout_s = timeout_s if timeout_s is not None else runtime.scraper_content_wait_timeout_seconds
+    poll_interval_s = poll_interval_s if poll_interval_s is not None else runtime.scraper_content_wait_poll_seconds
     elapsed = 0.0
     while elapsed < timeout_s:
         html = await page.content()
@@ -147,8 +203,7 @@ async def launch_browser(
         A configured BrowserContext ready for scraping.
     """
     attempt = _parse_attempt_from_session_key(session_key)
-    base_proxy = get_random_proxy()
-    proxy = base_proxy
+    proxy = get_random_proxy()
     
     headless = _resolve_headless_mode()
     proxy_settings = _parse_proxy_settings(proxy)
@@ -161,16 +216,44 @@ async def launch_browser(
         proxy_settings.get("server"),
     )
 
+    geoip_enabled = _resolve_camoufox_geoip_enabled(has_proxy=bool(proxy_settings.get("server")))
+    if telemetry is not None:
+        telemetry.geoip_enabled = geoip_enabled
+
+    profile = get_consistent_browser_profile()
+    target_os = "windows" if os.name == "nt" else "linux"
     async with AsyncCamoufox(
         headless=headless,
         proxy=proxy_settings,
-        geoip=True,
+        geoip=geoip_enabled,
+        os=target_os,
     ) as browser:
         context: BrowserContext = await browser.new_context(
-            viewport={"width": 1366, "height": 768},
+            viewport=profile["viewport"],
             service_workers="block",
             permissions=["geolocation"],
+            locale=str(profile["locale"]),
+            timezone_id=str(profile["timezone_id"]),
         )
+        blocked_types = _blocked_resource_types()
+        if blocked_types:
+            async def _route_guard(route) -> None:
+                request = route.request
+                request_url = request.url.lower()
+                if request.resource_type in blocked_types:
+                    await route.abort()
+                    return
+                if any(marker in request_url for marker in _HEAVY_MEDIA_URL_MARKERS):
+                    await route.abort()
+                    return
+                await route.continue_()
+
+            await context.route("**/*", _route_guard)
+        async def _abort_route(route) -> None:
+            await route.abort()
+
+        for pattern in _BLOCKED_URL_PATTERNS:
+            await context.route(pattern, _abort_route)
 
         if telemetry is not None:
             async def _accumulate_response(response) -> None:
@@ -189,6 +272,12 @@ async def launch_browser(
                 asyncio.create_task(_accumulate_response(response))
 
             context.on("response", _on_response)
+        if session_key:
+            await context.set_extra_http_headers(
+                {
+                    "X-KA-Session": hashlib.sha1(session_key.encode("utf-8")).hexdigest()[:12],
+                }
+            )
 
         try:
             yield context
@@ -212,3 +301,9 @@ def _parse_proxy_settings(proxy_url: str) -> dict[str, str]:
         return settings
 
     return {"server": proxy_url}
+
+
+async def guarded_goto(page, url: str, *, session_key: str | None, **kwargs):
+    """Throttle per-session request rate before navigation."""
+    await acquire_session_request_slot(session_key)
+    return await page.goto(url, **kwargs)

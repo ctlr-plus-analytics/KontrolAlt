@@ -2,15 +2,18 @@
 
 import asyncio
 import logging
+from urllib.parse import urlsplit
+from collections import deque
 
 from celery import Task
-from patchright.async_api import Error as PlaywrightError
+from playwright.async_api import Error as PlaywrightError
 from postgrest.exceptions import APIError
 
 from worker import celery_app
 from core.config import scraper_settings
 from core.circuit_breaker import is_open, record_failure, record_success
-from core.exceptions import ScraperBlockedError, ScraperClassifiedError
+from core.exceptions import CloudflareBlockError, ScraperBlockedError, ScraperClassifiedError
+from core.proxy import proxy_session_manager
 from core.supabase import get_supabase_client
 from models import ScrapeTaskArgs, ScrapeTaskResult
 from scrapers.bitchute import BitChuteScraper
@@ -30,6 +33,68 @@ from tasks.scrape_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+_KPI_WINDOW = 20
+_kpi_description_fallback = deque(maxlen=_KPI_WINDOW)
+_kpi_responses = deque(maxlen=_KPI_WINDOW)
+_kpi_bytes = deque(maxlen=_KPI_WINDOW)
+_kpi_geoip_warning_count = 0
+
+
+def _is_supported_bitchute_channel_url(channel_url: str) -> bool:
+    parsed = urlsplit(channel_url.strip())
+    host = (parsed.hostname or "").lower()
+    if not host.endswith("bitchute.com"):
+        return False
+    path = parsed.path.rstrip("/")
+    return path.startswith("/channel/")
+
+
+def _emit_kpi_alerts(channel_url: str, result: dict[str, object]) -> None:
+    global _kpi_geoip_warning_count
+    metrics = result.get("_scrape_metrics", {}) if isinstance(result, dict) else {}
+    responses = int(metrics.get("responses", 0) or 0)
+    bytes_est = int(metrics.get("bytes_est", 0) or 0)
+    desc_fallback = bool(metrics.get("description_fallback_used", False))
+    geoip_enabled = bool(metrics.get("geoip_enabled", True))
+    _kpi_responses.append(responses)
+    _kpi_bytes.append(bytes_est)
+    _kpi_description_fallback.append(1 if desc_fallback else 0)
+    if not geoip_enabled:
+        _kpi_geoip_warning_count += 1
+    if len(_kpi_responses) < 5:
+        return
+
+    fallback_rate = sum(_kpi_description_fallback) / len(_kpi_description_fallback)
+    avg_responses = sum(_kpi_responses) / len(_kpi_responses)
+    avg_bytes = sum(_kpi_bytes) / len(_kpi_bytes)
+    if fallback_rate >= 0.30:
+        logger.warning(
+            "KPI_ALERT description_fallback_rate=%.2f window=%d channel=%s",
+            fallback_rate,
+            len(_kpi_description_fallback),
+            channel_url,
+        )
+    if responses > avg_responses * 1.6:
+        logger.warning(
+            "KPI_ALERT responses_per_channel_drift current=%d avg=%.2f window=%d channel=%s",
+            responses,
+            avg_responses,
+            len(_kpi_responses),
+            channel_url,
+        )
+    if bytes_est > avg_bytes * 1.8:
+        logger.warning(
+            "KPI_ALERT bytes_per_channel_drift current=%d avg=%.0f window=%d channel=%s",
+            bytes_est,
+            avg_bytes,
+            len(_kpi_bytes),
+            channel_url,
+        )
+    if _kpi_geoip_warning_count > 0:
+        logger.warning(
+            "KPI_ALERT geoip_warning_count=%d",
+            _kpi_geoip_warning_count,
+        )
 
 
 @celery_app.task(
@@ -51,6 +116,13 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
     """
     args = ScrapeTaskArgs(channel_url=channel_url)
     channel_url = args.channel_url
+    if not _is_supported_bitchute_channel_url(channel_url):
+        logger.warning("Skipping unsupported BitChute URL: %s", channel_url)
+        return ScrapeTaskResult(
+            status="failed",
+            channel_url=channel_url,
+            error="Unsupported BitChute URL shape; expected /channel/<slug>",
+        ).model_dump(mode="json")
     logger.info("Starting BitChute scrape: %s", channel_url)
     if is_open("bitchute"):
         logger.warning(
@@ -76,6 +148,7 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
             f"task:{self.request.id}"
         )
         result = asyncio.run(scraper.scrape(channel_url))
+        _emit_kpi_alerts(channel_url, result)
         metrics = result.get("_scrape_metrics", {}) if isinstance(result, dict) else {}
         bytes_est = int(metrics.get("bytes_est", 0) or 0)
         try:
@@ -100,7 +173,26 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
             channel_url=channel_url,
             data=result,
         ).model_dump(mode="json")
+    except CloudflareBlockError as exc:
+        if exc.rotation_helps:
+            session_id = proxy_session_manager.extract_session_id(scraper._session_key)
+            proxy_session_manager.mark_blocked(session_id or (scraper._session_key or channel_url))
+        if not has_retries_remaining_for_block(self):
+            record_failure("bitchute")
+            log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
+            return ScrapeTaskResult(
+                status="failed",
+                channel_url=channel_url,
+                error=str(exc),
+            ).model_dump(mode="json")
+        log_scrape_task_attempt(scraper, channel_url, "blocked", exc, self)
+        raise self.retry(
+            exc=exc,
+            countdown=blocked_retry_countdown_seconds(self),
+        )
     except ScraperBlockedError as exc:
+        session_id = proxy_session_manager.extract_session_id(scraper._session_key)
+        proxy_session_manager.mark_blocked(session_id or (scraper._session_key or channel_url))
         if not has_retries_remaining_for_block(self):
             record_failure("bitchute")
             log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)

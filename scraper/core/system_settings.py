@@ -69,9 +69,9 @@ class RuntimeSettings:
     scrape_dispatch_pause_seconds: float = 5.0
     scrape_run_max_channels: int = 0
     scrape_daily_byte_budget_mb: int = 0
-    scrape_retry_base_delay_seconds: int = 120
-    scrape_retry_jitter_min: float = 1.0
-    scrape_retry_jitter_max: float = 1.8
+    scrape_retry_base_delay_seconds: int = 60
+    scrape_retry_jitter_min: float = 0.5
+    scrape_retry_jitter_max: float = 1.2
     scrape_blocked_retry_multiplier: float = 2.0
     scrape_blocked_retry_min_seconds: int = 180
     scrape_platform_slot_limit_rumble: int = 1
@@ -96,6 +96,9 @@ class RuntimeSettings:
     scraper_challenge_second_cycle_pre_reload_delay_seconds: float = 10.0
     scraper_challenge_second_cycle_post_reload_delay_seconds: float = 8.0
     scraper_challenge_second_cycle_wait_timeout_seconds: float = 25.0
+    scraper_block_resource_images: bool = True
+    scraper_block_resource_media: bool = True
+    scraper_block_resource_fonts: bool = True
     discovery_serper_query_limit: int = 480
     discovery_results_per_query: int = 20
     discovery_max_pages_per_query: int = 8
@@ -106,6 +109,26 @@ class RuntimeSettings:
     discovery_new_scrape_limit: int = 500
     discovery_channel_page_size: int = 1000
     discovery_verify_timeout_seconds: float = 15.0
+    scrape_confidence_min_view_samples: int = 6
+    scrape_confidence_min_comment_samples: int = 4
+    scrape_quality_recovery_video_pages: int = 1
+    scraper_fallback_concurrency_rumble: int = 3
+    scraper_fallback_concurrency_bitchute: int = 1
+    scraper_rumble_video_page_fallback_limit: int = 3
+    cf_bypass_max_rpm_residential: int = 20
+    cf_bypass_max_rpm_bitchute: int = 8
+    cf_bypass_delay_min_s: float = 0.8
+    cf_bypass_delay_max_s: float = 5.0
+    cf_bypass_delay_long_pause_probability: float = 0.08
+    cf_bypass_delay_long_pause_max_s: float = 12.0
+    cf_bypass_inter_request_base_s: float = 1.2
+    cf_bypass_inter_request_variance: float = 0.8
+    cf_bypass_scroll_steps_min: int = 4
+    cf_bypass_scroll_steps_max: int = 9
+    cf_bypass_session_cooldown_seconds: int = 1800
+    cf_bypass_origin_check_enabled: bool = False
+    cf_bypass_fingerprint_strict_mode: bool = False
+    cf_bypass_captcha_skip_enabled: bool = True
 
 
 def _as_non_negative_int(value: object, default: int) -> int:
@@ -242,14 +265,14 @@ def get_runtime_settings() -> RuntimeSettings:
             ),
             scrape_retry_base_delay_seconds=max(
                 1,
-                _as_non_negative_int(row.get("scrape_retry_base_delay_seconds"), 120),
+                _as_non_negative_int(row.get("scrape_retry_base_delay_seconds"), 60),
             ),
             scrape_retry_jitter_min=_as_non_negative_float(
-                row.get("scrape_retry_jitter_min"), 1.0
+                row.get("scrape_retry_jitter_min"), 0.5
             ),
             scrape_retry_jitter_max=max(
-                _as_non_negative_float(row.get("scrape_retry_jitter_min"), 1.0),
-                _as_non_negative_float(row.get("scrape_retry_jitter_max"), 1.8),
+                _as_non_negative_float(row.get("scrape_retry_jitter_min"), 0.5),
+                _as_non_negative_float(row.get("scrape_retry_jitter_max"), 1.2),
             ),
             scrape_blocked_retry_multiplier=max(
                 1.0,
@@ -330,6 +353,15 @@ def get_runtime_settings() -> RuntimeSettings:
                     row.get("scraper_challenge_second_cycle_wait_timeout_seconds"), 25.0
                 ),
             ),
+            scraper_block_resource_images=bool(
+                row.get("scraper_block_resource_images", True)
+            ),
+            scraper_block_resource_media=bool(
+                row.get("scraper_block_resource_media", True)
+            ),
+            scraper_block_resource_fonts=bool(
+                row.get("scraper_block_resource_fonts", True)
+            ),
             discovery_serper_query_limit=_as_non_negative_int(
                 row.get("discovery_serper_query_limit"), 480
             ),
@@ -361,6 +393,71 @@ def get_runtime_settings() -> RuntimeSettings:
             ),
             discovery_verify_timeout_seconds=_as_non_negative_float(
                 row.get("discovery_verify_timeout_seconds"), 15.0
+            ),
+            scrape_confidence_min_view_samples=max(
+                1, _as_non_negative_int(row.get("scrape_confidence_min_view_samples"), 6)
+            ),
+            scrape_confidence_min_comment_samples=max(
+                1, _as_non_negative_int(row.get("scrape_confidence_min_comment_samples"), 4)
+            ),
+            scrape_quality_recovery_video_pages=max(
+                1, _as_non_negative_int(row.get("scrape_quality_recovery_video_pages"), 1)
+            ),
+            scraper_fallback_concurrency_rumble=max(
+                1, _as_non_negative_int(row.get("scraper_fallback_concurrency_rumble"), 3)
+            ),
+            scraper_fallback_concurrency_bitchute=max(
+                1, _as_non_negative_int(row.get("scraper_fallback_concurrency_bitchute"), 1)
+            ),
+            scraper_rumble_video_page_fallback_limit=max(
+                1, _as_non_negative_int(row.get("scraper_rumble_video_page_fallback_limit"), 3)
+            ),
+            cf_bypass_max_rpm_residential=max(
+                5, _as_non_negative_int(row.get("cf_bypass_max_rpm_residential"), 20)
+            ),
+            cf_bypass_max_rpm_bitchute=max(
+                3, _as_non_negative_int(row.get("cf_bypass_max_rpm_bitchute"), 8)
+            ),
+            cf_bypass_delay_min_s=max(
+                0.1, _as_non_negative_float(row.get("cf_bypass_delay_min_s"), 0.8)
+            ),
+            cf_bypass_delay_max_s=max(
+                0.5, _as_non_negative_float(row.get("cf_bypass_delay_max_s"), 5.0)
+            ),
+            cf_bypass_delay_long_pause_probability=min(
+                0.5,
+                max(
+                    0.0,
+                    float(row.get("cf_bypass_delay_long_pause_probability", 0.08)),
+                ),
+            ),
+            cf_bypass_delay_long_pause_max_s=max(
+                3.0,
+                _as_non_negative_float(row.get("cf_bypass_delay_long_pause_max_s"), 12.0),
+            ),
+            cf_bypass_inter_request_base_s=max(
+                0.2, _as_non_negative_float(row.get("cf_bypass_inter_request_base_s"), 1.2)
+            ),
+            cf_bypass_inter_request_variance=max(
+                0.0, _as_non_negative_float(row.get("cf_bypass_inter_request_variance"), 0.8)
+            ),
+            cf_bypass_scroll_steps_min=max(
+                1, _as_non_negative_int(row.get("cf_bypass_scroll_steps_min"), 4)
+            ),
+            cf_bypass_scroll_steps_max=max(
+                2, _as_non_negative_int(row.get("cf_bypass_scroll_steps_max"), 9)
+            ),
+            cf_bypass_session_cooldown_seconds=max(
+                60, _as_non_negative_int(row.get("cf_bypass_session_cooldown_seconds"), 1800)
+            ),
+            cf_bypass_origin_check_enabled=bool(
+                row.get("cf_bypass_origin_check_enabled", False)
+            ),
+            cf_bypass_fingerprint_strict_mode=bool(
+                row.get("cf_bypass_fingerprint_strict_mode", False)
+            ),
+            cf_bypass_captcha_skip_enabled=bool(
+                row.get("cf_bypass_captcha_skip_enabled", True)
             ),
         )
         _cached_settings = settings

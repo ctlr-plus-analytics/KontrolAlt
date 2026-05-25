@@ -11,7 +11,7 @@ from celery import Task
 from postgrest.exceptions import APIError
 
 from core.config import scraper_settings
-from core.exceptions import ScraperBlockedError, ScraperClassifiedError
+from core.exceptions import CloudflareBlockError, ScraperBlockedError, ScraperClassifiedError
 from core.system_settings import get_runtime_settings
 from scrapers.base import BaseScraper
 
@@ -132,17 +132,35 @@ def log_scrape_task_attempt(
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
         ).eq("channel_url", channel_url).execute()
-        channel_id = asyncio.run(scraper.get_channel_id(channel_url))
+        # Synchronous channel ID lookup (avoids nested asyncio.run which
+        # would crash if an event loop is already running).
+        result = (
+            scraper.supabase.table("channels")
+            .select("id")
+            .eq("channel_url", channel_url)
+            .maybe_single()
+            .execute()
+        )
+        channel_id = str(result.data["id"]) if result.data else None
         if channel_id is None:
-            channel_id = _ensure_channel_for_logging(scraper, channel_url)
-            if channel_id is None:
+            channel_id_raw = _ensure_channel_for_logging(scraper, channel_url)
+            if channel_id_raw is None:
                 logger.warning(
                     "Could not log %s scrape attempt; channel URL not found: %s",
                     status,
                     channel_url,
                 )
                 return
-        asyncio.run(scraper.log_scrape_attempt(channel_id, status, error_payload))
+            channel_id = str(channel_id_raw)
+        # Synchronous scrape-log insert (avoids nested asyncio.run).
+        scraper.supabase.table("scrape_logs").insert(
+            {
+                "channel_id": channel_id,
+                "attempted_at": datetime.now(timezone.utc).isoformat(),
+                "status": status,
+                "error_message": error_payload,
+            }
+        ).execute()
     except (APIError, TypeError, ValueError) as log_error:
         logger.error(
             "Failed to log %s scrape attempt for %s: %s",
@@ -178,6 +196,9 @@ def _error_code(error: Exception) -> str:
     """Map exceptions to stable error codes."""
     if isinstance(error, ScraperClassifiedError):
         return error.reason_code
+    if isinstance(error, CloudflareBlockError):
+        suffix = error.error_code if error.error_code is not None else error.block_type
+        return f"cloudflare_{suffix}"
     if isinstance(error, ScraperBlockedError):
         return "cloudflare_or_blocked"
     if isinstance(error, APIError):

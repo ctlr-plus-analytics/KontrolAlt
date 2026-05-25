@@ -7,7 +7,9 @@ from uuid import UUID
 
 from playwright.async_api import Error as PlaywrightError, Page
 
-from core.exceptions import ScraperBlockedError, ScraperClassifiedError
+from core.cf_bypass import classify_cloudflare_block, detect_captcha
+from core.exceptions import CloudflareBlockError, ScraperBlockedError, ScraperClassifiedError
+from core.system_settings import get_runtime_settings
 from core.supabase import get_supabase_client
 from models import ChannelSnapshotData
 
@@ -157,6 +159,25 @@ class BaseScraper(ABC):
 
     async def ensure_not_blocked(self, page: Page, channel_url: str) -> None:
         """Raise when the current page appears to be an anti-bot challenge."""
+        block = await classify_cloudflare_block(page)
+        if block is not None:
+            error_name, block_type, rotation_helps, error_code = block
+            raise CloudflareBlockError(
+                error_name=error_name,
+                block_type=block_type,
+                rotation_helps=rotation_helps,
+                error_code=error_code,
+                detail=f"channel={channel_url}",
+            )
+        runtime = get_runtime_settings()
+        if runtime.cf_bypass_captcha_skip_enabled and await detect_captcha(page):
+            raise CloudflareBlockError(
+                error_name="CF_MANAGED_CAPTCHA",
+                block_type="captcha",
+                rotation_helps=False,
+                error_code=None,
+                detail=f"channel={channel_url}",
+            )
         title = (await page.title() or "").lower()
         current_url = page.url.lower()
         body_text = ""
@@ -166,23 +187,25 @@ class BaseScraper(ABC):
             html_len = len(html_content)
             body = await page.query_selector("body")
             if body is not None:
-                body_text = ((await body.text_content()) or "").lower()
+                # Use inner_text instead of text_content to avoid matching text inside script/style tags
+                body_text = ((await body.inner_text()) or "").lower()
         except PlaywrightError as exc:
             logger.debug("Could not inspect page body for %s: %s", channel_url, exc)
             html_len = 0
 
         combined = f"{title} {current_url} {body_text}"
         
-        for marker in _BLOCKED_MARKERS:
-            # For large pages, only hard-block on stronger markers that almost always
-            # indicate challenge pages.
-            if marker in combined and (
-                html_len < 30000
-                or marker in {"cf-browser-verification", "challenge-platform", "captcha"}
-            ):
-                raise ScraperBlockedError(
-                    f"Blocked while scraping {channel_url}: marker={marker}"
-                )
+        # Only classify as blocked if the page size is small (< 30KB) OR
+        # if the title specifically indicates a Cloudflare/security challenge.
+        is_small_page = html_len < 30000
+        is_cf_title = any(t in title for t in ("just a moment", "attention required", "cloudflare", "security check"))
+
+        if is_small_page or is_cf_title:
+            for marker in _BLOCKED_MARKERS:
+                if marker in combined:
+                    raise ScraperBlockedError(
+                        f"Blocked while scraping {channel_url}: marker={marker}"
+                    )
 
     def classify_terminal_page_state(
         self,
@@ -250,27 +273,71 @@ class BaseScraper(ABC):
         *,
         channel_url: str,
         video_titles: list[str],
+        subscriber_count: int | None,
         avg_views: int | None,
+        avg_comments: int | None,
+        posts_per_week: float | None,
+        last_active_date: object | None,
+        contact_info: list[str],
+        secondary_urls: list[str],
         page_title: str,
         current_url: str,
         body_text: str,
         response_status: int | None,
+        allow_empty_channel: bool = False,
     ) -> None:
         """Raise when parsed data is too incomplete to safely persist."""
-        self.require_non_empty_videos(
-            channel_url=channel_url,
-            video_titles=video_titles,
-            page_title=page_title,
-            current_url=current_url,
-            body_text=body_text,
-            response_status=response_status,
-        )
+        if not allow_empty_channel:
+            self.require_non_empty_videos(
+                channel_url=channel_url,
+                video_titles=video_titles,
+                page_title=page_title,
+                current_url=current_url,
+                body_text=body_text,
+                response_status=response_status,
+            )
         if avg_views is None:
             raise ScraperClassifiedError(
                 "parse_missing_avg_views",
                 f"No view counts extracted for {channel_url}",
                 terminal=False,
                 retryable=True,
+            )
+        if subscriber_count is None:
+            raise ScraperClassifiedError(
+                "parse_missing_subscriber_count",
+                f"No subscriber count extracted for {channel_url}",
+                terminal=False,
+                retryable=True,
+            )
+        if avg_comments is None:
+            raise ScraperClassifiedError(
+                "parse_missing_avg_comments",
+                f"No comment counts extracted for {channel_url}",
+                terminal=False,
+                retryable=True,
+            )
+        if posts_per_week is None and not allow_empty_channel:
+            raise ScraperClassifiedError(
+                "parse_missing_posts_per_week",
+                f"No posting cadence extracted for {channel_url}",
+                terminal=False,
+                retryable=True,
+            )
+        if last_active_date is None and not allow_empty_channel:
+            raise ScraperClassifiedError(
+                "parse_missing_last_active_date",
+                f"No last active date extracted for {channel_url}",
+                terminal=False,
+                retryable=True,
+            )
+        if not contact_info:
+            logger.info(
+                "No contact signals extracted for %s (non-blocking)", channel_url
+            )
+        if not secondary_urls:
+            logger.info(
+                "No secondary URLs extracted for %s (non-blocking)", channel_url
             )
 
     def compute_avg(self, values: list[float]) -> int | None:

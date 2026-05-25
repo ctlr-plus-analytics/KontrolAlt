@@ -2,11 +2,27 @@
 
 import logging
 import random
+import time
+import hashlib
 from urllib.parse import urlsplit, urlunsplit
 
 from core.config import scraper_settings
 
 logger = logging.getLogger(__name__)
+PLATFORM_PROXY_REQUIREMENTS = {
+    "bitchute": {
+        "type": "residential",
+        "preferred_countries": ("US", "GB", "CA", "AU"),
+        "sticky_session": True,
+        "session_duration_minutes": 10,
+    },
+    "rumble": {
+        "type": "residential",
+        "preferred_countries": ("US", "CA"),
+        "sticky_session": True,
+        "session_duration_minutes": 10,
+    },
+}
 
 
 def _canonicalize_proxy_url(proxy: str) -> str:
@@ -120,6 +136,54 @@ proxy_rotator = ProxyRotator(scraper_settings.proxy_list)
 def get_random_proxy() -> str:
     """Return a random configured proxy string."""
     return proxy_rotator.get_random()
+
+
+class ProxySessionManager:
+    """One channel per session with blocked-session cooldown tracking."""
+
+    def __init__(self, cooldown_seconds: int = 1800) -> None:
+        self.cooldown_seconds = cooldown_seconds
+        self._used_sessions: set[str] = set()
+        self._blocked_sessions: dict[str, float] = {}
+
+    def get_session_for_channel(self, channel_key: str) -> str:
+        seed = int(time.time() // 3600)
+        for _ in range(6):
+            candidate = hashlib.sha256(
+                f"{channel_key}:{seed}".encode()
+            ).hexdigest()[:16]
+            seed += 1
+            if candidate in self._used_sessions:
+                continue
+            if self.is_blocked(candidate):
+                continue
+            self._used_sessions.add(candidate)
+            return candidate
+        fallback = hashlib.sha256(f"{channel_key}:{time.time()}".encode()).hexdigest()[:16]
+        self._used_sessions.add(fallback)
+        return fallback
+
+    def mark_blocked(self, session_id: str) -> None:
+        self._blocked_sessions[session_id] = time.time()
+
+    def is_blocked(self, session_id: str) -> bool:
+        blocked_at = self._blocked_sessions.get(session_id)
+        if blocked_at is None:
+            return False
+        return (time.time() - blocked_at) < self.cooldown_seconds
+
+    def extract_session_id(self, key: str | None) -> str | None:
+        if not key:
+            return None
+        marker = "session:"
+        idx = key.rfind(marker)
+        if idx < 0:
+            return None
+        raw = key[idx + len(marker):].split("|", 1)[0].strip()
+        return raw or None
+
+
+proxy_session_manager = ProxySessionManager()
 
 
 def build_session_proxy(

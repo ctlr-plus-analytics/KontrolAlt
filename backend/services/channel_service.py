@@ -1,4 +1,4 @@
-"""Channel service - Supabase queries for channel discovery."""
+"""Channel service - Supabase queries for channels table."""
 
 from datetime import date, datetime, timedelta, timezone
 from math import ceil, floor
@@ -13,7 +13,9 @@ from models.channel import ChannelFilters, ChannelWithMetrics
 
 logger = get_logger(__name__)
 
-_CHANNEL_DISCOVERY_TABLE = "channels"
+# Canonical source table. This service must not depend on the retired
+# `channel_discovery` view.
+_CHANNELS_TABLE = "channels"
 _CHANNEL_COLUMNS = {
     "id",
     "platform",
@@ -93,9 +95,9 @@ def _channel_from_discovery_row(row: dict[str, object]) -> ChannelWithMetrics:
 async def get_channels(
     filters: ChannelFilters,
 ) -> tuple[list[ChannelWithMetrics], int]:
-    """Fetch paginated, filtered channels from the discovery view."""
+    """Fetch paginated, filtered channels from the channels table."""
     try:
-        query = supabase_admin.table(_CHANNEL_DISCOVERY_TABLE).select(
+        query = supabase_admin.table(_CHANNELS_TABLE).select(
             "*",
             count="exact",
         )
@@ -181,7 +183,7 @@ async def list_niche_tags() -> list[str]:
     """Return sorted distinct niche tags across all channels."""
     try:
         result = (
-            supabase_admin.table(_CHANNEL_DISCOVERY_TABLE)
+            supabase_admin.table(_CHANNELS_TABLE)
             .select("niche_tags")
             .eq("dashboard_eligible", True)
             .not_.is_("niche_tags", "null")

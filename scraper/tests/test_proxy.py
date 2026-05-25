@@ -38,7 +38,7 @@ def test_build_session_proxy_handles_evomi_provider_format() -> None:
         platform_filter=None,
     )
 
-    assert proxy == "http://analytics8:secret@core-residential.evomi.com:1000"
+    assert proxy == "http://analytics8:secret_session-abc123_lifetime-10@core-residential.evomi.com:1000"
 
 
 def test_build_session_proxy_keeps_oxylabs_session_params() -> None:
