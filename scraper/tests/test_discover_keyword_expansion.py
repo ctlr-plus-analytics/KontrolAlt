@@ -30,9 +30,18 @@ def test_canonicalize_rejects_bitchute_video_path() -> None:
 
 def test_extract_bare_supported_urls_from_serp_text() -> None:
     candidates = extract_supported_channel_urls(
-        "Results mention rumble.com/LibertyDesk and old.bitchute.com/channel/SignalDesk."
+        "Results mention rumble.com/LibertyDesk, old.bitchute.com/channel/SignalDesk, and theconsciouslee.substack.com."
     )
 
     urls = {candidate.channel_url for candidate in candidates}
     assert "https://rumble.com/LibertyDesk" in urls
     assert "https://bitchute.com/channel/SignalDesk" in urls
+    assert "https://substack.com/@theconsciouslee" in urls
+
+
+def test_canonicalize_substack_handle_url() -> None:
+    candidate = canonicalize_channel_url("https://substack.com/@theconsciouslee/?utm_source=feed")
+
+    assert candidate is not None
+    assert candidate.channel_url == "https://substack.com/@theconsciouslee"
+    assert candidate.platform == "substack"

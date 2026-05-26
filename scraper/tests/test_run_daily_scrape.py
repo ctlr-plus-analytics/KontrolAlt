@@ -43,7 +43,7 @@ def test_stage_scrape_signatures_batches_by_runtime_settings(
     )
 
     signatures = [FakeSignature() for _ in range(9)]
-    staged = _stage_scrape_signatures(signatures)
+    staged = _stage_scrape_signatures([("dummy", sig) for sig in signatures])
 
     assert staged == signatures
     assert [sig.options["countdown"] for sig in signatures] == [

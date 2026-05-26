@@ -1,10 +1,14 @@
-"""Proxy rotation logic."""
+"""Proxy rotation logic with Redis-backed health scoring and quarantine."""
 
+import asyncio
 import logging
 import random
+import re
 import time
 import hashlib
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
+
+import redis
 
 from core.config import scraper_settings
 
@@ -12,15 +16,17 @@ logger = logging.getLogger(__name__)
 PLATFORM_PROXY_REQUIREMENTS = {
     "bitchute": {
         "type": "residential",
-        "preferred_countries": ("US", "GB", "CA", "AU"),
-        "sticky_session": True,
-        "session_duration_minutes": 10,
+        "preferred_countries": ("US",),
+        # Sticky behavior is provided by upstream proxy credentials (.env),
+        # not rewritten in scraper code.
+        "sticky_session": "provider_configured",
     },
     "rumble": {
         "type": "residential",
-        "preferred_countries": ("US", "CA"),
-        "sticky_session": True,
-        "session_duration_minutes": 10,
+        "preferred_countries": ("US",),
+        # Sticky behavior is provided by upstream proxy credentials (.env),
+        # not rewritten in scraper code.
+        "sticky_session": "provider_configured",
     },
 }
 
@@ -59,18 +65,6 @@ def _canonicalize_proxy_url(proxy: str) -> str:
     return f"{scheme}://{username}:{password}@{host}:{port}"
 
 
-def _supports_oxylabs_session_params(host: str) -> bool:
-    """Return True for proxy hosts that accept username-appended session args."""
-    normalized_host = host.lower()
-    return "oxylabs" in normalized_host
-
-
-def _supports_evomi_session_params(host: str) -> bool:
-    """Return True for Evomi residential proxy hosts."""
-    normalized_host = host.lower()
-    return "evomi" in normalized_host
-
-
 def _normalize_proxy(proxy: str) -> str:
     """Ensure a proxy string has an http:// scheme so urlsplit can parse it.
 
@@ -97,6 +91,149 @@ def _normalize_proxy(proxy: str) -> str:
         return proxy.strip()
 
 
+# Common residential proxy country-encoding patterns:
+#   Oxylabs:    pr.oxylabs.io:... username contains  "country-US"
+#   Bright Data: username contains  "country-us"
+#   Evomi:      username contains  "-cc-US"
+#   Smartproxy: username contains  "_country-US" or ".country.US"
+_COUNTRY_PATTERNS = (
+    re.compile(r"[_\-]country[_\-]([a-z]{2})", re.IGNORECASE),
+    re.compile(r"-cc-([a-z]{2})", re.IGNORECASE),
+    re.compile(r"\.country\.([a-z]{2})", re.IGNORECASE),
+    re.compile(r"-([a-z]{2})-", re.IGNORECASE),  # some providers embed country mid-username
+)
+
+
+def extract_proxy_country(proxy_url: str) -> str | None:
+    """Extract a 2-letter ISO country code from a proxy URL, if present.
+
+    Supports the encoding conventions used by Oxylabs, Bright Data, Evomi,
+    Smartproxy, and similar residential proxy providers.
+
+    Returns the uppercase country code (e.g. ``"US"``) or ``None`` if the
+    URL does not encode a country.
+    """
+    if not proxy_url:
+        return None
+    try:
+        normalized = _normalize_proxy(proxy_url)
+        parsed = urlsplit(normalized)
+        username = parsed.username or ""
+    except Exception:
+        username = proxy_url
+
+    for pattern in _COUNTRY_PATTERNS:
+        match = pattern.search(username)
+        if match:
+            code = match.group(1).upper()
+            # Sanity check: only accept plausible ISO-3166-1 alpha-2 codes
+            if len(code) == 2 and code.isalpha():
+                return code
+    return None
+
+
+class ProxyHealthTracker:
+    """Redis-backed per-proxy health scoring and quarantine.
+
+    Each proxy IP is assigned a score in [0.0, 1.0] that starts at 1.0.
+
+    Penalties applied on scrape failure:
+      - Hard CF block (error_code 403 / 1020 / 1010): −0.5
+      - Soft CF block (rate limit, geo, general): −0.25
+
+    Recovery applied on scrape success:
+      - +0.1 per successful scrape (capped at 1.0)
+
+    Quarantine:
+      - Score ≤ 0.1 triggers a QUARANTINE_TTL-second Redis key.
+      - Quarantined proxies are excluded from weighted selection.
+      - Quarantine auto-expires; the proxy re-enters the pool with a
+        fresh score of 0.2 on next selection.
+    """
+
+    QUARANTINE_TTL: int = 1800  # 30 minutes
+    SCORE_TTL: int = 7200       # 2 hours
+    _SCORE_PREFIX = "proxy:score:"
+    _QUARANTINE_PREFIX = "proxy:quarantine:"
+
+    @staticmethod
+    def _hash(proxy: str) -> str:
+        return hashlib.sha1(proxy.encode()).hexdigest()[:20]
+
+    def _score_key(self, proxy: str) -> str:
+        return self._SCORE_PREFIX + self._hash(proxy)
+
+    def _quarantine_key(self, proxy: str) -> str:
+        return self._QUARANTINE_PREFIX + self._hash(proxy)
+
+    def _redis(self) -> redis.Redis:
+        return redis.Redis.from_url(scraper_settings.redis_url, decode_responses=True)
+
+    def get_score(self, proxy: str) -> float:
+        """Return the current health score for a proxy (default 1.0)."""
+        try:
+            val = self._redis().get(self._score_key(proxy))
+            return float(val) if val is not None else 1.0
+        except Exception:
+            return 1.0
+
+    def is_quarantined(self, proxy: str) -> bool:
+        """Return True if the proxy is in the quarantine cooldown period."""
+        try:
+            return bool(self._redis().exists(self._quarantine_key(proxy)))
+        except Exception:
+            return False
+
+    def record_success(self, proxy: str) -> None:
+        """Recover health score after a successful scrape."""
+        try:
+            r = self._redis()
+            score_key = self._score_key(proxy)
+            score = float(r.get(score_key) or 1.0)
+            score = min(1.0, score + 0.1)
+            r.setex(score_key, self.SCORE_TTL, str(score))
+            r.delete(self._quarantine_key(proxy))
+        except Exception as exc:
+            logger.debug("ProxyHealthTracker.record_success: %s", exc)
+
+    def record_failure(
+        self, proxy: str, error_code: int | None = None
+    ) -> None:
+        """Apply a health penalty after a CF block or scrape failure.
+
+        Hard blocks (403, error 1020, fingerprint 1010) carry a −0.5 penalty.
+        All other failures carry a −0.25 penalty.
+        Score ≤ 0.1 triggers a 30-minute quarantine.
+        """
+        try:
+            r = self._redis()
+            score_key = self._score_key(proxy)
+            quarantine_key = self._quarantine_key(proxy)
+            score = float(r.get(score_key) or 1.0)
+            # Hard block: firewall rule (1020), fingerprint block (1010), or HTTP 403
+            penalty = 0.5 if error_code in (403, 1020, 1010) else 0.25
+            score = max(0.0, score - penalty)
+            r.setex(score_key, self.SCORE_TTL, str(score))
+            if score <= 0.1:
+                r.setex(quarantine_key, self.QUARANTINE_TTL, "1")
+                logger.info(
+                    "Proxy quarantined for %ds (score=%.2f error_code=%s hash=%s)",
+                    self.QUARANTINE_TTL,
+                    score,
+                    error_code,
+                    self._hash(proxy),
+                )
+            else:
+                logger.debug(
+                    "Proxy health degraded to %.2f (error_code=%s hash=%s)",
+                    score,
+                    error_code,
+                    self._hash(proxy),
+                )
+        except Exception as exc:
+            logger.debug("ProxyHealthTracker.record_failure: %s", exc)
+
+
 class ProxyRotator:
     """Manages a pool of proxy strings for rotation.
 
@@ -119,32 +256,91 @@ class ProxyRotator:
         logger.info("ProxyRotator: loaded %d proxy endpoint(s)", len(self.proxies))
 
     def get_random(self) -> str:
-        """Return a random proxy string."""
+        """Return a random proxy string (legacy; prefer get_weighted)."""
         if not self.proxies:
             raise RuntimeError("PROXY_LIST must contain at least one proxy")
         return random.choice(self.proxies)
+
+    def get_weighted(self, health_tracker: "ProxyHealthTracker") -> str:
+        """Return a proxy selected by health-weighted random choice.
+
+        Quarantined proxies are excluded from the candidate pool.  If
+        *all* proxies are quarantined (e.g. pool size 1 and it is burned)
+        the full pool is used as a best-effort fallback so scraping does
+        not halt entirely.
+        """
+        if not self.proxies:
+            raise RuntimeError("PROXY_LIST must contain at least one proxy")
+        available = [
+            p for p in self.proxies if not health_tracker.is_quarantined(p)
+        ]
+        if not available:
+            logger.warning(
+                "ProxyRotator: all %d proxies quarantined — falling back to full pool.",
+                len(self.proxies),
+            )
+            available = self.proxies
+        # Weight floor of 0.05 ensures quarantine-expired proxies still get
+        # occasional traffic so their score can recover.
+        weights = [max(0.05, health_tracker.get_score(p)) for p in available]
+        return random.choices(available, weights=weights, k=1)[0]
 
     def has_proxies(self) -> bool:
         """Return True if at least one proxy is available."""
         return len(self.proxies) > 0
 
 
-# Module-level singleton instance
+# Module-level singletons
 proxy_rotator = ProxyRotator(scraper_settings.proxy_list)
+proxy_health_tracker = ProxyHealthTracker()
+
+
+def get_weighted_proxy() -> str:
+    """Return a health-weighted proxy from the active pool.
+
+    Healthy proxies receive proportionally more traffic; quarantined proxies
+    are excluded until their cooldown expires.  Falls back to pure-random
+    selection when Redis is unavailable.
+    """
+    return proxy_rotator.get_weighted(proxy_health_tracker)
 
 
 def get_random_proxy() -> str:
-    """Return a random configured proxy string."""
-    return proxy_rotator.get_random()
+    """Return a configured proxy string (delegates to health-weighted selection)."""
+    return get_weighted_proxy()
+
+
+def record_proxy_success(proxy: str) -> None:
+    """Record a successful scrape and recover the proxy's health score."""
+    proxy_health_tracker.record_success(proxy)
+
+
+def record_proxy_failure(proxy: str, error_code: int | None = None) -> None:
+    """Apply a health penalty to a proxy after a Cloudflare block.
+
+    Pass ``error_code`` from the ``CloudflareBlockError.error_code`` attribute
+    so that hard blocks (1020 firewall, 1010 fingerprint, HTTP 403) receive
+    a larger penalty than soft blocks (rate limit, geo, captcha).
+    """
+    proxy_health_tracker.record_failure(proxy, error_code)
 
 
 class ProxySessionManager:
-    """One channel per session with blocked-session cooldown tracking."""
+    """One channel per session with Redis-backed blocked-session cooldown tracking.
+
+    Blocked session state is stored in Redis so it:
+    - Survives worker restarts.
+    - Is consistent across multiple Celery workers sharing the same Redis instance.
+    """
 
     def __init__(self, cooldown_seconds: int = 1800) -> None:
         self.cooldown_seconds = cooldown_seconds
         self._used_sessions: set[str] = set()
-        self._blocked_sessions: dict[str, float] = {}
+        # In-memory fallback for when Redis is unavailable.
+        self._blocked_sessions_local: dict[str, float] = {}
+
+    def _redis_key(self, session_id: str) -> str:
+        return "blocked:session:" + hashlib.sha1(session_id.encode()).hexdigest()[:20]
 
     def get_session_for_channel(self, channel_key: str) -> str:
         seed = int(time.time() // 3600)
@@ -164,13 +360,37 @@ class ProxySessionManager:
         return fallback
 
     def mark_blocked(self, session_id: str) -> None:
-        self._blocked_sessions[session_id] = time.time()
+        """Record session as blocked in Redis (with TTL) and local fallback."""
+        self._blocked_sessions_local[session_id] = time.time()
+        try:
+            import redis as _redis
+            from core.config import scraper_settings as _settings
+            r = _redis.from_url(_settings.redis_url, decode_responses=True)
+            r.setex(self._redis_key(session_id), self.cooldown_seconds, "1")
+        except Exception as exc:
+            logger.debug("ProxySessionManager: Redis mark_blocked failed (local fallback): %s", exc)
 
     def is_blocked(self, session_id: str) -> bool:
-        blocked_at = self._blocked_sessions.get(session_id)
+        """Check Redis first; fall back to in-memory dict on Redis unavailability."""
+        try:
+            import redis as _redis
+            from core.config import scraper_settings as _settings
+            r = _redis.from_url(_settings.redis_url, decode_responses=True)
+            if r.exists(self._redis_key(session_id)):
+                return True
+            # Clean up stale local entry if Redis says it's clear.
+            self._blocked_sessions_local.pop(session_id, None)
+            return False
+        except Exception as exc:
+            logger.debug("ProxySessionManager: Redis is_blocked failed (local fallback): %s", exc)
+        # Local in-memory fallback.
+        blocked_at = self._blocked_sessions_local.get(session_id)
         if blocked_at is None:
             return False
-        return (time.time() - blocked_at) < self.cooldown_seconds
+        expired = (time.time() - blocked_at) >= self.cooldown_seconds
+        if expired:
+            del self._blocked_sessions_local[session_id]
+        return not expired
 
     def extract_session_id(self, key: str | None) -> str | None:
         if not key:
@@ -186,83 +406,88 @@ class ProxySessionManager:
 proxy_session_manager = ProxySessionManager()
 
 
-def build_session_proxy(
-    *,
-    base_proxy: str,
-    session_id: str,
-    session_minutes: int | None = None,
-    active_since_minutes: int | None = None,
-    platform_filter: str | None = None,
-) -> str:
-    """Return proxy URL with Oxylabs-compatible sticky session parameters.
+# ---------------------------------------------------------------------------
+# Startup proxy health validation
+# ---------------------------------------------------------------------------
 
-    This keeps channel-flow requests on the same peer while allowing explicit
-    session rollover on challenge/failure.
+async def _check_single_proxy_health(proxy_url: str, timeout: float = 12.0) -> tuple[bool, str]:
+    """Check whether a proxy is reachable and returns a valid response.
+
+    Makes a lightweight GET request to https://api.ipify.org through the proxy.
+    Returns (is_healthy, reason_string).
     """
-    normalized_proxy = _normalize_proxy(base_proxy)
-    parsed = urlsplit(normalized_proxy)
-    username = parsed.username or ""
-    password = parsed.password or ""
-    host = parsed.hostname or ""
     try:
-        parsed_port = parsed.port
-    except ValueError as exc:
-        logger.warning("Malformed proxy URL after normalization, using base proxy: %s", exc)
-        return normalized_proxy
-    port = f":{parsed_port}" if parsed_port is not None else ""
+        import httpx
+        async with httpx.AsyncClient(
+            proxy=proxy_url,
+            timeout=httpx.Timeout(timeout),
+            follow_redirects=False,
+        ) as client:
+            resp = await client.get("https://api.ipify.org?format=json")
+            if resp.status_code == 200:
+                return True, "ok"
+            return False, f"http_{resp.status_code}"
+    except httpx.ProxyError as exc:
+        return False, f"proxy_error:{type(exc).__name__}"
+    except httpx.ConnectTimeout:
+        return False, "connect_timeout"
+    except httpx.ReadTimeout:
+        return False, "read_timeout"
+    except Exception as exc:
+        return False, f"exception:{type(exc).__name__}"
 
-    if not username:
-        return normalized_proxy
 
-    if _supports_evomi_session_params(host):
-        # Evomi expects session/expert params on password suffix:
-        # username:password_session-<id>_lifetime-<min>_activesince-<min>@host:port
-        password_parts = [p for p in password.split("_") if p]
-        filtered_password_parts: list[str] = []
-        for part in password_parts:
-            if part.startswith(
-                ("session-", "hardsession-", "lifetime-", "activesince-")
-            ):
-                continue
-            filtered_password_parts.append(part)
-        filtered_password_parts.append(f"session-{session_id}")
-        if session_minutes is not None:
-            filtered_password_parts.append(f"lifetime-{session_minutes}")
-        if active_since_minutes is not None and active_since_minutes > 0:
-            filtered_password_parts.append(f"activesince-{active_since_minutes}")
+async def validate_proxy_pool_on_startup(
+    rotator: "ProxyRotator",
+    health_tracker: "ProxyHealthTracker",
+    *,
+    timeout: float = 12.0,
+    concurrency: int = 4,
+) -> None:
+    """Check every proxy in the pool at worker startup.
 
-        auth_password = "_".join(filtered_password_parts)
-        auth = username
-        if auth_password:
-            auth = f"{auth}:{auth_password}"
-        netloc = f"{auth}@{host}{port}"
-        return urlunsplit(
-            (parsed.scheme or "http", netloc, parsed.path, parsed.query, parsed.fragment)
-        )
+    Runs reachability checks concurrently (up to ``concurrency`` at a time)
+    and applies an initial health penalty to any proxy that fails.  Dead
+    proxies are *not* removed from the pool — they remain as a last-resort
+    fallback — but their degraded score means healthy proxies receive the
+    overwhelming majority of traffic from the very first task.
 
-    if not _supports_oxylabs_session_params(host):
-        return normalized_proxy
+    Logs a clear WARNING for every unreachable proxy so operators can act
+    without digging through task logs.
+    """
+    proxies = rotator.proxies
+    if not proxies:
+        logger.warning("validate_proxy_pool_on_startup: proxy pool is empty")
+        return
 
-    parts = username.split("-")
-    filtered_parts: list[str] = []
-    skip_next = False
-    for idx, part in enumerate(parts):
-        if skip_next:
-            skip_next = False
-            continue
-        if part in {"sessid", "sesstime", "os"}:
-            skip_next = True
-            continue
-        filtered_parts.append(part)
-    filtered_parts.extend(["sessid", session_id])
-    if session_minutes is not None:
-        filtered_parts.extend(["sesstime", str(session_minutes)])
-    if platform_filter:
-        filtered_parts.extend(["os", platform_filter.lower()])
+    logger.info(
+        "validate_proxy_pool_on_startup: checking %d proxy(ies) with concurrency=%d timeout=%.1fs",
+        len(proxies),
+        concurrency,
+        timeout,
+    )
 
-    auth_user = "-".join(filtered_parts)
-    auth = auth_user
-    if password:
-        auth = f"{auth}:{password}"
-    netloc = f"{auth}@{host}{port}"
-    return urlunsplit((parsed.scheme or "http", netloc, parsed.path, parsed.query, parsed.fragment))
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _check_and_report(proxy: str) -> None:
+        hash_hint = health_tracker._hash(proxy)
+        async with semaphore:
+            healthy, reason = await _check_single_proxy_health(proxy, timeout=timeout)
+        if healthy:
+            logger.info(
+                "validate_proxy_pool_on_startup: proxy %s — REACHABLE",
+                hash_hint,
+            )
+        else:
+            # Apply a soft penalty so the proxy starts at a disadvantage but
+            # can still recover after successful scrapes.
+            health_tracker.record_failure(proxy, error_code=None)
+            logger.warning(
+                "validate_proxy_pool_on_startup: proxy %s — UNREACHABLE (%s) "
+                "— health score penalised; proxy remains in pool as fallback",
+                hash_hint,
+                reason,
+            )
+
+    await asyncio.gather(*(_check_and_report(p) for p in proxies))
+    logger.info("validate_proxy_pool_on_startup: completed for %d proxy(ies)", len(proxies))

@@ -11,19 +11,19 @@ from tasks.discover_channels import _discover_from_known_channels
 logger = logging.getLogger(__name__)
 
 
-def discover_seed_expansion_now() -> dict[str, object]:
+def discover_seed_expansion_now(*, platform: str | None = None) -> dict[str, object]:
     """Run known-channel discovery and insert channels directly."""
     client = get_supabase_client()
-    result = _discover_from_known_channels(client)
+    result = _discover_from_known_channels(client, platform=platform)
     return {key: value for key, value in result.items() if key != "new_urls"}
 
 
 @celery_app.task(name="scraper.tasks.discover_seed_expansion")
-def discover_seed_expansion() -> dict[str, object]:
+def discover_seed_expansion(platform: str | None = None) -> dict[str, object]:
     """Legacy task alias for known-channel direct discovery."""
-    logger.info("Starting seed expansion discovery")
+    logger.info("Starting seed expansion discovery platform=%s", platform or "all")
     try:
-        result = discover_seed_expansion_now()
+        result = discover_seed_expansion_now(platform=platform)
         logger.info(
             "Seed expansion complete: discovered=%d inserted=%d refreshed=%d duplicates=%d invalid=%d",
             result["discovered"],

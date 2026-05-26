@@ -7,7 +7,7 @@ from uuid import UUID
 
 from playwright.async_api import Error as PlaywrightError, Page
 
-from core.cf_bypass import classify_cloudflare_block, detect_captcha
+from core.cf_bypass import check_for_cf_challenge, classify_cloudflare_block, detect_captcha
 from core.exceptions import CloudflareBlockError, ScraperBlockedError, ScraperClassifiedError
 from core.system_settings import get_runtime_settings
 from core.supabase import get_supabase_client
@@ -158,7 +158,16 @@ class BaseScraper(ABC):
         return UUID(str(result.data["id"]))
 
     async def ensure_not_blocked(self, page: Page, channel_url: str) -> None:
-        """Raise when the current page appears to be an anti-bot challenge."""
+        """Raise when the current page appears to be an anti-bot challenge.
+
+        Checks (in order):
+        1. Classified CF error codes (1020, 1015, etc.).
+        2. Modern Turnstile / Managed Challenge full-page iframes — these are
+           full-size pages that bypass the byte-count heuristic in
+           ``wait_for_content`` but still block the real content.
+        3. CAPTCHA widget presence.
+        4. Keyword markers in small pages.
+        """
         block = await classify_cloudflare_block(page)
         if block is not None:
             error_name, block_type, rotation_helps, error_code = block
@@ -169,12 +178,25 @@ class BaseScraper(ABC):
                 error_code=error_code,
                 detail=f"channel={channel_url}",
             )
+
+        # Check for modern full-page Turnstile / Managed Challenge widgets.
+        # These return large HTML pages (bypassing the byte-count heuristic)
+        # but embed an iframe that blocks access to the actual content.
+        if await check_for_cf_challenge(page):
+            raise CloudflareBlockError(
+                error_name="CF_TURNSTILE_OR_MANAGED_CHALLENGE",
+                block_type="managed_challenge",
+                rotation_helps=True,  # rotating to a clean IP often resolves this
+                error_code=None,
+                detail=f"channel={channel_url}",
+            )
+
         runtime = get_runtime_settings()
         if runtime.cf_bypass_captcha_skip_enabled and await detect_captcha(page):
             raise CloudflareBlockError(
                 error_name="CF_MANAGED_CAPTCHA",
                 block_type="captcha",
-                rotation_helps=False,
+                rotation_helps=True,  # rotating to a residential IP with better reputation helps
                 error_code=None,
                 detail=f"channel={channel_url}",
             )
@@ -194,8 +216,8 @@ class BaseScraper(ABC):
             html_len = 0
 
         combined = f"{title} {current_url} {body_text}"
-        
-        # Only classify as blocked if the page size is small (< 30KB) OR
+
+        # Only classify as blocked if the page size is small (<30KB) OR
         # if the title specifically indicates a Cloudflare/security challenge.
         is_small_page = html_len < 30000
         is_cf_title = any(t in title for t in ("just a moment", "attention required", "cloudflare", "security check"))

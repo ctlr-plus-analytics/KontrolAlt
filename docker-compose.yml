@@ -33,7 +33,7 @@ services:
     environment:
       - PYTHONPATH=/app
       - REDIS_URL=redis://redis:6379/0
-      - BROWSER_HEADLESS=true
+      - BROWSER_HEADLESS=virtual
     working_dir: /app
     depends_on:
       - redis
@@ -51,7 +51,7 @@ services:
     environment:
       - PYTHONPATH=/app
       - REDIS_URL=redis://redis:6379/0
-      - BROWSER_HEADLESS=true
+      - BROWSER_HEADLESS=virtual
     working_dir: /app
     depends_on:
       - redis

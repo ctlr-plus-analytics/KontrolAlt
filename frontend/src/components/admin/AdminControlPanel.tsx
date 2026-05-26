@@ -241,13 +241,17 @@ export function AdminControlPanel() {
   const [operational, setOperational] = useState<OperationalForm>(
     DEFAULT_OPERATIONAL_FORM
   );
-  const [platformPriority, setPlatformPriority] = useState<("rumble" | "bitchute")[]>([
+  const [platformPriority, setPlatformPriority] = useState<
+    ("rumble" | "bitchute" | "substack")[]
+  >([
     "rumble",
     "bitchute",
+    "substack",
   ]);
   const [gate0Competitors, setGate0Competitors] = useState<Gate0Competitor[]>(
     DEFAULT_GATE0_COMPETITORS
   );
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState<boolean>(false);
 
   useEffect(() => {
     if (!token) {
@@ -860,79 +864,132 @@ export function AdminControlPanel() {
         </div>
 
         <div className="mt-6 border-t border-[#E8E4DC] pt-4">
-          <h3 className="mb-3 text-sm font-semibold text-[#1A1A2E]">
-            Scrape Pacing And Quotas
-          </h3>
-          <div className="grid gap-4 md:grid-cols-4">
-            {[
-              ["scrape_dispatch_batch_size", "Dispatch Batch", 1],
-              ["scrape_dispatch_pause_seconds", "Dispatch Pause Seconds", 0],
-              ["scrape_run_max_channels", "Max Channels Per Run", 0],
-              ["scrape_daily_byte_budget_mb", "Daily Budget MB", 0],
-              ["scrape_retry_base_delay_seconds", "Retry Base Seconds", 1],
-              ["scrape_retry_jitter_min", "Retry Jitter Min", 0],
-              ["scrape_retry_jitter_max", "Retry Jitter Max", 0],
-              ["scrape_circuit_breaker_fail_threshold", "CB Fail Threshold", 1],
-              ["scrape_circuit_breaker_window_seconds", "CB Window Seconds", 1],
-              ["scrape_circuit_breaker_cooldown_seconds", "CB Cooldown Seconds", 1],
-            ].map(([key, label, min]) => (
-              <label key={key} className="flex flex-col gap-1.5">
-                <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-                  {label}
-                </span>
-                <input
-                  type="number"
-                  min={min}
-                  step={String(key).includes("jitter") || String(key).includes("pause") ? 0.1 : 1}
-                  value={operational[key as keyof OperationalForm]}
-                  onChange={(event) =>
-                    updateOperational(
-                      key as keyof OperationalForm,
-                      Number(event.target.value)
-                    )
-                  }
-                  className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
-                />
-              </label>
-            ))}
-          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowAdvancedSettings((current) => !current)}
+          >
+            {showAdvancedSettings ? "Hide Advanced Settings" : "Show Advanced Settings"}
+          </Button>
         </div>
 
-        <div className="mt-6 border-t border-[#E8E4DC] pt-4">
-          <h3 className="mb-3 text-sm font-semibold text-[#1A1A2E]">
-            Gate 0 And Browser Timing
-          </h3>
-          <div className="grid gap-4 md:grid-cols-4">
-            {[
-              ["gate0_daily_queue_limit", "Gate 0 Daily Queue", 0],
-              ["gate0_clean_recheck_days", "Clean Recheck Days", 0],
-              ["scraper_human_delay_min_seconds", "Human Delay Min", 0],
-              ["scraper_human_delay_max_seconds", "Human Delay Max", 0],
-              ["scraper_content_wait_min_bytes", "Content Min Bytes", 0],
-              ["scraper_content_wait_timeout_seconds", "Content Timeout", 0],
-              ["scraper_content_wait_poll_seconds", "Content Poll Seconds", 0.1],
-            ].map(([key, label, min]) => (
-              <label key={key} className="flex flex-col gap-1.5">
-                <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-                  {label}
-                </span>
-                <input
-                  type="number"
-                  min={min}
-                  step={String(key).includes("seconds") ? 0.1 : 1}
-                  value={operational[key as keyof OperationalForm]}
-                  onChange={(event) =>
-                    updateOperational(
-                      key as keyof OperationalForm,
-                      Number(event.target.value)
-                    )
-                  }
-                  className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
-                />
-              </label>
-            ))}
-          </div>
-        </div>
+        {showAdvancedSettings && (
+          <>
+            <div className="mt-6 border-t border-[#E8E4DC] pt-4">
+              <h3 className="mb-3 text-sm font-semibold text-[#1A1A2E]">
+                Scrape Pacing And Quotas
+              </h3>
+              <div className="grid gap-4 md:grid-cols-4">
+                {[
+                  ["scrape_dispatch_batch_size", "Dispatch Batch", 1],
+                  ["scrape_dispatch_pause_seconds", "Dispatch Pause Seconds", 0],
+                  ["scrape_run_max_channels", "Max Channels Per Run", 0],
+                  ["scrape_daily_byte_budget_mb", "Daily Budget MB", 0],
+                  ["scrape_retry_base_delay_seconds", "Retry Base Seconds", 1],
+                  ["scrape_retry_jitter_min", "Retry Jitter Min", 0],
+                  ["scrape_retry_jitter_max", "Retry Jitter Max", 0],
+                  ["scrape_circuit_breaker_fail_threshold", "CB Fail Threshold", 1],
+                  ["scrape_circuit_breaker_window_seconds", "CB Window Seconds", 1],
+                  ["scrape_circuit_breaker_cooldown_seconds", "CB Cooldown Seconds", 1],
+                ].map(([key, label, min]) => (
+                  <label key={key} className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+                      {label}
+                    </span>
+                    <input
+                      type="number"
+                      min={min}
+                      step={String(key).includes("jitter") || String(key).includes("pause") ? 0.1 : 1}
+                      value={operational[key as keyof OperationalForm]}
+                      onChange={(event) =>
+                        updateOperational(
+                          key as keyof OperationalForm,
+                          Number(event.target.value)
+                        )
+                      }
+                      className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-6 border-t border-[#E8E4DC] pt-4">
+              <h3 className="mb-3 text-sm font-semibold text-[#1A1A2E]">
+                Gate 0 And Browser Timing
+              </h3>
+              <div className="grid gap-4 md:grid-cols-4">
+                {[
+                  ["gate0_daily_queue_limit", "Gate 0 Daily Queue", 0],
+                  ["gate0_clean_recheck_days", "Clean Recheck Days", 0],
+                  ["scraper_human_delay_min_seconds", "Human Delay Min", 0],
+                  ["scraper_human_delay_max_seconds", "Human Delay Max", 0],
+                  ["scraper_content_wait_min_bytes", "Content Min Bytes", 0],
+                  ["scraper_content_wait_timeout_seconds", "Content Timeout", 0],
+                  ["scraper_content_wait_poll_seconds", "Content Poll Seconds", 0.1],
+                ].map(([key, label, min]) => (
+                  <label key={key} className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+                      {label}
+                    </span>
+                    <input
+                      type="number"
+                      min={min}
+                      step={String(key).includes("seconds") ? 0.1 : 1}
+                      value={operational[key as keyof OperationalForm]}
+                      onChange={(event) =>
+                        updateOperational(
+                          key as keyof OperationalForm,
+                          Number(event.target.value)
+                        )
+                      }
+                      className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-6 border-t border-[#E8E4DC] pt-4">
+              <h3 className="mb-3 text-sm font-semibold text-[#1A1A2E]">
+                Discovery Limits
+              </h3>
+              <div className="grid gap-4 md:grid-cols-4">
+                {[
+                  ["discovery_serper_query_limit", "Serper Query Limit", 0],
+                  ["discovery_results_per_query", "Results Per Query", 1],
+                  ["discovery_max_pages_per_query", "Max Pages Per Query", 1],
+                  ["discovery_insert_limit", "Insert Limit", 0],
+                  ["discovery_query_stagnation_limit", "Query Stagnation", 1],
+                  ["discovery_global_stop_no_new", "Global No-New Stop", 1],
+                  ["discovery_max_feedback_terms", "Max Feedback Terms", 0],
+                  ["discovery_new_scrape_limit", "New Scrape Queue", 0],
+                  ["discovery_channel_page_size", "Channel Page Size", 1],
+                  ["discovery_verify_timeout_seconds", "Verify Timeout Seconds", 0],
+                ].map(([key, label, min]) => (
+                  <label key={key} className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+                      {label}
+                    </span>
+                    <input
+                      type="number"
+                      min={min}
+                      step={String(key).includes("confidence") ? 0.01 : 1}
+                      value={operational[key as keyof OperationalForm]}
+                      onChange={(event) =>
+                        updateOperational(
+                          key as keyof OperationalForm,
+                          Number(event.target.value)
+                        )
+                      }
+                      className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
 
         <div className="mt-6 border-t border-[#E8E4DC] pt-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -992,45 +1049,6 @@ export function AdminControlPanel() {
                 No competitors configured. Gate 0 will mark channels clean unless new competitors are added.
               </p>
             )}
-          </div>
-        </div>
-
-        <div className="mt-6 border-t border-[#E8E4DC] pt-4">
-          <h3 className="mb-3 text-sm font-semibold text-[#1A1A2E]">
-            Discovery Limits
-          </h3>
-          <div className="grid gap-4 md:grid-cols-4">
-            {[
-              ["discovery_serper_query_limit", "Serper Query Limit", 0],
-              ["discovery_results_per_query", "Results Per Query", 1],
-              ["discovery_max_pages_per_query", "Max Pages Per Query", 1],
-              ["discovery_insert_limit", "Insert Limit", 0],
-              ["discovery_query_stagnation_limit", "Query Stagnation", 1],
-              ["discovery_global_stop_no_new", "Global No-New Stop", 1],
-              ["discovery_max_feedback_terms", "Max Feedback Terms", 0],
-              ["discovery_new_scrape_limit", "New Scrape Queue", 0],
-              ["discovery_channel_page_size", "Channel Page Size", 1],
-              ["discovery_verify_timeout_seconds", "Verify Timeout Seconds", 0],
-            ].map(([key, label, min]) => (
-              <label key={key} className="flex flex-col gap-1.5">
-                <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-                  {label}
-                </span>
-                <input
-                  type="number"
-                  min={min}
-                  step={String(key).includes("confidence") ? 0.01 : 1}
-                  value={operational[key as keyof OperationalForm]}
-                  onChange={(event) =>
-                    updateOperational(
-                      key as keyof OperationalForm,
-                      Number(event.target.value)
-                    )
-                  }
-                  className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
-                />
-              </label>
-            ))}
           </div>
         </div>
 

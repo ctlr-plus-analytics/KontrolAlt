@@ -41,7 +41,7 @@ const DEFAULT_FILTERS: ChannelFilters = {
   last_active_to: null,
   inactive_filter: false,
   include_incomplete: false,
-  sort_by: "view_velocity_30d",
+  sort_by: "avg_comments",
   sort_order: "desc",
 };
 
@@ -49,6 +49,7 @@ const PLATFORM_OPTIONS = [
   { value: "all", label: "All Platforms" },
   { value: "rumble", label: "Rumble" },
   { value: "bitchute", label: "BitChute" },
+  { value: "substack", label: "Substack" },
 ];
 
 const TIER_OPTIONS = [

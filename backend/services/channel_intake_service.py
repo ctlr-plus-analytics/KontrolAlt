@@ -25,7 +25,11 @@ from models.channel_intake import (
     ResolverSeedRequest,
     ResolverSeedResult,
 )
-from workers.tasks import TASK_SCRAPE_BITCHUTE_CHANNEL, TASK_SCRAPE_RUMBLE_CHANNEL
+from workers.tasks import (
+    TASK_SCRAPE_BITCHUTE_CHANNEL,
+    TASK_SCRAPE_RUMBLE_CHANNEL,
+    TASK_SCRAPE_SUBSTACK_CHANNEL,
+)
 from workers.tasks import TASK_RUN_GATE0
 from services import admin_service
 
@@ -73,6 +77,24 @@ def _canonicalize_supported_url(
     elif _matches_domain(host, "bitchute.com"):
         platform = Platform.bitchute
         canonical = urlunsplit(("https", "bitchute.com", path, "", ""))
+    elif _matches_domain(host, "substack.com"):
+        platform = Platform.substack
+        subdomain_handle: str | None = None
+        if host not in {"substack.com", "www.substack.com"}:
+            parts = host.split(".")
+            if len(parts) >= 3 and parts[-2:] == ["substack", "com"]:
+                subdomain_handle = parts[0]
+        handle_path = path.lstrip("/")
+        if subdomain_handle:
+            canonical = urlunsplit(
+                ("https", "substack.com", f"/@{subdomain_handle}", "", "")
+            )
+        elif handle_path.startswith("@") and "/" not in handle_path:
+            canonical = urlunsplit(
+                ("https", "substack.com", f"/{handle_path}", "", "")
+            )
+        else:
+            return None, None, "Substack URL must be https://substack.com/@<handle>"
     else:
         return None, None, "Unsupported platform host"
 
@@ -82,11 +104,12 @@ def _canonicalize_supported_url(
 
 
 def _dispatch_scrape_task(channel_url: str, platform: Platform) -> str:
-    task_name = (
-        TASK_SCRAPE_RUMBLE_CHANNEL
-        if platform == Platform.rumble
-        else TASK_SCRAPE_BITCHUTE_CHANNEL
-    )
+    task_map = {
+        Platform.rumble: TASK_SCRAPE_RUMBLE_CHANNEL,
+        Platform.bitchute: TASK_SCRAPE_BITCHUTE_CHANNEL,
+        Platform.substack: TASK_SCRAPE_SUBSTACK_CHANNEL,
+    }
+    task_name = task_map[platform]
     task = _celery.send_task(task_name, args=[channel_url])
     return task.id
 
@@ -331,6 +354,13 @@ def _guess_urls_for_seed(seed_name: str) -> list[ResolvedChannelCandidate]:
             confidence=0.35,
             source="guessed",
         ),
+        ResolvedChannelCandidate(
+            platform=Platform.substack,
+            channel_url=f"https://substack.com/@{slug}",
+            channel_name=seed_name,
+            confidence=0.35,
+            source="guessed",
+        ),
     ]
 
 
@@ -362,7 +392,7 @@ async def resolve_seed_creators(
                 continue
 
             raw_platform = str(row.get("platform") or "").lower()
-            if raw_platform not in {"rumble", "bitchute"}:
+            if raw_platform not in {"rumble", "bitchute", "substack"}:
                 continue
             candidates.append(
                 ResolvedChannelCandidate(

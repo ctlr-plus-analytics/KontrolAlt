@@ -4,7 +4,7 @@
  */
 
 /** Supported scraping platforms. */
-export type Platform = "rumble" | "bitchute";
+export type Platform = "rumble" | "bitchute" | "substack";
 
 /** Comment engagement tier. */
 export type CommentTier = "active" | "sweet_spot" | "whale";

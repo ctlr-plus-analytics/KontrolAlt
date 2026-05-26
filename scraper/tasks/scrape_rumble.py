@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
+import random
 from urllib.parse import urlsplit
 from collections import deque
+
 
 from celery import Task
 from playwright.async_api import Error as PlaywrightError
@@ -15,6 +17,7 @@ from core.circuit_breaker import is_open, record_failure, record_success
 from core.exceptions import CloudflareBlockError, ScraperBlockedError, ScraperClassifiedError
 from core.proxy import proxy_session_manager
 from core.supabase import get_supabase_client
+from core.system_settings import get_runtime_settings
 from models import ScrapeTaskArgs, ScrapeTaskResult
 from scrapers.rumble import RumbleScraper
 from tasks.scrape_helpers import (
@@ -30,6 +33,8 @@ from tasks.scrape_helpers import (
     release_scrape_lock,
     record_daily_bytes_used,
     retry_countdown_seconds,
+    try_acquire_platform_slot,
+    release_platform_slot,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,6 +147,13 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
             channel_url=channel_url,
             error="Duplicate in-flight scrape skipped",
         ).model_dump(mode="json")
+    runtime = get_runtime_settings()
+    if not try_acquire_platform_slot("rumble", runtime.scrape_platform_slot_limit_rumble):
+        release_scrape_lock(channel_url)
+        logger.info(
+            "Rumble platform concurrency limit reached, rescheduling: %s", channel_url
+        )
+        raise self.retry(countdown=random.randint(30, 90))
     scraper = RumbleScraper()
     try:
         scraper._session_key = (
@@ -300,6 +312,7 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
             countdown=retry_countdown_seconds(self),
         )
     finally:
+        release_platform_slot("rumble")
         release_scrape_lock(channel_url)
 
 
@@ -331,8 +344,11 @@ def scrape_rumble_all() -> dict[str, object]:
         )
         return {"queued": 0, "skipped": "circuit_breaker_open"}
 
-    for url in urls:
-        scrape_rumble_channel.delay(url)
+    for i, url in enumerate(urls):
+        # Stagger each task by 4-10 s per position. Rumble is less aggressive
+        # than BitChute but still sensitive to simultaneous request spikes.
+        stagger_s = int(i * random.uniform(4, 10))
+        scrape_rumble_channel.apply_async(args=[url], countdown=stagger_s)
 
     logger.info("Queued %d Rumble channel scrapes", len(urls))
     return {"queued": len(urls)}

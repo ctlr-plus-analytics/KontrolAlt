@@ -34,7 +34,7 @@ export function TopBar() {
       <div className="flex items-center gap-4">
         {/* Platform Pill */}
         <span className="rounded-full border border-[#E8E4DC] px-3 py-1 text-xs font-medium text-[#1A1A2E]">
-          Rumble + BitChute
+          Rumble + BitChute + Substack
         </span>
 
         {/* User Avatar */}

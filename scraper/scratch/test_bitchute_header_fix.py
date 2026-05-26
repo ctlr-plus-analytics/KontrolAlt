@@ -5,8 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from camoufox.async_api import AsyncCamoufox
-from core.cf_bypass import get_consistent_browser_profile
+from core.browser import launch_browser
 from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO)
@@ -15,21 +14,7 @@ async def test_scrape():
     url = "https://www.bitchute.com/channel/pierregirard"
     print(f"Testing BitChute parsing with fixed headers for: {url}")
     
-    profile = get_consistent_browser_profile()
-    # Filter out Accept and Upgrade-Insecure-Requests from extra_http_headers
-    fixed_headers = {
-        k: v for k, v in profile["extra_http_headers"].items()
-        if k.lower() not in {"accept", "upgrade-insecure-requests"}
-    }
-    
-    async with AsyncCamoufox(headless=True, geoip=False) as browser:
-        context = await browser.new_context(
-            viewport=profile["viewport"],
-            locale=str(profile["locale"]),
-            timezone_id=str(profile["timezone_id"]),
-            user_agent=str(profile["user_agent"]),
-            extra_http_headers=fixed_headers,
-        )
+    async with launch_browser(session_key="test_bitchute_header_fix", use_proxy=False) as context:
         page = await context.new_page()
         
         # Listeners to verify network requests
@@ -43,11 +28,11 @@ async def test_scrape():
         print("Navigating to URL...")
         await page.goto(url)
         
-        print("Waiting for channel header name element...")
+        print("Waiting for video card element...")
         try:
-            # Wait for the channel name element to render
-            await page.wait_for_selector("span.q-btn__content span.block, div.q-card__section.q-card__section--vert.q-pt-none > div.row.text-bold.text-h4", timeout=15000)
-            print("Successfully found channel name element!")
+            # Wait for the video card element to render
+            await page.wait_for_selector("a[href^='/video/']", timeout=20000)
+            print("Successfully found video card element!")
         except Exception as e:
             print(f"Timeout waiting for elements: {e}")
             

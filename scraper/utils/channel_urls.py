@@ -17,7 +17,11 @@ class ChannelUrlCandidate:
 
 URL_PATTERN = re.compile(r"https?://[^\s<>\]\"')]+", re.IGNORECASE)
 BARE_SUPPORTED_URL_PATTERN = re.compile(
-    r"\b(?:www\.|old\.)?(?:rumble\.com|bitchute\.com)/[^\s<>\]\"')]+",
+    r"\b(?:www\.|old\.)?(?:rumble\.com|bitchute\.com|substack\.com)/[^\s<>\]\"')]+",
+    re.IGNORECASE,
+)
+SUBSTACK_SUBDOMAIN_PATTERN = re.compile(
+    r"\b([a-zA-Z0-9][a-zA-Z0-9_-]{1,127})\.substack\.com\b",
     re.IGNORECASE,
 )
 RUMBLE_HANDLE_PATTERN = re.compile(
@@ -46,6 +50,14 @@ BITCHUTE_CONTEXT_HANDLE_PATTERN = re.compile(
     r"\bbitchute\b(?:\s+(?:channel|profile|page|handle))?\s+"
     r"(?:at|as|under|handle|profile|channel|page)\s+@?"
     r"([a-zA-Z0-9][a-zA-Z0-9_-]{1,127})\b",
+    re.IGNORECASE,
+)
+SUBSTACK_HANDLE_PATTERN = re.compile(
+    r"\bsubstack\s*[:/@-]+\s*@?([a-zA-Z0-9][a-zA-Z0-9._-]{1,127})\b",
+    re.IGNORECASE,
+)
+SUBSTACK_PATH_MENTION_PATTERN = re.compile(
+    r"\bsubstack\s+(?:com\s+)?(?:/)?@([a-zA-Z0-9][a-zA-Z0-9._-]{1,127})\b",
     re.IGNORECASE,
 )
 
@@ -104,6 +116,7 @@ _BITCHUTE_SYSTEM_PATHS = {
     "video",
 }
 _SLUG_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,127}$")
+_SUBSTACK_HANDLE_SLUG_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,127}$")
 
 
 def _strip_trailing_punctuation(raw_url: str) -> str:
@@ -164,8 +177,20 @@ def _canonicalize_bitchute(parts: list[str]) -> str | None:
     return "/" + "/".join(("channel", parts[1]))
 
 
+def _canonicalize_substack(parts: list[str]) -> str | None:
+    if not parts:
+        return None
+    first = parts[0]
+    if not first.startswith("@"):
+        return None
+    handle = first[1:]
+    if not _SUBSTACK_HANDLE_SLUG_PATTERN.match(handle):
+        return None
+    return f"/@{handle}"
+
+
 def canonicalize_channel_url(raw_url: str) -> ChannelUrlCandidate | None:
-    """Return a canonical supported Rumble/BitChute channel URL, if present."""
+    """Return a canonical supported Rumble/BitChute/Substack channel URL, if present."""
     normalized = _normalize_scheme(raw_url)
     if not normalized:
         return None
@@ -196,6 +221,23 @@ def canonicalize_channel_url(raw_url: str) -> ChannelUrlCandidate | None:
             platform="bitchute",
         )
 
+    if host in {"substack.com", "www.substack.com"}:
+        path = _canonicalize_substack(parts)
+        if path is None:
+            return None
+        return ChannelUrlCandidate(
+            channel_url=urlunsplit(("https", "substack.com", path, "", "")),
+            platform="substack",
+        )
+    if host.endswith(".substack.com"):
+        subdomain = host[: -len(".substack.com")]
+        if not _SUBSTACK_HANDLE_SLUG_PATTERN.match(subdomain):
+            return None
+        return ChannelUrlCandidate(
+            channel_url=urlunsplit(("https", "substack.com", f"/@{subdomain}", "", "")),
+            platform="substack",
+        )
+
     return None
 
 
@@ -204,6 +246,8 @@ def extract_supported_channel_urls(text: str) -> list[ChannelUrlCandidate]:
     raw_urls = {_strip_trailing_punctuation(match.group(0)) for match in URL_PATTERN.finditer(text)}
     for match in BARE_SUPPORTED_URL_PATTERN.finditer(text):
         raw_urls.add(_normalize_scheme(match.group(0)))
+    for match in SUBSTACK_SUBDOMAIN_PATTERN.finditer(text):
+        raw_urls.add(f"https://{match.group(1)}.substack.com")
 
     for match in RUMBLE_PATH_MENTION_PATTERN.finditer(text):
         raw_urls.add(f"https://rumble.com/{match.group(1).lower()}/{match.group(2)}")
@@ -225,6 +269,12 @@ def extract_supported_channel_urls(text: str) -> list[ChannelUrlCandidate]:
         slug = match.group(1)
         if slug.lower() not in _BITCHUTE_SYSTEM_PATHS:
             raw_urls.add(f"https://bitchute.com/channel/{slug}")
+    for match in SUBSTACK_PATH_MENTION_PATTERN.finditer(text):
+        raw_urls.add(f"https://substack.com/@{match.group(1)}")
+    for match in SUBSTACK_HANDLE_PATTERN.finditer(text):
+        slug = match.group(1)
+        if _SUBSTACK_HANDLE_SLUG_PATTERN.match(slug):
+            raw_urls.add(f"https://substack.com/@{slug}")
 
     candidates: dict[str, ChannelUrlCandidate] = {}
     for raw_url in raw_urls:

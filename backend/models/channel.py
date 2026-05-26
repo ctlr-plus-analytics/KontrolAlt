@@ -19,6 +19,7 @@ class Platform(str, Enum):
 
     rumble = "rumble"
     bitchute = "bitchute"
+    substack = "substack"
 
 
 class CommentTier(str, Enum):

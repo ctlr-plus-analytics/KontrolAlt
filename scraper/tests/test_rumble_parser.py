@@ -1,5 +1,6 @@
 """Canary tests for Rumble parser helpers."""
 
+import inspect
 import sys
 from pathlib import Path
 
@@ -11,6 +12,11 @@ from scrapers.rumble import (
     parse_follower_count,
     parse_rumble_datetime,
 )
+
+
+def test_rumble_scrape_does_not_hardcode_low_content_threshold() -> None:
+    source = inspect.getsource(RumbleScraper.scrape)
+    assert "min_bytes=5000" not in source
 
 
 def test_parse_follower_count_m_suffix() -> None:

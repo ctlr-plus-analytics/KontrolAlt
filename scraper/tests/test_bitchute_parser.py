@@ -97,6 +97,38 @@ def test_extract_videos() -> None:
     assert parsed["ABC123"]["url"] == "https://www.bitchute.com/video/ABC123"
 
 
+def test_extract_videos_from_rendered_card_container() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    scraper.VIDEO_CARD_SELECTOR = "#video-card"
+    scraper.VIDEO_LINK_SELECTOR = "#video-card a[href^=\"/video/\"]"
+    scraper.VIDEO_TITLE_SELECTOR = "div.q-item__label.bc-text-break.ellipsis-2-lines.bc-responsive-font"
+    scraper.VIDEO_VIEWS_SELECTOR = "div.q-chip__content div.text-caption"
+    scraper.VIDEO_TIME_SELECTOR = "div.q-item__label.q-item__label--caption.text-caption"
+    scraper.VIDEO_COLLECTION_LIMIT = 50
+
+    html = """
+    <div id="video-card">
+      <a class="q-item" href="/video/kO4CknSw3I8Z">
+        <div class="q-chip__content"><div class="text-caption">91</div></div>
+        <div class="q-chip__content"><div class="text-caption">1:15:57</div></div>
+      </a>
+      <div class="q-card__section">
+        <a href="/video/kO4CknSw3I8Z">
+          <div class="q-item__label bc-text-break ellipsis-2-lines bc-responsive-font">
+            Blackpilled - Jew behind the mask
+          </div>
+        </a>
+        <div class="q-item__label q-item__label--caption text-caption">19 hours ago</div>
+      </div>
+    </div>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    parsed = scraper._extract_videos(soup)
+    assert parsed["kO4CknSw3I8Z"]["title"] == "Blackpilled - Jew behind the mask"
+    assert parsed["kO4CknSw3I8Z"]["views"] == 91
+    assert parsed["kO4CknSw3I8Z"]["date"] is not None
+
+
 def test_merge_video_page_signals() -> None:
     scraper = BitChuteScraper.__new__(BitChuteScraper)
     item = {
@@ -123,6 +155,29 @@ def test_merge_video_page_signals() -> None:
     assert item["date"] == publish_date
 
 
+def test_merge_video_page_signals_replaces_overlay_title() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    item = {
+        "title": "visibility 91 1:15:57",
+        "views": 91,
+        "comments": None,
+        "date": None,
+        "url": "https://www.bitchute.com/video/kO4CknSw3I8Z",
+    }
+    scraper._merge_video_page_signals(
+        item=item,
+        needs_title=False,
+        needs_views=False,
+        needs_comment=False,
+        needs_date=False,
+        title="Blackpilled - Jew behind the mask",
+        views=None,
+        comments=None,
+        publish_date=None,
+    )
+    assert item["title"] == "Blackpilled - Jew behind the mask"
+
+
 
 def test_last_comment_page_items() -> None:
     scraper = BitChuteScraper.__new__(BitChuteScraper)
@@ -136,3 +191,53 @@ def test_last_comment_page_items() -> None:
     assert len(items) == 3
     assert items[0]["url"].endswith("/V1/")
     assert items[2]["url"].endswith("/V3/")
+
+
+def test_extract_video_page_comments_container_fallback() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    scraper.VIDEO_PAGE_COMMENT_SELECTOR = "#comments-container span.item.count span.value"
+    html = """
+    <div id="comments-container">
+      <div>Send Refresh DYNAMIC ( 19 ) Newest Oldest Popular</div>
+    </div>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    count, hit = scraper._extract_video_page_comments(soup)
+    assert count == 19
+    assert hit == "#comments-container text-count"
+
+
+def test_extract_video_page_comments_no_comments_marker() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    scraper.VIDEO_PAGE_COMMENT_SELECTOR = "#comments-container span.item.count span.value"
+    html = """
+    <div id="comments-container">
+      <div class="no-comments no-data">No comments</div>
+    </div>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    count, hit = scraper._extract_video_page_comments(soup)
+    assert count == 0
+    assert hit in {"#comments-container", "div.no-comments.no-data"}
+
+
+def test_extract_video_page_comments_navigation_beats_no_comments_marker() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    scraper.VIDEO_PAGE_COMMENT_SELECTOR = "#comments-container span.item.count span.value"
+    html = """
+    <div id="comments-container" class="jquery-comments">
+      <div class="navigation">
+        <span class="item count">(<span class="value">4</span><span class="caret"></span>)</span>
+        <span class="item active">Newest</span>
+      </div>
+      <div id="comment-list" class="main">
+        <div class="comment">First</div>
+        <div class="comment">Second</div>
+      </div>
+      <div class="no-comments no-data">No comments</div>
+    </div>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    count, hit = scraper._extract_video_page_comments(soup)
+    assert count == 4
+    assert hit == "#comments-container span.item.count span.value"

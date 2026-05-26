@@ -213,12 +213,13 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
           >
             <option value="rumble">Rumble</option>
             <option value="bitchute">BitChute</option>
+            <option value="substack">Substack</option>
           </select>
         </div>
         <Input
           id="manual-channel-url"
           label="Channel URL"
-          placeholder="https://rumble.com/c/example"
+          placeholder="https://substack.com/@example"
           value={manualUrl}
           onChange={(event) => setManualUrl(event.target.value)}
           className="mb-3"
@@ -272,7 +273,9 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
         <textarea
           id="bulk-urls"
           className="mb-3 h-40 w-full rounded-lg border border-[#E8E4DC] px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
-          placeholder={"https://rumble.com/c/one\nhttps://bitchute.com/channel/two"}
+          placeholder={
+            "https://rumble.com/c/one\nhttps://bitchute.com/channel/two\nhttps://substack.com/@three"
+          }
           value={bulkUrls}
           onChange={(event) => setBulkUrls(event.target.value)}
         />

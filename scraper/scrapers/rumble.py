@@ -12,7 +12,15 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 from playwright.async_api import Error as PlaywrightError
 
-from core.browser import BrowserTelemetry, guarded_goto, human_delay, launch_browser, wait_for_content
+from core.browser import (
+    BrowserTelemetry,
+    guarded_goto,
+    human_delay,
+    is_cold_session,
+    launch_browser,
+    pre_warm_homepage,
+    wait_for_content,
+)
 from core.cf_bypass import human_scroll, inter_request_jitter
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
 from core.system_settings import get_runtime_settings
@@ -296,6 +304,13 @@ class RumbleScraper(BaseScraper):
             session_key = self._session_key or channel_base_url
             async with launch_browser(session_key=session_key, telemetry=telemetry) as context:
                 page = await context.new_page()
+                # Warm-up: visit the homepage first on cold sessions (no cf_clearance).
+                # Real users arrive at channel URLs via navigation history, not cold direct access.
+                # Sessions restored from persistent storage already have cookies; skip warm-up.
+                if await is_cold_session(context):
+                    await pre_warm_homepage(
+                        page, RUMBLE_BASE_URL + "/", session_key=session_key
+                    )
                 response = await guarded_goto(
                     page,
                     channel_base_url,
@@ -305,7 +320,7 @@ class RumbleScraper(BaseScraper):
                 )
                 stage_marks.append(("goto_domcontentloaded", perf_counter() - stage_t0))
                 content_ok = await wait_for_content(
-                    page, min_bytes=5000, timeout_s=self.PRIMARY_CONTENT_TIMEOUT_S
+                    page, timeout_s=self.PRIMARY_CONTENT_TIMEOUT_S
                 )
                 if not content_ok:
                     logger.warning("Rumble: content not ready, reloading %s", channel_url)
@@ -314,7 +329,7 @@ class RumbleScraper(BaseScraper):
                     )
                     await human_delay(0.15, 0.35)
                     content_ok = await wait_for_content(
-                        page, min_bytes=5000, timeout_s=self.RELOAD_CONTENT_TIMEOUT_S
+                        page, timeout_s=self.RELOAD_CONTENT_TIMEOUT_S
                     )
                 runtime = get_runtime_settings()
                 if not content_ok and runtime.scraper_challenge_second_cycle_enabled:
@@ -331,14 +346,13 @@ class RumbleScraper(BaseScraper):
                     second_wait = max(
                         0.1, runtime.scraper_challenge_second_cycle_wait_timeout_seconds
                     )
-                    await human_delay(second_pre, second_pre)
+                    await human_delay(second_pre * 0.7, second_pre * 1.4)
                     await page.reload(
                         wait_until="domcontentloaded", timeout=self.CHANNEL_NAV_TIMEOUT_MS
                     )
-                    await human_delay(second_post, second_post)
+                    await human_delay(second_post * 0.7, second_post * 1.4)
                     content_ok = await wait_for_content(
                         page,
-                        min_bytes=5000,
                         timeout_s=max(
                             0.1, min(second_wait, self.SECOND_CYCLE_CONTENT_TIMEOUT_S)
                         ),
@@ -376,7 +390,7 @@ class RumbleScraper(BaseScraper):
                     timeout=self.CHANNEL_NAV_TIMEOUT_MS,
                 )
                 videos_content_ok = await wait_for_content(
-                    page, min_bytes=5000, timeout_s=self.PRIMARY_CONTENT_TIMEOUT_S
+                    page, timeout_s=self.PRIMARY_CONTENT_TIMEOUT_S
                 )
                 await self.ensure_not_blocked(page, videos_url)
                 if not videos_content_ok:

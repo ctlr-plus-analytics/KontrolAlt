@@ -49,12 +49,13 @@ def test_extract_supported_channel_urls_does_not_invent_aliases() -> None:
 
 def test_extract_supported_channel_urls_reads_contextual_platform_mentions() -> None:
     candidates = extract_supported_channel_urls(
-        "Find us on Rumble channel LibertyDesk and BitChute profile SignalRoom."
+        "Find us on Rumble channel LibertyDesk, BitChute profile SignalRoom, and Substack @theconsciouslee."
     )
 
     urls = {candidate.channel_url for candidate in candidates}
     assert "https://rumble.com/LibertyDesk" in urls
     assert "https://bitchute.com/channel/SignalRoom" in urls
+    assert "https://substack.com/@theconsciouslee" in urls
 
 
 def test_extract_supported_channel_urls_does_not_parse_rumble_channel_as_path() -> None:
@@ -77,3 +78,11 @@ def test_canonicalize_rejects_common_rumble_root_noise() -> None:
     ]
 
     assert [canonicalize_channel_url(url) for url in urls] == [None] * len(urls)
+
+
+def test_canonicalize_substack_subdomain_url() -> None:
+    candidate = canonicalize_channel_url("https://theconsciouslee.substack.com/?utm_source=home")
+
+    assert candidate is not None
+    assert candidate.channel_url == "https://substack.com/@theconsciouslee"
+    assert candidate.platform == "substack"

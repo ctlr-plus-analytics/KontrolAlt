@@ -20,19 +20,29 @@ def _canonicalize_channel_url(raw_url: str) -> tuple[str | None, str | None]:
     return candidate.channel_url, candidate.platform
 
 
-def discover_keyword_expansion_now() -> dict[str, object]:
+def discover_keyword_expansion_now(
+    *,
+    platform: str | None = None,
+) -> dict[str, object]:
     """Run taxonomy keyword discovery and insert channels directly."""
     client = get_supabase_client()
-    result = _discover_from_keywords(client)
+    result = _discover_from_keywords(
+        client,
+        platform=platform,
+    )
     return {key: value for key, value in result.items() if key != "new_urls"}
 
 
 @celery_app.task(name="scraper.tasks.discover_keyword_expansion")
-def discover_keyword_expansion() -> dict[str, object]:
+def discover_keyword_expansion(
+    platform: str | None = None,
+) -> dict[str, object]:
     """Legacy task alias for taxonomy direct discovery."""
-    logger.info("Starting keyword/niche search expansion")
+    logger.info("Starting keyword/niche search expansion platform=%s", platform or "all")
     try:
-        result = discover_keyword_expansion_now()
+        result = discover_keyword_expansion_now(
+            platform=platform,
+        )
         logger.info(
             "Keyword expansion complete: queries=%d pages=%d discovered=%d inserted=%d refreshed=%d invalid=%d",
             result["searched_queries"],

@@ -12,7 +12,15 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 from playwright.async_api import Error as PlaywrightError
 
-from core.browser import BrowserTelemetry, guarded_goto, human_delay, launch_browser, wait_for_content
+from core.browser import (
+    BrowserTelemetry,
+    guarded_goto,
+    human_delay,
+    is_cold_session,
+    launch_browser,
+    pre_warm_homepage,
+    wait_for_content,
+)
 from core.cf_bypass import human_scroll, inter_request_jitter
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
 from core.system_settings import get_runtime_settings
@@ -59,15 +67,20 @@ BITCHUTE_CHANNEL = {
         "js_required": False,
     },
     "video_card": {
-        "primary": "a[href^=\"/video/\"]",
-        "fallbacks": [],
+        "primary": "#video-card",
+        "fallbacks": [
+            "#video-card a[href^=\"/video/\"]",
+            "a[href^=\"/video/\"]",
+        ],
         "extract": "node",
         "normalize": "none",
         "js_required": False,
     },
     "video_urls": {
-        "primary": "a[href^=\"/video/\"]",
-        "fallbacks": [],
+        "primary": "#video-card a[href^=\"/video/\"]",
+        "fallbacks": [
+            "a[href^=\"/video/\"]",
+        ],
         "extract": "attr(href)",
         "normalize": "urljoin(base)+canonicalize",
         "js_required": False,
@@ -137,8 +150,12 @@ BITCHUTE_VIDEO = {
         "js_required": False,
     },
     "comment_count": {
-        "primary": "span.item.count span.value",
-        "fallbacks": [],
+        "primary": "#comments-container span.item.count span.value",
+        "fallbacks": [
+            "#comments-container .navigation .item.count .value",
+            "#comments-container span.item.count",
+            "span.item.count span.value",
+        ],
         "extract": "text()",
         "normalize": "parse_count_text()",
         "js_required": False,
@@ -296,7 +313,7 @@ class BitChuteScraper(BaseScraper):
     ABOUT_FETCH_ATTEMPTS = 2
     VIDEO_PAGE_TIMEOUT_MS = 30000
     VIDEO_PAGE_CONTENT_TIMEOUT_S = 10.0
-    VIDEO_PAGE_COMMENT_TIMEOUT_MS = 8000
+    VIDEO_PAGE_COMMENT_TIMEOUT_MS = 15000
     _EMPTY_CHANNEL_MARKERS = (
         "0 videos",
         "no videos",
@@ -332,6 +349,13 @@ class BitChuteScraper(BaseScraper):
             session_key = self._session_key or channel_base_url
             async with launch_browser(session_key=session_key, telemetry=telemetry) as context:
                 page = await context.new_page()
+                # Warm-up: visit the homepage first on cold sessions (no cf_clearance).
+                # Real users arrive at channel URLs via navigation history, not cold direct access.
+                # Sessions restored from persistent storage already have cookies; skip warm-up.
+                if await is_cold_session(context):
+                    await pre_warm_homepage(
+                        page, BITCHUTE_BASE_URL + "/", session_key=session_key
+                    )
                 response = await guarded_goto(
                     page,
                     channel_base_url,
@@ -367,11 +391,11 @@ class BitChuteScraper(BaseScraper):
                     second_wait = max(
                         0.1, runtime.scraper_challenge_second_cycle_wait_timeout_seconds
                     )
-                    await human_delay(second_pre, second_pre)
+                    await human_delay(second_pre * 0.7, second_pre * 1.4)
                     await page.reload(
                         wait_until="domcontentloaded", timeout=self.CHANNEL_NAV_TIMEOUT_MS
                     )
-                    await human_delay(second_post, second_post)
+                    await human_delay(second_post * 0.7, second_post * 1.4)
                     content_ok = await wait_for_content(
                         page,
                         min_bytes=5000,
@@ -416,6 +440,7 @@ class BitChuteScraper(BaseScraper):
                     await self.ensure_not_blocked(page, videos_url)
                     if not videos_content_ok:
                         raise ScraperBlockedError(f"BitChute videos tab empty after load: {videos_url}")
+                await self._ensure_videos_tab_active(page)
 
                 try:
                     await page.wait_for_selector(
@@ -456,6 +481,7 @@ class BitChuteScraper(BaseScraper):
                     comment_pages_blocked,
                     comment_pages_parsed_success,
                     comment_selectors_hit,
+                    comment_selector_hits_by_video,
                     video_page_subscribers,
                     video_page_links,
                     video_page_title,
@@ -653,6 +679,7 @@ class BitChuteScraper(BaseScraper):
                     "comment_pages_blocked": comment_pages_blocked,
                     "comment_pages_parsed_success": comment_pages_parsed_success,
                     "comment_selectors_hit": sorted(comment_selectors_hit),
+                    "comment_selector_hits_by_video": comment_selector_hits_by_video,
                 }
                 return channel_data
 
@@ -776,6 +803,33 @@ class BitChuteScraper(BaseScraper):
 
         return self._trim_video_map(collected), last_soup
 
+    async def _ensure_videos_tab_active(self, page) -> None:
+        """Open the Videos tab when channel home renders without video cards."""
+        try:
+            has_video_cards = await page.locator(self.VIDEO_LINK_SELECTOR).count()
+        except Exception:
+            has_video_cards = 0
+        if has_video_cards > 0:
+            return
+
+        clicked = False
+        try:
+            await page.get_by_role("tab", name="Videos").click(timeout=4000)
+            clicked = True
+        except Exception:
+            try:
+                await page.locator("div.q-tab__label", has_text="Videos").first.click(timeout=4000)
+                clicked = True
+            except Exception:
+                clicked = False
+
+        if clicked:
+            await human_delay(0.2, 0.6)
+            try:
+                await page.wait_for_selector(self.VIDEO_LINK_SELECTOR, timeout=6000)
+            except Exception:
+                pass
+
     def _extract_next_page_url(self, soup: BeautifulSoup, base_url: str) -> str | None:
         """Extract the next pagination URL (not applicable for infinite scroll)."""
         return None
@@ -797,14 +851,19 @@ class BitChuteScraper(BaseScraper):
         """Extract recent videos from the videos tab using the supplied card selectors."""
         video_map: dict[str, dict[str, object]] = {}
         cards = soup.select(self.VIDEO_CARD_SELECTOR)
+        if not cards:
+            for fallback in BITCHUTE_CHANNEL["video_card"]["fallbacks"]:
+                cards = soup.select(fallback)
+                if cards:
+                    break
 
         for card in cards:
             if len(video_map) >= self.VIDEO_COLLECTION_LIMIT or not isinstance(card, Tag):
                 break
-            if card.name == "a" and card.has_attr("href") and str(card.get("href") or "").startswith("/video/"):
+            if card.name == "a" and card.has_attr("href") and self._is_video_href(str(card.get("href") or "")):
                 link = card
             else:
-                link = card.select_one(self.VIDEO_LINK_SELECTOR)
+                link = card.select_one("a[href^=\"/video/\"], a[href*=\"/video/\"]")
             if not isinstance(link, Tag):
                 continue
             href = str(link.get("href") or "")
@@ -848,7 +907,7 @@ class BitChuteScraper(BaseScraper):
         publish_date: datetime | None,
     ) -> None:
         """Merge deeper video-page metadata without overwriting card data."""
-        if needs_title and title:
+        if (needs_title or self._is_invalid_video_title(item.get("title"))) and title:
             item["title"] = title
         if needs_views and views is not None:
             item["views"] = views
@@ -856,6 +915,18 @@ class BitChuteScraper(BaseScraper):
             item["comments"] = comments
         if needs_date and publish_date is not None:
             item["date"] = publish_date
+
+    def _is_invalid_video_title(self, title: object) -> bool:
+        """Detect overlay metric text accidentally captured from video thumbnails."""
+        text = str(title or "").strip()
+        if not text or text == "Unknown Title":
+            return True
+        compact = " ".join(text.lower().split())
+        if not compact:
+            return True
+        if compact.startswith("visibility ") and re.search(r"\d", compact):
+            return True
+        return bool(re.fullmatch(r"(?:\d[\d,\.]*\s+)?\d{1,2}:\d{2}(?::\d{2})?", compact))
 
     def _video_signal_counts(
         self, video_data_map: dict[str, dict[str, object]]
@@ -896,12 +967,23 @@ class BitChuteScraper(BaseScraper):
         self,
         context,
         video_data_map: dict[str, dict[str, object]],
-    ) -> tuple[int, int, int, set[str], int | None, list[str], str | None, str | None]:
+    ) -> tuple[
+        int,
+        int,
+        int,
+        set[str],
+        list[dict[str, object]],
+        int | None,
+        list[str],
+        str | None,
+        str | None,
+    ]:
         """Fetch video-page comments for the latest three uploaded videos."""
         attempted = 0
         blocked = 0
         parsed_success = 0
         selectors_hit: set[str] = set()
+        per_video_selector_hits: list[dict[str, object]] = []
         extracted_subs: int | None = None
         extracted_links: list[str] = []
         extracted_title: str | None = None
@@ -920,6 +1002,19 @@ class BitChuteScraper(BaseScraper):
                 selectors_hit.add(comment_hit_selector)
             if comments is not None:
                 parsed_success += 1
+            per_video_selector_hits.append(
+                {
+                    "video_url": video_url,
+                    "blocked_stub": blocked_stub,
+                    "comment_selector": comment_hit_selector,
+                    "comment_found": comments is not None,
+                    "views_found": views is not None,
+                    "date_found": publish_date is not None,
+                    "subscribers_found": subscribers is not None,
+                    "title_found": bool(title),
+                    "description_found": bool(description),
+                }
+            )
             if subscribers is not None and extracted_subs is None:
                 extracted_subs = subscribers
             if links:
@@ -930,7 +1025,7 @@ class BitChuteScraper(BaseScraper):
                 extracted_desc = description
             self._merge_video_page_signals(
                 item=item,
-                needs_title=not item.get("title") or item.get("title") == "Unknown Title",
+                needs_title=self._is_invalid_video_title(item.get("title")),
                 needs_views=item.get("views") is None,
                 needs_comment=item.get("comments") is None,
                 needs_date=item.get("date") is None,
@@ -944,6 +1039,7 @@ class BitChuteScraper(BaseScraper):
             blocked,
             parsed_success,
             selectors_hit,
+            per_video_selector_hits,
             extracted_subs,
             sorted(set(extracted_links)),
             extracted_title,
@@ -989,10 +1085,7 @@ class BitChuteScraper(BaseScraper):
                 )
             try:
                 await human_scroll(page, direction="down", steps=2)
-                await page.wait_for_selector(
-                    self.VIDEO_PAGE_COMMENT_SELECTOR,
-                    timeout=self.VIDEO_PAGE_COMMENT_TIMEOUT_MS,
-                )
+                await self._wait_for_video_page_comment_state(page)
             except Exception:
                 pass
             html_now = await page.content()
@@ -1015,6 +1108,22 @@ class BitChuteScraper(BaseScraper):
         finally:
             await page.close()
 
+    async def _wait_for_video_page_comment_state(self, page) -> None:
+        """Wait until the CommentFreely widget exposes a count or loaded comments."""
+        await page.wait_for_function(
+            """
+            () => {
+                const container = document.querySelector("#comments-container");
+                if (!container) return false;
+                const countNode = container.querySelector("span.item.count span.value, .navigation .item.count .value");
+                if (countNode && /\\d/.test(countNode.textContent || "")) return true;
+                if (container.querySelector("#comment-list .comment")) return true;
+                return false;
+            }
+            """,
+            timeout=self.VIDEO_PAGE_COMMENT_TIMEOUT_MS,
+        )
+
     def _extract_video_page_views(self, soup: BeautifulSoup) -> int | None:
         node = soup.select_one(self.VIDEO_PAGE_VIEW_SELECTOR)
         if node is not None:
@@ -1030,11 +1139,55 @@ class BitChuteScraper(BaseScraper):
         return None
 
     def _extract_video_page_comments(self, soup: BeautifulSoup) -> tuple[int | None, str | None]:
-        node = soup.select_one(self.VIDEO_PAGE_COMMENT_SELECTOR)
-        if node is not None:
-            parsed = parse_count_text(node.get_text(" ", strip=True))
-            if parsed is not None:
-                return parsed, self.VIDEO_PAGE_COMMENT_SELECTOR
+        selectors = [
+            self.VIDEO_PAGE_COMMENT_SELECTOR,
+            *BITCHUTE_VIDEO["comment_count"]["fallbacks"],
+        ]
+        seen_selectors: set[str] = set()
+        for selector in selectors:
+            if selector in seen_selectors:
+                continue
+            seen_selectors.add(selector)
+            for node in soup.select(selector):
+                parsed = parse_count_text(node.get_text(" ", strip=True))
+                if parsed is not None:
+                    return parsed, selector
+
+        container = soup.select_one("#comments-container")
+        if container is not None:
+            for selector in (
+                ".navigation .item.count .value",
+                ".navigation .item.count",
+                "span.item.count span.value",
+                "span.item.count",
+            ):
+                node = container.select_one(selector)
+                if node is not None:
+                    parsed = parse_count_text(node.get_text(" ", strip=True))
+                    if parsed is not None:
+                        return parsed, f"#comments-container {selector}"
+
+            text = container.get_text(" ", strip=True)
+            match = re.search(
+                r"\(\s*([\d,]+(?:\.\d+)?\s*[kmbKMB]?)\s*\)\s*(?:Newest|Oldest|Popular)",
+                text,
+            )
+            if match:
+                parsed = parse_count_text(match.group(1))
+                if parsed is not None:
+                    return parsed, "#comments-container text-count"
+
+            comment_nodes = container.select("#comment-list .comment")
+            if comment_nodes:
+                return len(comment_nodes), "#comment-list .comment"
+
+            lowered = text.lower()
+            if "no comments" in lowered or "be the first to comment" in lowered:
+                return 0, "#comments-container"
+
+        marker = soup.select_one("#comments-container div.no-comments.no-data, div.no-comments.no-data")
+        if marker is not None and soup.select_one("#comment-list .comment") is None:
+            return 0, "div.no-comments.no-data"
         return None, None
 
     def _extract_video_page_upload_date(self, soup: BeautifulSoup) -> datetime | None:
@@ -1116,6 +1269,13 @@ class BitChuteScraper(BaseScraper):
             parsed = parse_count_text(node.get_text(" ", strip=True))
             if parsed is not None:
                 return parsed
+        for node in card.select("div.text-caption"):
+            text = node.get_text(" ", strip=True)
+            if re.fullmatch(r"\d+:\d{2}(?::\d{2})?", text):
+                continue
+            parsed = parse_count_text(text)
+            if parsed is not None:
+                return parsed
         return None
 
     def _extract_card_comments(self, card: Tag) -> int | None:
@@ -1124,7 +1284,16 @@ class BitChuteScraper(BaseScraper):
     def _extract_card_date(self, card: Tag) -> datetime | None:
         node = card.select_one(self.VIDEO_TIME_SELECTOR)
         if node is not None:
-            return parse_bitchute_datetime(node.get_text(" ", strip=True))
+            parsed = parse_bitchute_datetime(node.get_text(" ", strip=True))
+            if parsed is not None:
+                return parsed
+        for node in card.select("div.q-item__label.q-item__label--caption.text-caption"):
+            text = node.get_text(" ", strip=True)
+            if not text:
+                continue
+            parsed = parse_bitchute_datetime(text)
+            if parsed is not None:
+                return parsed
         return None
 
     def _extract_description(self, soup: BeautifulSoup) -> str:

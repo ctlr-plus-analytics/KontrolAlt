@@ -46,7 +46,7 @@ def _default_settings_row() -> dict[str, object]:
         "gate0_enabled": True,
         "discovery_enabled": True,
         "lookalike_enabled": True,
-        "scrape_platform_priority": ["rumble", "bitchute"],
+        "scrape_platform_priority": ["rumble", "bitchute", "substack"],
         "scrape_only_new_or_missing_metrics": True,
         "scrape_rescrape_min_hours": 72,
         "weekly_velocity_enabled": True,

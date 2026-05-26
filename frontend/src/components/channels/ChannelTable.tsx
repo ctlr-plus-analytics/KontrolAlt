@@ -29,14 +29,11 @@ const COLUMNS: SortableColumn[] = [
   { key: null, label: "Platform" },
   { key: "avg_comments", label: "Avg Comments", align: "right" },
   { key: null, label: "Comment Tier" },
-  { key: "view_velocity_30d", label: "Velocity 30d", align: "right" },
-  { key: "view_velocity_90d", label: "Velocity 90d", align: "right" },
   { key: null, label: "Gate 0" },
   { key: null, label: "55+ Signal", align: "center" },
   { key: "subscriber_count", label: "Subscribers", align: "right" },
   { key: "avg_views", label: "Avg Views", align: "right" },
   { key: "last_active_date", label: "Last Active" },
-  { key: null, label: "Actions", align: "center" },
 ];
 
 export function ChannelTable({

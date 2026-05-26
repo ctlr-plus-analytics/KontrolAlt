@@ -55,7 +55,7 @@ class RuntimeSettings:
     gate0_enabled: bool = True
     discovery_enabled: bool = True
     lookalike_enabled: bool = True
-    scrape_platform_priority: tuple[str, ...] = ("rumble", "bitchute")
+    scrape_platform_priority: tuple[str, ...] = ("rumble", "bitchute", "substack")
     scrape_only_new_or_missing_metrics: bool = True
     scrape_rescrape_min_hours: int = 72
     weekly_velocity_enabled: bool = True
@@ -96,9 +96,15 @@ class RuntimeSettings:
     scraper_challenge_second_cycle_pre_reload_delay_seconds: float = 10.0
     scraper_challenge_second_cycle_post_reload_delay_seconds: float = 8.0
     scraper_challenge_second_cycle_wait_timeout_seconds: float = 25.0
-    scraper_block_resource_images: bool = True
+    # Resource blocking defaults.
+    # Images: disabled by default — blocking images creates a detectable
+    # "stripped browser" profile and alters Cloudflare's rendering fingerprint.
+    # Media:  enabled — video/audio are high-bandwidth and don't affect CF detection.
+    # Fonts:  disabled — blocking fonts breaks Camoufox's engine-level font
+    #         fingerprint spoofing, which is a core stealth mechanism.
+    scraper_block_resource_images: bool = False
     scraper_block_resource_media: bool = True
-    scraper_block_resource_fonts: bool = True
+    scraper_block_resource_fonts: bool = False
     discovery_serper_query_limit: int = 480
     discovery_results_per_query: int = 20
     discovery_max_pages_per_query: int = 8
@@ -214,16 +220,16 @@ def get_runtime_settings() -> RuntimeSettings:
         weekly_day = str(row.get("weekly_velocity_utc_day") or "sun").lower()
         if weekly_day not in {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}:
             weekly_day = "sun"
-        priority_raw = row.get("scrape_platform_priority") or ["rumble", "bitchute"]
+        priority_raw = row.get("scrape_platform_priority") or ["rumble", "bitchute", "substack"]
         if not isinstance(priority_raw, list):
-            priority_raw = ["rumble", "bitchute"]
+            priority_raw = ["rumble", "bitchute", "substack"]
         priority = tuple(
             value
             for value in (str(item).lower() for item in priority_raw)
-            if value in {"rumble", "bitchute"}
+            if value in {"rumble", "bitchute", "substack"}
         )
         if not priority:
-            priority = ("rumble", "bitchute")
+            priority = ("rumble", "bitchute", "substack")
         settings = RuntimeSettings(
             daily_scrape_utc_time=raw_time[:5],
             gate0_enabled=bool(row.get("gate0_enabled", True)),
@@ -354,13 +360,13 @@ def get_runtime_settings() -> RuntimeSettings:
                 ),
             ),
             scraper_block_resource_images=bool(
-                row.get("scraper_block_resource_images", True)
+                row.get("scraper_block_resource_images", False)
             ),
             scraper_block_resource_media=bool(
                 row.get("scraper_block_resource_media", True)
             ),
             scraper_block_resource_fonts=bool(
-                row.get("scraper_block_resource_fonts", True)
+                row.get("scraper_block_resource_fonts", False)
             ),
             discovery_serper_query_limit=_as_non_negative_int(
                 row.get("discovery_serper_query_limit"), 480

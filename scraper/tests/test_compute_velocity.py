@@ -48,6 +48,10 @@ class _FakeQuery:
         self.upsert_data = data
         return self
 
+    def update(self, data: dict[str, object]) -> "_FakeQuery":
+        self.upsert_data = data
+        return self
+
     def execute(self) -> _Response:
         if self.table_name == "channel_snapshots":
             return _Response(self.client.snapshots)

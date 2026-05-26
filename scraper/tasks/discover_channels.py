@@ -18,6 +18,7 @@ from core.supabase import get_supabase_client
 from core.system_settings import get_runtime_settings
 from tasks.scrape_bitchute import scrape_bitchute_channel
 from tasks.scrape_rumble import scrape_rumble_channel
+from tasks.scrape_substack import scrape_substack_channel
 from utils.channel_urls import (
     ChannelUrlCandidate,
     canonicalize_channel_url,
@@ -39,6 +40,8 @@ _CHANNEL_PAGE_SIZE = 1_000_000
 _SERPER_MAX_ATTEMPTS = 3
 _SERPER_RETRY_DELAY_SECONDS = 1.5
 _SERPER_RETRY_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+_PROGRESS_QUERIES_EVERY = 10
+_PROGRESS_PAGES_EVERY = 25
 _SERP_LINK_KEYS = {
     "link",
     "url",
@@ -73,6 +76,11 @@ _RELATIVE_BITCHUTE_CHANNEL_PATH_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])/channel/([A-Za-z0-9][A-Za-z0-9_-]{1,127})\b",
     re.IGNORECASE,
 )
+_SUBSTACK_HANDLE_PATTERN = re.compile(
+    r"\b([A-Za-z0-9][A-Za-z0-9_-]{1,127})\.substack\.com\b",
+    re.IGNORECASE,
+)
+_SUPPORTED_DISCOVERY_PLATFORMS = {"rumble", "bitchute", "substack"}
 
 
 def _utc_now_iso() -> str:
@@ -254,6 +262,13 @@ def _extract_relative_channel_urls(
             )
             if candidate is not None:
                 candidates[candidate.channel_url] = candidate
+    elif source_platform == "substack":
+        for match in _SUBSTACK_HANDLE_PATTERN.finditer(text):
+            handle = match.group(1)
+            for url in (f"https://substack.com/@{handle}", f"https://{handle}.substack.com"):
+                candidate = canonicalize_channel_url(url)
+                if candidate is not None:
+                    candidates[candidate.channel_url] = candidate
     return list(candidates.values())
 
 
@@ -268,9 +283,24 @@ def _seed_discovery_confidence(source_field: str) -> float:
     return 0.9
 
 
+def _normalize_platform_filter(platform: str | None) -> set[str]:
+    """Normalize single platform filter to an allowed set."""
+    if platform is None:
+        return set(_SUPPORTED_DISCOVERY_PLATFORMS)
+    normalized = platform.strip().lower()
+    if normalized not in _SUPPORTED_DISCOVERY_PLATFORMS:
+        raise ValueError(
+            f"Unsupported platform '{platform}'. Expected one of: "
+            + ", ".join(sorted(_SUPPORTED_DISCOVERY_PLATFORMS))
+        )
+    return {normalized}
+
+
 def _query_for_keyword(keyword: str, platform: str) -> str:
     if platform == "rumble":
         return f'site:rumble.com "{keyword}" (inurl:/c/ OR inurl:/user/) -inurl:/v -inurl:/embed/'
+    if platform == "substack":
+        return f'site:substack.com "{keyword}" (inurl:/@ OR inurl:.substack.com) -inurl:/p/'
     return f'site:bitchute.com "{keyword}" inurl:/channel/ -inurl:/video/ -inurl:/embed/'
 
 
@@ -278,28 +308,45 @@ def _category_phrase(category: str) -> str:
     return category.replace("_", " ")
 
 
-def _keyword_templates(category: str, keyword: str) -> list[str]:
+def _keyword_templates(category: str, keyword: str, platforms: set[str]) -> list[str]:
     category_phrase = _category_phrase(category)
-    templates = [
-        _query_for_keyword(keyword, "rumble"),
-        _query_for_keyword(keyword, "bitchute"),
-        f'site:rumble.com/c/ "{keyword}" -inurl:/v -inurl:/embed/',
-        f'site:rumble.com/user/ "{keyword}" -inurl:/v -inurl:/embed/',
-        f'site:bitchute.com/channel/ "{keyword}" -inurl:/video/ -inurl:/embed/',
-        f'site:rumble.com "{keyword}" "{category_phrase}" -inurl:/v -inurl:/embed/',
-        f'site:bitchute.com "{keyword}" "{category_phrase}" inurl:/channel/ -inurl:/video/ -inurl:/embed/',
-        f'site:rumble.com intitle:"{keyword}" -inurl:/v -inurl:/embed/',
-        f'site:bitchute.com intitle:"{keyword}" inurl:/channel/ -inurl:/video/ -inurl:/embed/',
-        f'"{keyword}" "rumble.com/c/" -inurl:/v -inurl:/embed/',
-        f'"{keyword}" "rumble.com/user/" -inurl:/v -inurl:/embed/',
-        f'"{keyword}" "bitchute.com/channel/" -inurl:/video/ -inurl:/embed/',
-        f'"{keyword}" "Rumble channel"',
-        f'"{keyword}" "BitChute channel"',
-    ]
+    templates: list[str] = []
+
+    if "rumble" in platforms:
+        templates.extend(
+            [
+                _query_for_keyword(keyword, "rumble"),
+                f'site:rumble.com/c/ "{keyword}" -inurl:/v -inurl:/embed/',
+                f'site:rumble.com/user/ "{keyword}" -inurl:/v -inurl:/embed/',
+                f'site:rumble.com "{keyword}" "{category_phrase}" -inurl:/v -inurl:/embed/',
+                f'site:rumble.com intitle:"{keyword}" -inurl:/v -inurl:/embed/',
+                f'"{keyword}" "rumble.com/c/" -inurl:/v -inurl:/embed/',
+                f'"{keyword}" "rumble.com/user/" -inurl:/v -inurl:/embed/',
+                f'"{keyword}" "Rumble channel"',
+            ]
+        )
+    if "bitchute" in platforms:
+        templates.extend(
+            [
+                _query_for_keyword(keyword, "bitchute"),
+                f'site:bitchute.com/channel/ "{keyword}" -inurl:/video/ -inurl:/embed/',
+                f'site:bitchute.com "{keyword}" "{category_phrase}" inurl:/channel/ -inurl:/video/ -inurl:/embed/',
+                f'site:bitchute.com intitle:"{keyword}" inurl:/channel/ -inurl:/video/ -inurl:/embed/',
+                f'"{keyword}" "bitchute.com/channel/" -inurl:/video/ -inurl:/embed/',
+                f'"{keyword}" "BitChute channel"',
+            ]
+        )
+    if "substack" in platforms:
+        templates.extend(
+            [
+                _query_for_keyword(keyword, "substack"),
+                f'"{keyword}" "Substack"',
+            ]
+        )
     return list(dict.fromkeys(templates))
 
 
-def _iter_search_queries() -> list[tuple[str, str, str, str]]:
+def _iter_search_queries(platforms: set[str]) -> list[tuple[str, str, str, str]]:
     queries: list[tuple[str, str, str, str]] = []
     categories = list(KEYWORD_TAXONOMY.keys())
     keyword_positions: dict[str, int] = {category: 0 for category in categories}
@@ -317,7 +364,7 @@ def _iter_search_queries() -> list[tuple[str, str, str, str]]:
 
             keyword_pos = keyword_positions[category] % len(keywords)
             keyword = keywords[keyword_pos]
-            templates = _keyword_templates(category, keyword)
+            templates = _keyword_templates(category, keyword, platforms)
             template_key = (category, keyword_pos)
             template_pos = template_positions.get(template_key, 0)
 
@@ -325,7 +372,7 @@ def _iter_search_queries() -> list[tuple[str, str, str, str]]:
                 keyword_positions[category] = (keyword_pos + 1) % len(keywords)
                 keyword_pos = keyword_positions[category]
                 keyword = keywords[keyword_pos]
-                templates = _keyword_templates(category, keyword)
+                templates = _keyword_templates(category, keyword, platforms)
                 template_key = (category, keyword_pos)
                 template_pos = template_positions.get(template_key, 0)
 
@@ -526,6 +573,10 @@ def _feedback_queries(
             queries.append(
                 f'site:rumble.com "{keyword}" "{category}" "{term}" -inurl:/v -inurl:/embed/'
             )
+        elif platform == "substack":
+            queries.append(
+                f'site:substack.com "{keyword}" "{category}" "{term}" (inurl:/@ OR inurl:.substack.com) -inurl:/p/'
+            )
         else:
             queries.append(
                 f'site:bitchute.com inurl:/channel/ "{keyword}" "{category}" "{term}" -inurl:/video/ -inurl:/embed/'
@@ -533,7 +584,8 @@ def _feedback_queries(
     return queries
 
 
-def _discover_from_known_channels(client) -> dict[str, object]:
+def _discover_from_known_channels(client, *, platform: str | None = None) -> dict[str, object]:
+    allowed_platforms = _normalize_platform_filter(platform)
     insert_limit = min(get_runtime_settings().discovery_insert_limit, _INSERT_LIMIT)
     columns = "id,channel_url,name,description,video_titles,contact_info,secondary_urls"
 
@@ -558,8 +610,8 @@ def _discover_from_known_channels(client) -> dict[str, object]:
         "description": 0,
         "channel_url": 0,
     }
-    platform_metrics = {"rumble": 0, "bitchute": 0}
-    inserted_platform_metrics = {"rumble": 0, "bitchute": 0}
+    platform_metrics = {"rumble": 0, "bitchute": 0, "substack": 0}
+    inserted_platform_metrics = {"rumble": 0, "bitchute": 0, "substack": 0}
 
     source_channels = 0
     for channel in _iter_channel_rows(client, columns):
@@ -567,6 +619,8 @@ def _discover_from_known_channels(client) -> dict[str, object]:
         source_channel_id = str(channel.get("id") or "")
         source_channel_url = str(channel.get("channel_url") or "")
         for candidate, source_field in _collect_known_channel_candidates(channel):
+            if candidate.platform not in allowed_platforms:
+                continue
             if candidate.channel_url == source_channel_url:
                 self_links += 1
                 self_link_field_metrics[source_field] = (
@@ -632,7 +686,12 @@ def _discover_from_known_channels(client) -> dict[str, object]:
     }
 
 
-def _discover_from_keywords(client) -> dict[str, object]:
+def _discover_from_keywords(
+    client,
+    *,
+    platform: str | None = None,
+) -> dict[str, object]:
+    allowed_platforms = _normalize_platform_filter(platform)
     runtime = get_runtime_settings()
     insert_limit = min(runtime.discovery_insert_limit, _INSERT_LIMIT)
     max_pages_per_query = min(
@@ -645,6 +704,14 @@ def _discover_from_keywords(client) -> dict[str, object]:
         runtime.discovery_global_stop_no_new, _GLOBAL_STOP_NO_NEW_INSERTED
     )
     max_feedback_terms = min(runtime.discovery_max_feedback_terms, _MAX_FEEDBACK_TERMS)
+    progress_queries_every = max(
+        1,
+        int(getattr(scraper_settings, "discovery_progress_queries_every", _PROGRESS_QUERIES_EVERY)),
+    )
+    progress_pages_every = max(
+        1,
+        int(getattr(scraper_settings, "discovery_progress_pages_every", _PROGRESS_PAGES_EVERY)),
+    )
     discovered = 0
     inserted = 0
     refreshed = 0
@@ -654,7 +721,7 @@ def _discover_from_keywords(client) -> dict[str, object]:
     pages_fetched = 0
     raw_links = 0
     no_new_global = 0
-    inserted_by_platform = {"rumble": 0, "bitchute": 0}
+    inserted_by_platform = {"rumble": 0, "bitchute": 0, "substack": 0}
     category_metrics: dict[str, dict[str, int]] = {
         category: {
             "searched_queries": 0,
@@ -671,7 +738,7 @@ def _discover_from_keywords(client) -> dict[str, object]:
     feedback_terms_counter: Counter[str] = Counter()
     new_urls: list[dict[str, str]] = []
 
-    seed_queries = _iter_search_queries()
+    seed_queries = _iter_search_queries(allowed_platforms)
     active_queries: list[tuple[str, str, str, str]] = list(seed_queries)
     feedback_by_category: dict[str, list[tuple[str, str, str, str]]] = {
         category: [] for category in KEYWORD_TAXONOMY.keys()
@@ -687,6 +754,17 @@ def _discover_from_keywords(client) -> dict[str, object]:
             break
 
         searched_queries += 1
+        if searched_queries % progress_queries_every == 0:
+            logger.info(
+                "Keyword discovery progress: queries=%d pages=%d inserted=%d refreshed=%d invalid=%d target=%d platform=%s",
+                searched_queries,
+                pages_fetched,
+                inserted,
+                refreshed,
+                invalid,
+                insert_limit,
+                platform or "all",
+            )
         metrics = category_metrics.setdefault(
             category,
             {
@@ -713,6 +791,16 @@ def _discover_from_keywords(client) -> dict[str, object]:
             if inserted >= insert_limit:
                 break
             pages_fetched += 1
+            if pages_fetched % progress_pages_every == 0:
+                logger.info(
+                    "Keyword discovery page progress: query=%d page=%d total_pages=%d inserted=%d refreshed=%d invalid=%d",
+                    searched_queries,
+                    page_num,
+                    pages_fetched,
+                    inserted,
+                    refreshed,
+                    invalid,
+                )
             new_this_page = 0
             try:
                 organic_results = _search_serper(query, page=page_num)
@@ -791,7 +879,12 @@ def _discover_from_keywords(client) -> dict[str, object]:
             if no_new_for_query >= query_stagnation_limit:
                 break
 
-        platform = "rumble" if "site:rumble.com" in query else "bitchute"
+        if "site:rumble.com" in query:
+            platform = "rumble"
+        elif "site:substack.com" in query:
+            platform = "substack"
+        else:
+            platform = "bitchute"
         feedback_queries = _feedback_queries(
             platform=platform,
             category=category,
@@ -831,6 +924,7 @@ def _discover_from_keywords(client) -> dict[str, object]:
         "invalid": invalid,
         "inserted_rumble": inserted_by_platform["rumble"],
         "inserted_bitchute": inserted_by_platform["bitchute"],
+        "inserted_substack": inserted_by_platform["substack"],
         "category_metrics": category_metrics,
         "feedback_terms": [term for term, _ in feedback_terms_counter.most_common(10)],
         "new_urls": new_urls,
@@ -858,7 +952,7 @@ def queue_discovered_channel_scrapes(new_urls: list[dict[str, object]]) -> int:
         if not channel_url or channel_url in seen:
             continue
         seen.add(channel_url)
-        if platform in {"rumble", "bitchute"} and is_open(platform):
+        if platform in {"rumble", "bitchute", "substack"} and is_open(platform):
             logger.warning(
                 "Skipping discovered %s scrape due to open circuit breaker: %s",
                 platform,
@@ -870,6 +964,9 @@ def queue_discovered_channel_scrapes(new_urls: list[dict[str, object]]) -> int:
             queued += 1
         elif platform == "bitchute":
             scrape_bitchute_channel.delay(channel_url)
+            queued += 1
+        elif platform == "substack":
+            scrape_substack_channel.delay(channel_url)
             queued += 1
         else:
             continue
@@ -890,36 +987,80 @@ def queue_discovered_channel_scrapes(new_urls: list[dict[str, object]]) -> int:
     return queued
 
 
-def discover_channels_now(*, queue_scrapes: bool = False) -> dict[str, object]:
+def discover_channels_now(
+    *,
+    queue_scrapes: bool = False,
+    mode: str = "all",
+    platform: str | None = None,
+) -> dict[str, object]:
     """Run all automatic discovery sources and insert channels directly."""
+    normalized_mode = (mode or "all").strip().lower()
+    if normalized_mode not in {"all", "seed", "keyword"}:
+        raise ValueError("Unsupported mode. Expected one of: all, seed, keyword")
+
     client = get_supabase_client()
     discovery_failed = False
-    try:
-        seed_result = _discover_from_known_channels(client)
-    except (APIError, KeyError, TypeError, ValueError) as exc:
-        discovery_failed = True
-        logger.error("Seed discovery phase failed: %s", exc, exc_info=True)
+    if normalized_mode in {"all", "seed"}:
+        try:
+            seed_result = _discover_from_known_channels(client, platform=platform)
+        except (APIError, KeyError, TypeError, ValueError) as exc:
+            discovery_failed = True
+            logger.error("Seed discovery phase failed: %s", exc, exc_info=True)
+            seed_result = {
+                "source_channels": 0,
+                "discovered": 0,
+                "inserted": 0,
+                "refreshed": 0,
+                "duplicates": 0,
+                "invalid": 1,
+                "self_links": 0,
+                "field_metrics": {},
+                "self_link_field_metrics": {},
+                "platform_metrics": {},
+                "inserted_platform_metrics": {},
+                "new_urls": [],
+                "error": str(exc),
+            }
+    else:
         seed_result = {
             "source_channels": 0,
             "discovered": 0,
             "inserted": 0,
             "refreshed": 0,
             "duplicates": 0,
-            "invalid": 1,
+            "invalid": 0,
             "self_links": 0,
             "field_metrics": {},
             "self_link_field_metrics": {},
             "platform_metrics": {},
             "inserted_platform_metrics": {},
             "new_urls": [],
-            "error": str(exc),
         }
 
-    try:
-        keyword_result = _discover_from_keywords(client)
-    except (APIError, KeyError, TypeError, ValueError) as exc:
-        discovery_failed = True
-        logger.error("Keyword discovery phase failed: %s", exc, exc_info=True)
+    if normalized_mode in {"all", "keyword"}:
+        try:
+            keyword_result = _discover_from_keywords(client, platform=platform)
+        except (APIError, KeyError, TypeError, ValueError) as exc:
+            discovery_failed = True
+            logger.error("Keyword discovery phase failed: %s", exc, exc_info=True)
+            keyword_result = {
+                "searched_queries": 0,
+                "pages_fetched": 0,
+                "raw_links": 0,
+                "discovered": 0,
+                "inserted": 0,
+                "refreshed": 0,
+                "duplicates": 0,
+                "invalid": 1,
+                "inserted_rumble": 0,
+                "inserted_bitchute": 0,
+                "inserted_substack": 0,
+                "category_metrics": {},
+                "feedback_terms": [],
+                "new_urls": [],
+                "error": str(exc),
+            }
+    else:
         keyword_result = {
             "searched_queries": 0,
             "pages_fetched": 0,
@@ -928,13 +1069,13 @@ def discover_channels_now(*, queue_scrapes: bool = False) -> dict[str, object]:
             "inserted": 0,
             "refreshed": 0,
             "duplicates": 0,
-            "invalid": 1,
+            "invalid": 0,
             "inserted_rumble": 0,
             "inserted_bitchute": 0,
+            "inserted_substack": 0,
             "category_metrics": {},
             "feedback_terms": [],
             "new_urls": [],
-            "error": str(exc),
         }
 
     new_urls = [
@@ -957,11 +1098,19 @@ def discover_channels_now(*, queue_scrapes: bool = False) -> dict[str, object]:
 
 
 @celery_app.task(name="scraper.tasks.discover_channels")
-def discover_channels() -> dict[str, object]:
+def discover_channels(
+    mode: str = "all",
+    platform: str | None = None,
+    queue_scrapes: bool = True,
+) -> dict[str, object]:
     """Discover supported channels and put them directly into channels."""
     logger.info("Starting unified channel discovery")
     try:
-        result = discover_channels_now(queue_scrapes=True)
+        result = discover_channels_now(
+            queue_scrapes=queue_scrapes,
+            mode=mode,
+            platform=platform,
+        )
         logger.info(
             "Unified discovery complete: inserted=%d refreshed=%d duplicates=%d invalid=%d scrape_queued=%d",
             result["inserted"],

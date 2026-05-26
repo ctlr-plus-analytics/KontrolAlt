@@ -40,6 +40,26 @@ def test_canonicalize_supported_url_rejects_mismatched_platform() -> None:
     assert error is not None
 
 
+def test_canonicalize_supported_url_substack_handle() -> None:
+    url, platform, error = _canonicalize_supported_url(
+        "https://substack.com/@theconsciouslee?utm_source=feed"
+    )
+
+    assert error is None
+    assert url == "https://substack.com/@theconsciouslee"
+    assert platform == Platform.substack
+
+
+def test_canonicalize_supported_url_substack_subdomain() -> None:
+    url, platform, error = _canonicalize_supported_url(
+        "https://theconsciouslee.substack.com/"
+    )
+
+    assert error is None
+    assert url == "https://substack.com/@theconsciouslee"
+    assert platform == Platform.substack
+
+
 def test_parse_bulk_urls_supports_newline_and_commas() -> None:
     parsed = _parse_bulk_urls(
         "https://rumble.com/c/one,\nhttps://bitchute.com/channel/two\nhttps://rumble.com/c/three"

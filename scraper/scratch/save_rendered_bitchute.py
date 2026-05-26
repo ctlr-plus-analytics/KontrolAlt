@@ -5,8 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from camoufox.async_api import AsyncCamoufox
-from core.cf_bypass import get_consistent_browser_profile
+from core.browser import launch_browser
 
 logging.basicConfig(level=logging.INFO)
 
@@ -14,20 +13,7 @@ async def test_scrape():
     url = "https://www.bitchute.com/channel/pierregirard"
     print(f"Saving rendered HTML for: {url}")
     
-    profile = get_consistent_browser_profile()
-    fixed_headers = {
-        k: v for k, v in profile["extra_http_headers"].items()
-        if k.lower() not in {"accept", "upgrade-insecure-requests"}
-    }
-    
-    async with AsyncCamoufox(headless=True, geoip=False) as browser:
-        context = await browser.new_context(
-            viewport=profile["viewport"],
-            locale=str(profile["locale"]),
-            timezone_id=str(profile["timezone_id"]),
-            user_agent=str(profile["user_agent"]),
-            extra_http_headers=fixed_headers,
-        )
+    async with launch_browser(session_key="save_rendered_bitchute", use_proxy=False) as context:
         page = await context.new_page()
         await page.goto(url)
         

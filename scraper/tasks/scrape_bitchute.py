@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 from urllib.parse import urlsplit
 from collections import deque
 
@@ -15,6 +16,7 @@ from core.circuit_breaker import is_open, record_failure, record_success
 from core.exceptions import CloudflareBlockError, ScraperBlockedError, ScraperClassifiedError
 from core.proxy import proxy_session_manager
 from core.supabase import get_supabase_client
+from core.system_settings import get_runtime_settings
 from models import ScrapeTaskArgs, ScrapeTaskResult
 from scrapers.bitchute import BitChuteScraper
 from tasks.scrape_helpers import (
@@ -30,6 +32,8 @@ from tasks.scrape_helpers import (
     release_scrape_lock,
     record_daily_bytes_used,
     retry_countdown_seconds,
+    try_acquire_platform_slot,
+    release_platform_slot,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,6 +145,13 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
             channel_url=channel_url,
             error="Duplicate in-flight scrape skipped",
         ).model_dump(mode="json")
+    runtime = get_runtime_settings()
+    if not try_acquire_platform_slot("bitchute", runtime.scrape_platform_slot_limit_bitchute):
+        release_scrape_lock(channel_url)
+        logger.info(
+            "BitChute platform concurrency limit reached, rescheduling: %s", channel_url
+        )
+        raise self.retry(countdown=random.randint(30, 90))
     scraper = BitChuteScraper()
     try:
         scraper._session_key = (
@@ -299,6 +310,7 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
             countdown=retry_countdown_seconds(self),
         )
     finally:
+        release_platform_slot("bitchute")
         release_scrape_lock(channel_url)
 
 
@@ -330,8 +342,12 @@ def scrape_bitchute_all() -> dict[str, object]:
         )
         return {"queued": 0, "skipped": "circuit_breaker_open"}
 
-    for url in urls:
-        scrape_bitchute_channel.delay(url)
+    for i, url in enumerate(urls):
+        # Stagger each task by 8-18 s per position so the full batch doesn't
+        # land on BitChute simultaneously — simultaneous request spikes from
+        # the same IP pool are a primary CF detection trigger.
+        stagger_s = int(i * random.uniform(8, 18))
+        scrape_bitchute_channel.apply_async(args=[url], countdown=stagger_s)
 
     logger.info("Queued %d BitChute channel scrapes", len(urls))
     return {"queued": len(urls)}

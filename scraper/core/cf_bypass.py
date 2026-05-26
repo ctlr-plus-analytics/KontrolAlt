@@ -7,7 +7,6 @@ import hashlib
 import ipaddress
 import math
 import random
-import socket
 import time
 from dataclasses import dataclass
 
@@ -41,11 +40,22 @@ _CF_RANGES = (
     "131.0.72.0/22",
 )
 
+# Keep this pool in sync with current Firefox stable/ESR releases.
+# Cloudflare cross-checks the UA version against the TLS JA3/JA4 fingerprint;
+# a stale version (>6 months old) is a reliable bot detection signal.
 FIREFOX_UA_POOL = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:128.0) Gecko/20100101 Firefox/128.0",
-    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+    # Firefox 138 — May 2026 stable
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
+    # Weighted 3x: Windows 10 is the dominant residential desktop OS
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:138.0) Gecko/20100101 Firefox/138.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13.7; rv:138.0) Gecko/20100101 Firefox/138.0",
+    # Firefox 137 — April 2026 stable
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.6; rv:137.0) Gecko/20100101 Firefox/137.0",
 )
 
 
@@ -70,24 +80,9 @@ async def inter_request_jitter() -> None:
     await asyncio.sleep(max(0.3, delay))
 
 
-class SessionRateLimiter:
-    """Sliding-window requests-per-minute limiter per session."""
-
-    def __init__(self, max_rpm: int = 20) -> None:
-        self.max_rpm = max(1, max_rpm)
-        self.window = 60.0
-        self.timestamps: list[float] = []
-
-    async def acquire(self) -> None:
-        now = asyncio.get_event_loop().time()
-        self.timestamps = [t for t in self.timestamps if now - t < self.window]
-        if len(self.timestamps) >= self.max_rpm:
-            wait = self.window - (now - self.timestamps[0]) + random.uniform(0.1, 0.5)
-            await asyncio.sleep(max(0.1, wait))
-        self.timestamps.append(asyncio.get_event_loop().time())
-
-
-_SESSION_LIMITERS: dict[str, SessionRateLimiter] = {}
+# ---------------------------------------------------------------------------
+# Redis-backed cross-worker session rate limiter
+# ---------------------------------------------------------------------------
 
 def _max_rpm_for_session(session_key: str, default_rpm: int, bitchute_rpm: int) -> int:
     key = session_key.lower()
@@ -97,20 +92,91 @@ def _max_rpm_for_session(session_key: str, default_rpm: int, bitchute_rpm: int) 
 
 
 async def acquire_session_request_slot(session_key: str | None) -> None:
+    """Enforce per-session RPM limit using a Redis sorted-set sliding window.
+
+    Cross-worker safe: all Celery workers share the same Redis state, so the
+    configured RPM is honoured globally rather than per-process.
+    """
     if not session_key:
         return
     runtime = get_runtime_settings()
-    limiter = _SESSION_LIMITERS.get(session_key)
-    if limiter is None:
-        limiter = SessionRateLimiter(
-            max_rpm=_max_rpm_for_session(
-                session_key,
-                runtime.cf_bypass_max_rpm_residential,
-                runtime.cf_bypass_max_rpm_bitchute,
-            )
-        )
-        _SESSION_LIMITERS[session_key] = limiter
-    await limiter.acquire()
+    max_rpm = _max_rpm_for_session(
+        session_key,
+        runtime.cf_bypass_max_rpm_residential,
+        runtime.cf_bypass_max_rpm_bitchute,
+    )
+    # Use a short stable key derived from the session to avoid key-space bloat.
+    slot_key = "ratelimit:session:" + hashlib.sha1(session_key.encode()).hexdigest()[:20]
+    window_s = 60.0
+    now = time.time()
+    deadline = now + window_s
+
+    try:
+        # Lazy import to avoid hard dependency when Redis is unavailable.
+        import redis.asyncio as aioredis
+        from core.config import scraper_settings
+
+        r = aioredis.from_url(scraper_settings.redis_url, decode_responses=True)
+        async with r:
+            while True:
+                pipe = r.pipeline()
+                # Remove timestamps outside the 60-second window.
+                pipe.zremrangebyscore(slot_key, 0, now - window_s)
+                # Count remaining timestamps in the window.
+                pipe.zcard(slot_key)
+                results = await pipe.execute()
+                count = results[1]
+                if count < max_rpm:
+                    # Slot available — record this request and proceed.
+                    score = now
+                    member = f"{now:.6f}-{random.getrandbits(32)}"
+                    await r.zadd(slot_key, {member: score})
+                    await r.expire(slot_key, 120)
+                    return
+                # Slot full — sleep for minimum time until oldest entry expires.
+                oldest_raw = await r.zrange(slot_key, 0, 0, withscores=True)
+                if oldest_raw:
+                    oldest_ts = oldest_raw[0][1]
+                    sleep_s = max(0.1, (oldest_ts + window_s) - time.time())
+                else:
+                    sleep_s = window_s / max_rpm
+                sleep_s += random.uniform(0.05, 0.3)  # jitter to avoid thundering herd
+                await asyncio.sleep(min(sleep_s, 5.0))
+                now = time.time()
+                if now > deadline:
+                    # Safety valve — never block indefinitely.
+                    return
+    except Exception:
+        # If Redis is unavailable fall back to a simple in-process sleep so
+        # scraping continues rather than crashing.
+        await asyncio.sleep(window_s / max(1, max_rpm) + random.uniform(0.1, 0.5))
+
+
+def _generate_bezier_path(start: tuple[float, float], end: tuple[float, float], steps: int) -> list[tuple[float, float]]:
+    x0, y0 = start
+    x3, y3 = end
+    mx = (x0 + x3) / 2
+    my = (y0 + y3) / 2
+    dist = math.hypot(x3 - x0, y3 - y0)
+    
+    offset_scale = dist * 0.15
+    x1 = x0 + (x3 - x0) * 0.25 + random.uniform(-offset_scale, offset_scale)
+    y1 = y0 + (y3 - y0) * 0.25 + random.uniform(-offset_scale, offset_scale)
+    x2 = x0 + (x3 - x0) * 0.75 + random.uniform(-offset_scale, offset_scale)
+    y2 = y0 + (y3 - y0) * 0.75 + random.uniform(-offset_scale, offset_scale)
+    
+    path = []
+    for i in range(1, steps + 1):
+        x = i / steps
+        t = 1.0 - (1.0 - x) ** 3  # Cubic ease-out
+        u = 1.0 - t
+        px = (u**3)*x0 + 3*(u**2)*t*x1 + 3*u*(t**2)*x2 + (t**3)*x3
+        py = (u**3)*y0 + 3*(u**2)*t*y1 + 3*u*(t**2)*y2 + (t**3)*y3
+        
+        jitter_x = random.uniform(-0.5, 0.5) if i < steps else 0
+        jitter_y = random.uniform(-0.5, 0.5) if i < steps else 0
+        path.append((px + jitter_x, py + jitter_y))
+    return path
 
 
 async def human_click(page, selector: str) -> None:
@@ -121,76 +187,195 @@ async def human_click(page, selector: str) -> None:
         return
     target_x = box["x"] + box["width"] * random.uniform(0.3, 0.7)
     target_y = box["y"] + box["height"] * random.uniform(0.3, 0.7)
-    current = await page.evaluate("() => ({ x: window.__mouseX || 100, y: window.__mouseY || 100 })")
-    steps = random.randint(8, 18)
-    for i in range(steps):
-        t = (i + 1) / steps
-        deviation = math.sin(t * math.pi) * random.uniform(-8, 8)
-        x = current["x"] + (target_x - current["x"]) * t + deviation
-        y = current["y"] + (target_y - current["y"]) * t
-        await page.mouse.move(x, y)
-        await asyncio.sleep(random.uniform(0.01, 0.04))
+    current = await page.evaluate("() => ({ x: window.__mouseX, y: window.__mouseY })")
+
+    start_x = current.get("x")
+    start_y = current.get("y")
+    if start_x is None or start_y is None:
+        # Fallback: pick a random point in the upper-left quarter of the
+        # viewport (typical idle cursor position for a real user).
+        viewport = await page.evaluate(
+            "() => ({ w: window.innerWidth, h: window.innerHeight })"
+        )
+        start_x = random.uniform(viewport["w"] * 0.1, viewport["w"] * 0.4)
+        start_y = random.uniform(viewport["h"] * 0.1, viewport["h"] * 0.4)
+
+    steps = random.randint(12, 22)
+    path = _generate_bezier_path((start_x, start_y), (target_x, target_y), steps)
+    for px, py in path:
+        await page.mouse.move(px, py)
+        await asyncio.sleep(random.uniform(0.008, 0.025))
+
+    await page.evaluate(f"() => {{ window.__mouseX = {target_x}; window.__mouseY = {target_y}; }}")
     await asyncio.sleep(random.uniform(0.05, 0.15))
     await page.mouse.click(target_x, target_y)
 
 
+async def initialize_mouse_position(page) -> None:
+    """Seed the in-page mouse position tracker from the viewport centre.
+
+    Call this immediately after every ``page.goto()`` / ``page.reload()`` so
+    that the first ``human_click()`` always has a realistic start position
+    rather than a hardcoded fallback.  Cloudflare's behavioural analysis
+    tracks mouse entry into the page; a cursor that appears at coordinate
+    (0,0) and moves to a target in one step is a bot pattern.
+    """
+    try:
+        viewport = await page.evaluate(
+            "() => ({ w: window.innerWidth, h: window.innerHeight })"
+        )
+        # Initialise near the horizontal centre, slightly above vertical centre
+        # — a typical resting position for a desktop user who just loaded a page.
+        cx = viewport["w"] * random.uniform(0.35, 0.65)
+        cy = viewport["h"] * random.uniform(0.2, 0.45)
+        await page.evaluate(
+            f"() => {{ window.__mouseX = {cx}; window.__mouseY = {cy}; }}"
+        )
+        # Also physically move the mouse to that position so Playwright's
+        # internal cursor state matches the JS variable.
+        await page.mouse.move(cx, cy)
+    except Exception:
+        pass
+
+
 async def human_scroll(page, direction: str = "down", steps: int | None = None) -> None:
     viewport = await page.evaluate("() => ({ h: window.innerHeight, total: document.body.scrollHeight })")
+    viewport_h = int(viewport.get("h", 800))
     total = int(viewport.get("total", 0))
-    current = int(await page.evaluate("() => window.scrollY"))
     runtime = get_runtime_settings()
     if steps is None:
         steps = random.randint(runtime.cf_bypass_scroll_steps_min, runtime.cf_bypass_scroll_steps_max)
-    target = total if direction == "down" else 0
-    for i in range(max(1, steps)):
-        progress = (i + 1) / steps
-        ease = progress * (2 - progress)
-        new_pos = int(current + (target - current) * ease)
-        scroll_amount = new_pos - current
-        await page.mouse.wheel(0, scroll_amount + random.randint(-30, 30))
+    
+    for _ in range(max(1, steps)):
+        current_y = int(await page.evaluate("() => window.scrollY"))
+        if direction == "down" and current_y + viewport_h >= total - 50:
+            break
+        if direction == "up" and current_y <= 0:
+            break
+
+        # Scroll in human-like increments relative to viewport height
+        increment = random.uniform(viewport_h * 0.4, viewport_h * 0.8)
+        if direction == "up":
+            increment = -increment
+
+        # Perform scroll in micro-ticks
+        ticks = random.randint(3, 7)
+        for t in range(ticks):
+            tick_scroll = increment / ticks
+            tick_scroll += random.uniform(-10, 10)
+            await page.mouse.wheel(0, tick_scroll)
+            await asyncio.sleep(random.uniform(0.01, 0.03))
+
         await asyncio.sleep(random.uniform(0.15, 0.55))
 
 
-def get_consistent_browser_profile(proxy_country: str | None = None) -> dict[str, object]:
-    ua = random.choice(FIREFOX_UA_POOL)
-    country_map = {
+def get_consistent_browser_profile(
+    session_key: str | None = None,
+    proxy_country: str | None = None,
+) -> dict[str, object]:
+    """Return a stable browser profile for the given session.
+
+    Seeded from ``session_key`` so the same session always produces the same
+    UA, viewport, locale, and timezone. This prevents fingerprint drift across
+    retries and multi-page navigations within one scrape, which bot-detection
+    systems record per-IP and flag as anomalous.
+
+    ``proxy_country`` is used to align locale and timezone with the proxy IP's
+    geographic origin. Mismatched locale/TZ vs. IP country is a primary CF
+    detection signal. Falls back to ``"US"`` when not provided.
+
+    Falls back to a random (non-seeded) profile when ``session_key`` is None.
+    """
+    # Derive a stable seed from the session key so the same session always
+    # produces the same profile. Use md5 purely for speed — not security.
+    if session_key:
+        seed = int(hashlib.md5(session_key.encode("utf-8")).hexdigest(), 16) % (2 ** 32)
+        rng = random.Random(seed)
+    else:
+        rng = random.Random()
+
+    # NOTE: User-agent is intentionally NOT selected here.
+    # Camoufox manages the UA from its bundled Firefox binary at the C++ engine
+    # level, ensuring the UA, TLS fingerprint, and internal browser signals are
+    # consistent. Overriding the UA via new_context(user_agent=...) would risk
+    # a version mismatch between the UA string and the TLS JA3/JA4 fingerprint
+    # that Camoufox presents — a reliable Cloudflare detection signal.
+
+    # Comprehensive country → (locale, timezone) map.
+    # Covers the most common residential proxy geographies.
+    country_map: dict[str, tuple[str, str]] = {
         "US": ("en-US", "America/New_York"),
         "GB": ("en-GB", "Europe/London"),
         "DE": ("de-DE", "Europe/Berlin"),
         "FR": ("fr-FR", "Europe/Paris"),
         "CA": ("en-CA", "America/Toronto"),
+        "AU": ("en-AU", "Australia/Sydney"),
+        "NL": ("nl-NL", "Europe/Amsterdam"),
+        "SE": ("sv-SE", "Europe/Stockholm"),
+        "PL": ("pl-PL", "Europe/Warsaw"),
+        "IT": ("it-IT", "Europe/Rome"),
+        "ES": ("es-ES", "Europe/Madrid"),
+        "BR": ("pt-BR", "America/Sao_Paulo"),
+        "JP": ("ja-JP", "Asia/Tokyo"),
+        "IN": ("en-IN", "Asia/Kolkata"),
+        "SG": ("en-SG", "Asia/Singapore"),
+        "MX": ("es-MX", "America/Mexico_City"),
+        "CH": ("de-CH", "Europe/Zurich"),
+        "AT": ("de-AT", "Europe/Vienna"),
+        "NO": ("nb-NO", "Europe/Oslo"),
+        "DK": ("da-DK", "Europe/Copenhagen"),
+        "FI": ("fi-FI", "Europe/Helsinki"),
+        "NZ": ("en-NZ", "Pacific/Auckland"),
+        "IE": ("en-IE", "Europe/Dublin"),
+        "ZA": ("en-ZA", "Africa/Johannesburg"),
     }
-    locale, timezone = country_map.get((proxy_country or "US").upper(), ("en-US", "America/New_York"))
+    country_code = (proxy_country or "US").upper().strip()
+    locale, timezone = country_map.get(country_code, ("en-US", "America/New_York"))
+
+    viewport = rng.choice(
+        (
+            {"width": 1920, "height": 1080},
+            {"width": 1440, "height": 900},
+            {"width": 1366, "height": 768},
+            {"width": 1536, "height": 864},
+            {"width": 1280, "height": 800},
+            {"width": 1600, "height": 900},
+        )
+    )
     return {
-        "user_agent": ua,
         "locale": locale,
         "timezone_id": timezone,
-        "viewport": random.choice(
-            (
-                {"width": 1920, "height": 1080},
-                {"width": 1440, "height": 900},
-                {"width": 1366, "height": 768},
-                {"width": 1536, "height": 864},
-            )
-        ),
+        "viewport": viewport,
         "extra_http_headers": {
-            "Accept-Language": f"{locale},en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "DNT": "1",
+            # Accept-Language: primary locale with realistic q-value fallback.
+            # DNT removed — deprecated and removed from Firefox 135+ UI; sending
+            # it with a modern UA is a bot fingerprint signal.
+            # Accept-Encoding omitted — Camoufox manages this at the engine level.
+            "Accept-Language": f"{locale},en;q=0.9",
         },
     }
 
 
 async def verify_fingerprint(page) -> dict[str, bool]:
+    """Evaluate key browser fingerprint signals in the page context.
+
+    Returns a dict of signal name → bool where ``True`` means the signal
+    looks like a real browser (pass) and ``False`` means it looks like
+    an automation artifact (fail).
+
+    Designed for Firefox/Camoufox — chrome_absent is expected True.
+    Call this after ``wait_for_content`` and log any failures.
+    """
     return await page.evaluate(
         """() => ({
-            webdriver_absent: navigator.webdriver === undefined || navigator.webdriver === false,
+            webdriver_hidden: navigator.webdriver === undefined || navigator.webdriver === false,
             plugins_present: navigator.plugins.length > 0,
             languages_present: !!(navigator.languages && navigator.languages.length > 0),
-            chrome_absent: typeof window.chrome === 'undefined',
-            automation_absent: !document.documentElement.getAttribute('webdriver'),
-            canvas_not_blocked: (() => { try { const c = document.createElement('canvas'); c.getContext('2d'); return true; } catch(e) { return false; } })(),
+            no_chrome_leak: typeof window.chrome === 'undefined',
+            no_webdriver_attr: !document.documentElement.getAttribute('webdriver'),
+            canvas_functional: (() => { try { const c = document.createElement('canvas'); c.getContext('2d'); return true; } catch(e) { return false; } })(),
             screen_realistic: screen.width >= 1024 && screen.height >= 768,
+            has_history: typeof window.history !== 'undefined' && window.history.length >= 1,
         })"""
     )
 
@@ -224,55 +409,80 @@ async def detect_captcha(page) -> bool:
     return False
 
 
+async def check_for_cf_challenge(page) -> bool:
+    """Return True if the page is still showing any Cloudflare challenge.
+
+    This catches modern Turnstile / Managed Challenge pages which are
+    full-size (bypassing the byte-count heuristic in ``wait_for_content``)
+    but still block the real content behind a challenge widget.
+
+    Checks both the classic JS challenge selectors AND the modern
+    Turnstile iframe pattern.
+    """
+    # Classic JS challenge / browser verification
+    classic = await page.query_selector(
+        "#challenge-form, #challenge-running, .cf-browser-verification, "
+        ".cf-challenge-running, #cf-challenge-hcaptcha-container"
+    )
+    if classic:
+        return True
+    # Modern Turnstile / Managed Challenge embedded iframe
+    turnstile = await page.query_selector(
+        "iframe[src*='challenges.cloudflare.com'], "
+        "iframe[src*='cloudflare.com/cdn-cgi/challenge-platform']"
+    )
+    if turnstile:
+        return True
+    # Title-based detection for "Just a moment..." interstitials
+    title = (await page.title() or "").lower()
+    if "just a moment" in title or "checking your browser" in title:
+        return True
+    return False
+
+
 def is_cloudflare_ip(ip: str) -> bool:
     addr = ipaddress.ip_address(ip)
     return any(addr in ipaddress.ip_network(network) for network in _CF_RANGES)
 
 
-async def try_resolve_origin_ip(domain: str, timeout: float = 5.0) -> str | None:
-    try:
-        ip = socket.gethostbyname(domain)
-    except Exception:
-        return None
-    if is_cloudflare_ip(ip):
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(
-                f"https://{domain}/",
-                headers={"Host": domain},
-                follow_redirects=False,
-            )
-            if response.status_code < 400:
-                return ip
-    except Exception:
-        return None
-    return None
+# ---------------------------------------------------------------------------
+# In-process sliding-window rate limiter (lightweight / test-friendly)
+# ---------------------------------------------------------------------------
+
+class SessionRateLimiter:
+    """Simple in-process sliding-window rate limiter.
+
+    Tracks request timestamps in memory and enforces ``max_rpm`` per minute.
+    Suitable for single-worker testing and as a lightweight fallback when
+    Redis is unavailable.  For cross-worker rate limiting use
+    ``acquire_session_request_slot`` (Redis-backed).
+    """
+
+    def __init__(self, max_rpm: int = 20) -> None:
+        self.max_rpm = max(1, max_rpm)
+        self.timestamps: list[float] = []
+
+    async def acquire(self) -> None:
+        """Wait until a request slot is available within the RPM limit."""
+        window = 60.0
+        while True:
+            now = time.time()
+            # Evict timestamps outside the sliding window.
+            self.timestamps = [t for t in self.timestamps if now - t < window]
+            if len(self.timestamps) < self.max_rpm:
+                self.timestamps.append(now)
+                return
+            # Sleep until the oldest timestamp falls outside the window.
+            oldest = self.timestamps[0]
+            sleep_s = max(0.05, (oldest + window) - now)
+            sleep_s += random.uniform(0.02, 0.1)  # jitter
+            await asyncio.sleep(min(sleep_s, 5.0))
 
 
-@dataclass
-class ProxySessionManager:
-    cooldown_seconds: int = 1800
-    _used_sessions: set[str] = None  # type: ignore[assignment]
-    _blocked_sessions: dict[str, float] = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        self._used_sessions = set()
-        self._blocked_sessions = {}
-
-    def get_session_for_channel(self, channel_url: str) -> str:
-        base = hashlib.sha256(f"{channel_url}:{int(time.time() // 3600)}".encode()).hexdigest()[:16]
-        session_id = base
-        if session_id in self._used_sessions:
-            session_id = hashlib.sha256(f"{channel_url}:{time.time()}".encode()).hexdigest()[:16]
-        self._used_sessions.add(session_id)
-        return session_id
-
-    def mark_blocked(self, session_id: str) -> None:
-        self._blocked_sessions[session_id] = time.time()
-
-    def is_blocked(self, session_id: str) -> bool:
-        blocked_at = self._blocked_sessions.get(session_id)
-        if blocked_at is None:
-            return False
-        return (time.time() - blocked_at) < self.cooldown_seconds
+# ---------------------------------------------------------------------------
+# Backward-compatible re-exports
+# ---------------------------------------------------------------------------
+# ProxySessionManager was previously defined in this module. It has been moved
+# to core.proxy for better separation of concerns. Re-exported here so that
+# existing imports (e.g. in tests) continue to work without changes.
+from core.proxy import ProxySessionManager  # noqa: E402

@@ -17,6 +17,7 @@ from tasks.discover_channels import discover_channels_now
 from tasks.run_gate0 import run_gate0
 from tasks.scrape_bitchute import scrape_bitchute_channel
 from tasks.scrape_rumble import scrape_rumble_channel
+from tasks.scrape_substack import scrape_substack_channel
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ def _stage_scrape_signatures(
     platform_min_gap_s: dict[str, int] = {
         "bitchute": 20,
         "rumble": 4,
+        "substack": 2,
     }
     platform_seen: dict[str, int] = {}
     staged: list[object] = []
@@ -365,7 +367,7 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
         platform = str(channel.get("platform") or "")
         if not channel_url:
             continue
-        if platform in {"rumble", "bitchute"} and is_open(platform):
+        if platform in {"rumble", "bitchute", "substack"} and is_open(platform):
             logger.warning(
                 "Skipping %s weekly velocity scrape due to open circuit breaker: %s",
                 platform,
@@ -376,6 +378,8 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
             scrape_signatures.append((platform, scrape_rumble_channel.s(channel_url)))
         elif platform == "bitchute":
             scrape_signatures.append((platform, scrape_bitchute_channel.s(channel_url)))
+        elif platform == "substack":
+            scrape_signatures.append((platform, scrape_substack_channel.s(channel_url)))
         else:
             logger.warning("Unsupported platform skipped: %s", platform)
 
@@ -430,7 +434,7 @@ def run_daily_scrape() -> dict[str, object]:
         platform = str(channel.get("platform") or "")
         if not channel_url:
             continue
-        if platform in {"rumble", "bitchute"} and is_open(platform):
+        if platform in {"rumble", "bitchute", "substack"} and is_open(platform):
             logger.warning(
                 "Skipping %s scrape due to open circuit breaker: %s",
                 platform,
@@ -441,6 +445,8 @@ def run_daily_scrape() -> dict[str, object]:
             scrape_signatures.append((platform, scrape_rumble_channel.s(channel_url)))
         elif platform == "bitchute":
             scrape_signatures.append((platform, scrape_bitchute_channel.s(channel_url)))
+        elif platform == "substack":
+            scrape_signatures.append((platform, scrape_substack_channel.s(channel_url)))
         else:
             logger.warning("Unsupported platform skipped: %s", platform)
 

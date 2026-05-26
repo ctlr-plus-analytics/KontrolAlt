@@ -125,7 +125,9 @@ class SystemSettingsPatchRequest(BaseModel):
     gate0_enabled: bool | None = None
     discovery_enabled: bool | None = None
     lookalike_enabled: bool | None = None
-    scrape_platform_priority: list[Literal["rumble", "bitchute"]] | None = None
+    scrape_platform_priority: list[
+        Literal["rumble", "bitchute", "substack"]
+    ] | None = None
     scrape_only_new_or_missing_metrics: bool | None = None
     scrape_rescrape_min_hours: int | None = None
     weekly_velocity_enabled: bool | None = None

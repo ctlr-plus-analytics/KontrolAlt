@@ -73,6 +73,8 @@ def _infer_platform(channel_url: str) -> str | None:
         return "rumble"
     if "bitchute.com" in hostname:
         return "bitchute"
+    if "substack.com" in hostname:
+        return "substack"
     return None
 
 

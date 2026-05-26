@@ -103,6 +103,16 @@ export function ChannelDetail({
     retry: "warning",
     failed: "danger",
   };
+  const platformLabelMap: Record<Channel["platform"], string> = {
+    rumble: "Rumble",
+    bitchute: "BitChute",
+    substack: "Substack",
+  };
+  const platformClassMap: Record<Channel["platform"], string> = {
+    rumble: "bg-[#E8712B]/10 text-[#E8712B]",
+    bitchute: "bg-[#7B3FA0]/10 text-[#7B3FA0]",
+    substack: "bg-[#FF6719]/10 text-[#C04A0E]",
+  };
 
   return (
     <div className="space-y-6">
@@ -117,12 +127,10 @@ export function ChannelDetail({
               <span
                 className={cn(
                   "inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-bold",
-                  channel.platform === "rumble"
-                    ? "bg-[#E8712B]/10 text-[#E8712B]"
-                    : "bg-[#7B3FA0]/10 text-[#7B3FA0]"
+                  platformClassMap[channel.platform]
                 )}
               >
-                {channel.platform === "rumble" ? "Rumble" : "BitChute"}
+                {platformLabelMap[channel.platform]}
               </span>
               {channel.is_55_plus && <DemoBadge55 />}
             </div>
