@@ -3,7 +3,7 @@
  */
 "use client";
 
-import { SlidersHorizontal, X } from "lucide-react";
+import { X } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import type { ChannelFilters } from "@/types";
 import { Dropdown } from "@/components/ui/Dropdown";
@@ -28,7 +28,6 @@ const DEFAULT_FILTERS: ChannelFilters = {
   platform: "all",
   comment_tier: "all",
   gate0_status: "all",
-  is_55_plus: null,
   niche_tag: null,
   search_query: null,
   min_subscriber_count: null,
@@ -142,14 +141,6 @@ export function FilterBar({
         advanced: false,
       });
     }
-    if (filters.is_55_plus) {
-      active.push({
-        key: "is_55_plus",
-        label: "55+ Signal",
-        onClear: () => update({ is_55_plus: null }),
-        advanced: false,
-      });
-    }
     if (filters.niche_tag) {
       active.push({
         key: "niche_tag",
@@ -230,15 +221,13 @@ export function FilterBar({
     return active;
   }, [filters, update]);
 
-  const advancedFilterCount = activeFilters.filter(
-    (filter) => filter.advanced
-  ).length;
+  const advancedFilterCount = activeFilters.filter((filter) => filter.advanced).length;
 
   return (
-    <div className="mb-6 rounded-lg border border-[#E8E4DC] bg-white p-4 shadow-sm">
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="flex min-w-[260px] flex-1 flex-col gap-1.5">
-          <label className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+    <div className="mb-6 rounded-lg border border-[#E8E4DC] bg-white p-3 shadow-sm">
+      <div className="flex flex-wrap items-end gap-2.5">
+        <div className="flex min-w-[260px] flex-1 flex-col gap-1">
+          <label className="text-[11px] font-medium uppercase tracking-wide text-[#6B6B6B]">
             Search
           </label>
           <input
@@ -252,7 +241,7 @@ export function FilterBar({
               })
             }
             placeholder="Name, URL, description"
-            className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] placeholder:text-[#6B6B6B]/50 focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+            className="h-9 rounded-md border border-[#E8E4DC] bg-white px-3 text-sm text-[#0D0D0D] placeholder:text-[#6B6B6B]/50 focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
           />
         </div>
 
@@ -263,6 +252,8 @@ export function FilterBar({
           onChange={(value) =>
             update({ platform: value as ChannelFilters["platform"] })
           }
+          containerClassName="w-[170px]"
+          className="h-9 w-full rounded-md py-0"
         />
 
         <Dropdown
@@ -272,6 +263,8 @@ export function FilterBar({
           onChange={(value) =>
             update({ comment_tier: value as ChannelFilters["comment_tier"] })
           }
+          containerClassName="w-[170px]"
+          className="h-9 w-full rounded-md py-0"
         />
 
         <Dropdown
@@ -281,6 +274,8 @@ export function FilterBar({
           onChange={(value) =>
             update({ gate0_status: value as ChannelFilters["gate0_status"] })
           }
+          containerClassName="w-[170px]"
+          className="h-9 w-full rounded-md py-0"
         />
 
         <Dropdown
@@ -290,68 +285,47 @@ export function FilterBar({
           onChange={(value) =>
             update({ sort_by: value as ChannelFilters["sort_by"] })
           }
+          containerClassName="w-[170px]"
+          className="h-9 w-full rounded-md py-0"
         />
 
-        <div className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-            55+ Audience
-          </span>
-          <button
-            type="button"
-            onClick={() =>
-              update({ is_55_plus: filters.is_55_plus ? null : true })
-            }
-            className={cn(
-              "rounded-lg border px-3 py-2 text-sm font-medium transition-all duration-150 cursor-pointer",
-              filters.is_55_plus
-                ? "border-[#E6A817] bg-[#E6A817]/10 text-[#E6A817]"
-                : "border-[#E8E4DC] bg-white text-[#6B6B6B] hover:border-[#C9A84C]"
-            )}
-          >
-            55+
-          </button>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setAdvancedOpen((open) => !open)}
-          className={cn(
-            "inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-all duration-150 cursor-pointer",
-            advancedOpen || advancedFilterCount > 0
-              ? "border-[#C9A84C] bg-[#C9A84C]/10 text-[#1A1A2E]"
-              : "border-[#E8E4DC] bg-white text-[#1A1A2E] hover:border-[#C9A84C]"
-          )}
-          aria-expanded={advancedOpen}
-        >
-          <SlidersHorizontal size={14} />
-          More filters
-          {advancedFilterCount > 0 && (
-            <span className="rounded-full bg-[#1A1A2E] px-1.5 py-0.5 text-[10px] font-bold text-white">
-              {advancedFilterCount}
-            </span>
-          )}
-        </button>
+        <Dropdown
+          label="Order"
+          options={[
+            { value: "desc", label: "High to Low" },
+            { value: "asc", label: "Low to High" },
+          ]}
+          value={filters.sort_order}
+          onChange={(value) =>
+            update({ sort_order: value as ChannelFilters["sort_order"] })
+          }
+          containerClassName="w-[150px]"
+          className="h-9 w-full rounded-md py-0"
+        />
 
         {activeFilters.length > 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setFilters(DEFAULT_FILTERS)}
-          >
-            <X size={14} />
-            Clear All
-          </Button>
+          <div className="flex items-end">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setFilters(DEFAULT_FILTERS)}
+              className="h-9 rounded-md px-3"
+            >
+              <X size={14} />
+              Clear All
+            </Button>
+          </div>
         )}
       </div>
 
       {activeFilters.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className="mt-2 flex flex-wrap gap-1.5">
           {activeFilters.map((filter) => (
             <button
               key={filter.key}
               type="button"
               onClick={filter.onClear}
-              className="inline-flex items-center gap-1 rounded-full border border-[#E8E4DC] bg-[#FAF8F4] px-2.5 py-1 text-xs font-medium text-[#1A1A2E] transition-colors hover:border-[#C9A84C]"
+              className="inline-flex h-7 items-center gap-1 rounded-full border border-[#E8E4DC] bg-[#FAF8F4] px-2.5 text-xs font-medium text-[#1A1A2E] transition-colors hover:border-[#C9A84C]"
               title={`Remove ${filter.label}`}
             >
               {filter.label}
@@ -361,9 +335,30 @@ export function FilterBar({
         </div>
       )}
 
+      <div className="mt-3 border-t border-[#E8E4DC] pt-3">
+        <button
+          type="button"
+          onClick={() => setAdvancedOpen((current) => !current)}
+          className={cn(
+            "inline-flex h-8 items-center gap-2 rounded-md border px-3 text-[11px] font-semibold uppercase tracking-wide transition-colors",
+            advancedOpen || advancedFilterCount > 0
+              ? "border-[#C9A84C] bg-[#C9A84C]/10 text-[#1A1A2E]"
+              : "border-[#E8E4DC] bg-white text-[#6B6B6B] hover:border-[#C9A84C]"
+          )}
+          aria-expanded={advancedOpen}
+        >
+          {advancedOpen ? "Hide Advanced Filters" : "Show Advanced Filters"}
+          {advancedFilterCount > 0 && (
+            <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[#1A1A2E] px-1 text-[10px] font-bold text-white">
+              {advancedFilterCount}
+            </span>
+          )}
+        </button>
+      </div>
+
       {advancedOpen && (
-        <div className="mt-4 border-t border-[#E8E4DC] pt-4">
-          <div className="flex flex-wrap items-end gap-4">
+        <div className="mt-3 border-t border-[#E8E4DC] pt-3">
+          <div className="flex flex-wrap items-end gap-2.5">
             <Dropdown
               label="Niche Tag"
               options={[
@@ -376,6 +371,8 @@ export function FilterBar({
                   niche_tag: value === "all" ? null : value,
                 })
               }
+              containerClassName="w-[220px]"
+              className="h-9 w-full rounded-md py-0"
             />
 
             <NumericRangeFilter
@@ -391,6 +388,7 @@ export function FilterBar({
                   max_subscriber_count: max,
                 })
               }
+              className="w-[220px]"
             />
 
             <NumericRangeFilter
@@ -406,6 +404,7 @@ export function FilterBar({
                   max_avg_views: max,
                 })
               }
+              className="w-[220px]"
             />
 
             <NumericRangeFilter
@@ -421,10 +420,11 @@ export function FilterBar({
                   max_avg_comments: max,
                 })
               }
+              className="w-[220px]"
             />
 
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+            <div className="flex w-[180px] flex-col gap-1">
+              <label className="text-[11px] font-medium uppercase tracking-wide text-[#6B6B6B]">
                 Active From
               </label>
               <input
@@ -435,12 +435,12 @@ export function FilterBar({
                     last_active_from: event.target.value || null,
                   })
                 }
-                className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                className="h-9 rounded-md border border-[#E8E4DC] bg-white px-3 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
               />
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+            <div className="flex w-[180px] flex-col gap-1">
+              <label className="text-[11px] font-medium uppercase tracking-wide text-[#6B6B6B]">
                 Active To
               </label>
               <input
@@ -451,29 +451,12 @@ export function FilterBar({
                     last_active_to: event.target.value || null,
                   })
                 }
-                className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                className="h-9 rounded-md border border-[#E8E4DC] bg-white px-3 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
               />
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-                Order
-              </span>
-              <button
-                type="button"
-                onClick={() =>
-                  update({
-                    sort_order: filters.sort_order === "asc" ? "desc" : "asc",
-                  })
-                }
-                className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm font-medium text-[#1A1A2E] transition-all duration-150 hover:border-[#C9A84C] cursor-pointer"
-              >
-                {filters.sort_order === "asc" ? "ASC" : "DESC"}
-              </button>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+            <div className="flex w-[140px] flex-col gap-1">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-[#6B6B6B]">
                 Inactive
               </span>
               <button
@@ -482,7 +465,7 @@ export function FilterBar({
                   update({ inactive_filter: !filters.inactive_filter })
                 }
                 className={cn(
-                  "rounded-lg border px-3 py-2 text-sm font-medium transition-all duration-150 cursor-pointer",
+                  "h-9 rounded-md border px-3 text-sm font-medium transition-all duration-150 cursor-pointer",
                   filters.inactive_filter
                     ? "border-[#B22222] bg-[#B22222]/10 text-[#B22222]"
                     : "border-[#E8E4DC] bg-white text-[#6B6B6B] hover:border-[#C9A84C]"
@@ -492,8 +475,8 @@ export function FilterBar({
               </button>
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+            <div className="flex w-[140px] flex-col gap-1">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-[#6B6B6B]">
                 Incomplete
               </span>
               <button
@@ -502,7 +485,7 @@ export function FilterBar({
                   update({ include_incomplete: !filters.include_incomplete })
                 }
                 className={cn(
-                  "rounded-lg border px-3 py-2 text-sm font-medium transition-all duration-150 cursor-pointer",
+                  "h-9 rounded-md border px-3 text-sm font-medium transition-all duration-150 cursor-pointer",
                   filters.include_incomplete
                     ? "border-[#1A1A2E] bg-[#1A1A2E]/10 text-[#1A1A2E]"
                     : "border-[#E8E4DC] bg-white text-[#6B6B6B] hover:border-[#C9A84C]"

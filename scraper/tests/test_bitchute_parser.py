@@ -129,6 +129,42 @@ def test_extract_videos_from_rendered_card_container() -> None:
     assert parsed["kO4CknSw3I8Z"]["date"] is not None
 
 
+def test_extract_card_views_prefers_visibility_chip_not_date_or_duration() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    scraper.VIDEO_VIEWS_SELECTOR = "div.q-chip__content div.text-caption"
+    html = """
+    <div id="video-card">
+      <div class="q-chip">
+        <i class="q-chip__icon">visibility</i>
+        <div class="q-chip__content"><div class="text-caption">122</div></div>
+      </div>
+      <div class="q-chip">
+        <div class="q-chip__content"><div class="text-caption">56:24</div></div>
+      </div>
+      <div class="q-item__label q-item__label--caption text-caption">3 days ago</div>
+      <div class="q-item__label bc-text-break">MAGA EXPOSED for faking 2025 mass deportation numbers</div>
+    </div>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    assert scraper._extract_card_views(soup) == 122
+
+
+def test_extract_video_page_views_prefers_visibility_chip() -> None:
+    scraper = BitChuteScraper.__new__(BitChuteScraper)
+    scraper.VIDEO_PAGE_VIEW_SELECTOR = (
+        "div.col-xs-12.col-sm-4.col-2 div.q-item__label.text-right.text-weight-medium.text-subtitle1"
+    )
+    html = """
+    <div class="q-chip">
+      <i class="q-chip__icon">visibility</i>
+      <div class="q-chip__content"><div class="text-caption">343</div></div>
+    </div>
+    <div class="q-item__label text-right text-weight-medium text-subtitle1">2025 - 3 days ago</div>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    assert scraper._extract_video_page_views(soup) == 343
+
+
 def test_merge_video_page_signals() -> None:
     scraper = BitChuteScraper.__new__(BitChuteScraper)
     item = {

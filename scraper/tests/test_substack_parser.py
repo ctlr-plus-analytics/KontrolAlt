@@ -47,7 +47,7 @@ def test_parse_substack_datetime_variants() -> None:
 def test_channel_base_url_normalizes_handle_and_query() -> None:
     scraper = SubstackScraper.__new__(SubstackScraper)
     base = scraper._channel_base_url("https://www.substack.com/@theconsciouslee/?utm_source=x")
-    assert base == "https://substack.com/@theconsciouslee"
+    assert base == "https://substack.com/@theconsciouslee/posts"
 
 
 def test_extract_name_description_and_subscribers() -> None:
@@ -94,6 +94,61 @@ def test_extract_posts_from_card_selectors() -> None:
     assert item["views"] == 3200
     assert item["comments"] == 42
     assert item["date"] is not None
+
+
+def test_extract_post_metrics_from_like_and_comment_buttons() -> None:
+    scraper = SubstackScraper.__new__(SubstackScraper)
+    html = """
+    <div class="reader2-post-container">
+      <a class="reader2-inbox-post" href="https://example.substack.com/p/post-slug">
+        <div class="meta-EgzBVA inbox-item-timestamp">May 18</div>
+        <div class="reader2-post-title">A Post</div>
+        <div class="rowUfi-owxpPL">
+          <button aria-label="Like"><div>32</div></button>
+          <button aria-label="Comment"><div>6</div></button>
+        </div>
+      </a>
+    </div>
+    """
+    parsed = scraper._extract_posts(
+        BeautifulSoup(html, "html.parser"),
+        "https://substack.com/@theconsciouslee/posts",
+    )
+    assert "/p/post-slug" in parsed
+    item = parsed["/p/post-slug"]
+    assert item["views"] == 32
+    assert item["comments"] == 6
+    assert item["date"] is not None
+
+
+def test_extract_post_metrics_do_not_confuse_restack_with_comments() -> None:
+    scraper = SubstackScraper.__new__(SubstackScraper)
+    scraper.POST_COLLECTION_LIMIT = 50
+    scraper.POST_CARD_SELECTOR = "div.reader2-post-container"
+    scraper.POST_LINK_SELECTOR = "a[href*='/p/']"
+    scraper.POST_TITLE_SELECTOR = "div.reader2-post-title"
+    scraper.POST_DATE_SELECTOR = "div.meta-EgzBVA.inbox-item-timestamp, time[datetime], time"
+
+    html = """
+    <div class="reader2-post-container">
+      <a class="reader2-inbox-post" href="https://example.substack.com/p/post-slug">
+        <div class="meta-EgzBVA inbox-item-timestamp">May 18</div>
+        <div class="reader2-post-title">A Post</div>
+        <div class="rowUfi-owxpPL">
+          <button aria-label="Like"><div>32</div></button>
+          <button aria-label="Comment"></button>
+          <button aria-label="Restack"><div>6</div></button>
+        </div>
+      </a>
+    </div>
+    """
+    parsed = scraper._extract_posts(
+        BeautifulSoup(html, "html.parser"),
+        "https://substack.com/@theconsciouslee/posts",
+    )
+    item = parsed["/p/post-slug"]
+    assert item["views"] == 32
+    assert item["comments"] == 0
 
 
 def test_extract_post_page_signals_selectors_only() -> None:

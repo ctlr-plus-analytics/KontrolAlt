@@ -1,7 +1,7 @@
 """Celery Beat schedule — daily scrape and velocity computation."""
 
 from celery.schedules import crontab
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 
 
 def _daily_scrape_crontab() -> crontab:

@@ -15,7 +15,7 @@ from core.circuit_breaker import is_open, record_failure, record_success
 from core.exceptions import CloudflareBlockError, ScraperBlockedError, ScraperClassifiedError
 from core.proxy import proxy_session_manager
 from core.supabase import get_supabase_client
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 from models import ScrapeTaskArgs, ScrapeTaskResult
 from scrapers.substack import SubstackScraper
 from tasks.scrape_helpers import (
@@ -49,7 +49,7 @@ def _is_supported_substack_channel_url(channel_url: str) -> bool:
 
 @celery_app.task(
     bind=True,
-    max_retries=scraper_settings.scrape_run_max_retries_per_channel,
+    max_retries=get_runtime_settings().scrape_run_max_retries_per_channel,
     default_retry_delay=60,
     name="scraper.tasks.scrape_substack_channel",
 )
@@ -85,13 +85,23 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
         ).model_dump(mode="json")
 
     runtime = get_runtime_settings()
-    limit = getattr(runtime, "scrape_platform_slot_limit_substack", runtime.scrape_platform_slot_limit_rumble)
+    limit = runtime.scrape_platform_slot_limit_substack
     if not try_acquire_platform_slot("substack", limit):
         release_scrape_lock(channel_url)
         logger.info(
             "Substack platform concurrency limit reached, rescheduling: %s", channel_url
         )
-        raise self.retry(countdown=random.randint(30, 90))
+        # Queue contention is operational, not a scrape failure: re-dispatch
+        # without burning this task's failure-retry budget.
+        scrape_substack_channel.apply_async(
+            args=[channel_url],
+            countdown=random.randint(30, 90),
+        )
+        return ScrapeTaskResult(
+            status="skipped",
+            channel_url=channel_url,
+            error="Substack platform slot busy; rescheduled",
+        ).model_dump(mode="json")
 
     scraper = SubstackScraper()
     try:

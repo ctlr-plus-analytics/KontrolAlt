@@ -23,7 +23,7 @@ from core.browser import (
 )
 from core.cf_bypass import human_scroll, inter_request_jitter
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 from scrapers.base import BaseScraper
 from utils.contact_extractor import extract_emails, extract_urls
 from utils.keyword_matcher import compute_channel_demographic, compute_comment_tier
@@ -573,7 +573,6 @@ class RumbleScraper(BaseScraper):
                     "contact_info": contact_info,
                     "niche_tags": demographic["niche_tags"],
                     "video_titles": video_titles,
-                    "is_55_plus": demographic["is_55_plus"],
                     "secondary_urls": all_secondary,
                 }
 

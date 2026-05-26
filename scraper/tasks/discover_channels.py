@@ -15,7 +15,7 @@ from worker import celery_app
 from core.config import scraper_settings
 from core.circuit_breaker import is_open
 from core.supabase import get_supabase_client
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 from tasks.scrape_bitchute import scrape_bitchute_channel
 from tasks.scrape_rumble import scrape_rumble_channel
 from tasks.scrape_substack import scrape_substack_channel

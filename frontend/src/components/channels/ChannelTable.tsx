@@ -30,7 +30,6 @@ const COLUMNS: SortableColumn[] = [
   { key: "avg_comments", label: "Avg Comments", align: "right" },
   { key: null, label: "Comment Tier" },
   { key: null, label: "Gate 0" },
-  { key: null, label: "55+ Signal", align: "center" },
   { key: "subscriber_count", label: "Subscribers", align: "right" },
   { key: "avg_views", label: "Avg Views", align: "right" },
   { key: "last_active_date", label: "Last Active" },

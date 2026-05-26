@@ -15,7 +15,7 @@ from playwright.async_api import Error as PlaywrightError
 from core.browser import BrowserTelemetry, guarded_goto, human_delay, launch_browser, wait_for_content
 from core.cf_bypass import human_scroll, inter_request_jitter
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 from scrapers.base import BaseScraper
 from utils.contact_extractor import extract_emails, extract_urls
 from utils.keyword_matcher import compute_channel_demographic, compute_comment_tier
@@ -61,11 +61,21 @@ SUBSTACK_CHANNEL = {
         ],
     },
     "post_card": {
-        "primary": "div[role='article'][aria-label*='Post preview'], article, [data-testid='post-preview']",
+        "primary": (
+            "div.reader2-post-container, "
+            "a.reader2-inbox-post, "
+            "div[role='article'][aria-label*='Post preview'], "
+            "article, "
+            "[data-testid='post-preview']"
+        ),
         "fallbacks": [],
     },
     "post_link": {
-        "primary": "a[data-testid='post-preview-title'][href*='/p/'], a[href*='/p/']",
+        "primary": (
+            "a.reader2-inbox-post[href*='/p/'], "
+            "a[data-testid='post-preview-title'][href*='/p/'], "
+            "a[href*='/p/']"
+        ),
         "fallbacks": [],
     },
     "post_title": {
@@ -81,7 +91,7 @@ SUBSTACK_CHANNEL = {
         "fallbacks": [],
     },
     "post_date": {
-        "primary": "div.meta-EgzBVA.inbox-item-timestamp time[datetime], time.date-rtYe1v",
+        "primary": "div.meta-EgzBVA.inbox-item-timestamp, time[datetime], time.date-rtYe1v",
         "fallbacks": [],
     },
     "external_links": {
@@ -104,7 +114,7 @@ SUBSTACK_POST = {
         "fallbacks": ["script[type='application/ld+json']"],
     },
     "comments": {
-        "primary": "[data-testid='comment-count'], [class*='comment']",
+        "primary": "button[aria-label='Comment'], [data-testid='comment-count'], [class*='comment']",
         "fallbacks": ["script[type='application/ld+json']"],
     },
     "date": {
@@ -150,6 +160,7 @@ def parse_substack_datetime(text: str) -> datetime | None:
     if not text:
         return None
     value = text.strip()
+    now = datetime.now()
     try:
         parsed = datetime.fromisoformat(re.sub(r"Z$", "+00:00", value))
         return parsed.replace(tzinfo=None)
@@ -164,8 +175,13 @@ def parse_substack_datetime(text: str) -> datetime | None:
             return datetime.strptime(value, fmt)
         except ValueError:
             continue
+    for fmt in ("%B %d", "%b %d"):
+        try:
+            parsed = datetime.strptime(value, fmt)
+            return parsed.replace(year=now.year)
+        except ValueError:
+            continue
     lowered = value.lower()
-    now = datetime.now()
     if "yesterday" in lowered:
         return now - timedelta(days=1)
     if "just now" in lowered:
@@ -297,6 +313,14 @@ class SubstackScraper(BaseScraper):
 
                 await human_scroll(page, direction="down", steps=5)
                 post_data_map, soup = await self._collect_posts(page)
+                if not post_data_map:
+                    logger.info("Substack: post grid empty on first pass, waiting for JS render %s", channel_base_url)
+                    await human_delay(1.2, 2.2)
+                    post_data_map, soup = await self._collect_posts(page)
+                if not post_data_map:
+                    logger.info("Substack: post grid still empty, running extended wait/scroll parse %s", channel_base_url)
+                    await human_delay(2.5, 4.0)
+                    post_data_map, soup = await self._collect_posts(page)
                 stage_marks.append(("fast_path_card_parse", perf_counter() - stage_t0))
 
                 comment_attempted, comment_blocked, comment_success = await self._enrich_latest_post_page_metrics(
@@ -362,7 +386,6 @@ class SubstackScraper(BaseScraper):
                     "contact_info": contact_info,
                     "niche_tags": demographic["niche_tags"],
                     "video_titles": post_titles,
-                    "is_55_plus": demographic["is_55_plus"],
                     "secondary_urls": secondary_urls,
                 }
 
@@ -403,9 +426,9 @@ class SubstackScraper(BaseScraper):
                 retryable=False,
             )
         handle = parts[0]
-        path = f"/{handle}"
+        path = f"/{handle}/posts"
         canonical = urlunsplit((scheme, host, path, "", ""))
-        if not _SUBSTACK_HANDLE_PATH_RE.match(path):
+        if not _SUBSTACK_HANDLE_PATH_RE.match(f"/{handle}"):
             raise ScraperClassifiedError(
                 "unsupported_substack_url_shape",
                 f"Unsupported Substack URL shape: {channel_url}",
@@ -418,7 +441,7 @@ class SubstackScraper(BaseScraper):
         collected: dict[str, dict[str, object]] = {}
         last_soup = BeautifulSoup(await page.content(), "lxml")
 
-        for _ in range(4):
+        for _ in range(7):
             html = await page.content()
             soup = BeautifulSoup(html, "lxml")
             last_soup = soup
@@ -447,7 +470,7 @@ class SubstackScraper(BaseScraper):
         for card in soup.select(self.POST_CARD_SELECTOR):
             if len(post_map) >= self.POST_COLLECTION_LIMIT or not isinstance(card, Tag):
                 break
-            link = card.select_one(self.POST_LINK_SELECTOR)
+            link = card if (card.name == "a" and "/p/" in str(card.get("href") or "")) else card.select_one(self.POST_LINK_SELECTOR)
             if not isinstance(link, Tag):
                 continue
             href = str(link.get("href") or "").strip()
@@ -678,14 +701,17 @@ class SubstackScraper(BaseScraper):
         return link.get_text(" ", strip=True)
 
     def _extract_post_card_views(self, card: Tag) -> int | None:
+        like_button = card.select_one("button[aria-label='Like']")
+        if isinstance(like_button, Tag):
+            parsed = self._extract_metric_from_button(like_button)
+            if parsed is not None:
+                return parsed
+            return 0
         like_label = card.select_one(".like-button-container .label")
         if isinstance(like_label, Tag):
             parsed = parse_count_text(like_label.get_text(" ", strip=True))
             if parsed is not None:
                 return parsed
-        metrics = self._extract_post_card_metric_values(card)
-        if metrics:
-            return metrics[0]
         for node in card.select("[data-testid='view-count'], [class*='view']"):
             parsed = parse_count_text(node.get_text(" ", strip=True))
             if parsed is not None:
@@ -693,14 +719,17 @@ class SubstackScraper(BaseScraper):
         return None
 
     def _extract_post_card_comments(self, card: Tag) -> int | None:
+        comment_button = card.select_one("button[aria-label='Comment']")
+        if isinstance(comment_button, Tag):
+            parsed = self._extract_metric_from_button(comment_button)
+            if parsed is not None:
+                return parsed
+            return 0
         comment_label = card.select_one(".post-ufi-comment-button .label")
         if isinstance(comment_label, Tag):
             parsed = parse_count_text(comment_label.get_text(" ", strip=True))
             if parsed is not None:
                 return parsed
-        metrics = self._extract_post_card_metric_values(card)
-        if len(metrics) >= 2:
-            return metrics[1]
         for node in card.select("[data-testid='comment-count'], [class*='comment']"):
             parsed = parse_count_text(node.get_text(" ", strip=True))
             if parsed is not None:
@@ -748,6 +777,12 @@ class SubstackScraper(BaseScraper):
         return None
 
     def _extract_post_page_views(self, soup: BeautifulSoup) -> int | None:
+        like_button = soup.select_one("button[aria-label='Like']")
+        if isinstance(like_button, Tag):
+            parsed = self._extract_metric_from_button(like_button)
+            if parsed is not None:
+                return parsed
+            return 0
         node = soup.select_one(SUBSTACK_POST["views"]["primary"])
         if node is not None:
             parsed = parse_count_text(node.get_text(" ", strip=True))
@@ -756,6 +791,12 @@ class SubstackScraper(BaseScraper):
         return None
 
     def _extract_post_page_comments(self, soup: BeautifulSoup) -> int | None:
+        comment_button = soup.select_one("button[aria-label='Comment']")
+        if isinstance(comment_button, Tag):
+            parsed = self._extract_metric_from_button(comment_button)
+            if parsed is not None:
+                return parsed
+            return 0
         node = soup.select_one(SUBSTACK_POST["comments"]["primary"])
         if node is not None:
             parsed = parse_count_text(node.get_text(" ", strip=True))
@@ -784,6 +825,16 @@ class SubstackScraper(BaseScraper):
         if isinstance(meta, Tag):
             return str(meta.get("content") or "").strip()
         return ""
+
+    def _extract_metric_from_button(self, button: Tag) -> int | None:
+        for node in button.select("div, span"):
+            text = node.get_text(" ", strip=True)
+            if not text:
+                continue
+            parsed = parse_count_text(text)
+            if parsed is not None:
+                return parsed
+        return parse_count_text(button.get_text(" ", strip=True))
 
     def _extract_external_links(self, soup: BeautifulSoup, base_url: str) -> list[str]:
         links: set[str] = set()

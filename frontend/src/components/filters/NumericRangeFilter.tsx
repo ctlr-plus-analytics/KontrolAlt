@@ -14,6 +14,7 @@ interface NumericRangeFilterProps {
   minValue: number | null;
   maxValue: number | null;
   onChange: (next: { min: number | null; max: number | null }) => void;
+  className?: string;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -28,6 +29,7 @@ export function NumericRangeFilter({
   minValue,
   maxValue,
   onChange,
+  className,
 }: NumericRangeFilterProps) {
   const resolvedMin = useMemo(
     () => (minValue ?? minLimit),
@@ -68,13 +70,23 @@ export function NumericRangeFilter({
   };
 
   return (
-    <div className="flex min-w-[240px] flex-col gap-2">
+    <div
+      className={cn(
+        "flex min-w-[220px] flex-col gap-1.5 rounded-lg border border-[#E8E4DC] bg-[#FCFBF8] p-2.5",
+        className
+      )}
+    >
       <label className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
         {label}
       </label>
 
-      <div className="relative h-10">
-        <div className="absolute left-0 right-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-[#E8E4DC]" />
+      <div className="flex items-center justify-between text-[10px] font-medium text-[#6B6B6B]">
+        <span>{minLimit.toLocaleString()}</span>
+        <span>{maxLimit.toLocaleString()}</span>
+      </div>
+
+      <div className="relative h-6">
+        <div className="absolute left-0 right-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-[#E2DDD2]" />
         <div
           className="absolute top-1/2 h-1 -translate-y-1/2 rounded-full bg-[#C9A84C]"
           style={{
@@ -98,8 +110,8 @@ export function NumericRangeFilter({
           }}
           className={cn(
             "pointer-events-none absolute left-0 top-1/2 h-1 w-full -translate-y-1/2 appearance-none bg-transparent",
-            "[&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-[#1A1A2E] [&::-webkit-slider-thumb]:bg-white",
-            "[&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-[#1A1A2E] [&::-moz-range-thumb]:bg-white"
+            "[&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-[#1A1A2E] [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_1px_3px_rgba(26,26,46,0.24)]",
+            "[&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-[#1A1A2E] [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_1px_3px_rgba(26,26,46,0.24)]"
           )}
           aria-label={`${label} minimum`}
         />
@@ -119,34 +131,44 @@ export function NumericRangeFilter({
           }}
           className={cn(
             "pointer-events-none absolute left-0 top-1/2 h-1 w-full -translate-y-1/2 appearance-none bg-transparent",
-            "[&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-[#1A1A2E] [&::-webkit-slider-thumb]:bg-white",
-            "[&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-[#1A1A2E] [&::-moz-range-thumb]:bg-white"
+            "[&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-[#1A1A2E] [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_1px_3px_rgba(26,26,46,0.24)]",
+            "[&::-moz-range-thumb]:pointer-events-auto [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-[#1A1A2E] [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_1px_3px_rgba(26,26,46,0.24)]"
           )}
           aria-label={`${label} maximum`}
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
-        <input
-          type="number"
-          min={minLimit}
-          max={maxLimit}
-          step={step}
-          value={minValue ?? ""}
-          placeholder="Min"
-          onChange={(event) => onMinInputChange(event.target.value)}
-          className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
-        />
-        <input
-          type="number"
-          min={minLimit}
-          max={maxLimit}
-          step={step}
-          value={maxValue ?? ""}
-          placeholder="Max"
-          onChange={(event) => onMaxInputChange(event.target.value)}
-          className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
-        />
+      <div className="grid grid-cols-2 gap-1.5">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-[#7A766F]">
+            Min
+          </span>
+          <input
+            type="number"
+            min={minLimit}
+            max={maxLimit}
+            step={step}
+            value={minValue ?? ""}
+            placeholder="Any"
+            onChange={(event) => onMinInputChange(event.target.value)}
+            className="rounded-md border border-[#DDD7CC] bg-white px-2.5 py-1.5 text-sm text-[#0D0D0D] placeholder:text-[#9A948A] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-[#7A766F]">
+            Max
+          </span>
+          <input
+            type="number"
+            min={minLimit}
+            max={maxLimit}
+            step={step}
+            value={maxValue ?? ""}
+            placeholder="Any"
+            onChange={(event) => onMaxInputChange(event.target.value)}
+            className="rounded-md border border-[#DDD7CC] bg-white px-2.5 py-1.5 text-sm text-[#0D0D0D] placeholder:text-[#9A948A] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+          />
+        </label>
       </div>
     </div>
   );

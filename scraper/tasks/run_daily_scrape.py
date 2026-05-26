@@ -11,7 +11,7 @@ from postgrest.exceptions import APIError
 from worker import celery_app
 from core.circuit_breaker import is_open
 from core.supabase import get_supabase_client
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 from tasks.compute_velocity import compute_velocity_all
 from tasks.discover_channels import discover_channels_now
 from tasks.run_gate0 import run_gate0

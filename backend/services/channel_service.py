@@ -32,7 +32,6 @@ _CHANNEL_COLUMNS = {
     "niche_tags",
     "video_titles",
     "is_active",
-    "is_55_plus",
     "gate0_status",
     "gate0_checked_at",
     "secondary_urls",
@@ -114,9 +113,6 @@ async def get_channels(
 
         if filters.gate0_status is not None:
             query = query.eq("gate0_status", filters.gate0_status.value)
-
-        if filters.is_55_plus is not None:
-            query = query.eq("is_55_plus", filters.is_55_plus)
 
         if filters.niche_tag is not None:
             query = query.contains("niche_tags", [filters.niche_tag])

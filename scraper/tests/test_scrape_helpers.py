@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 from pytest import MonkeyPatch
-from core.system_settings import RuntimeSettings
+from core.runtime_settings import RuntimeSettings
 from tasks.scrape_helpers import retry_countdown_seconds
 
 

@@ -8,7 +8,7 @@ from postgrest.exceptions import APIError
 
 from worker import celery_app
 from core.supabase import get_supabase_client
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 from models import LookalikeTaskResult
 
 logger = logging.getLogger(__name__)

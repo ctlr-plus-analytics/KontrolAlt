@@ -36,13 +36,6 @@ class ScraperSettings(BaseSettings):
     proxy_active_since_minutes: int = 0
     proxy_platform_filter: str | None = None
 
-    # Scrape pacing / quota guardrails
-    scrape_dispatch_batch_size: int = 8
-    scrape_dispatch_pause_seconds: float = 2.0
-    scrape_run_max_channels: int = 0
-    scrape_run_max_retries_per_channel: int = 1
-    scrape_daily_byte_budget_mb: int = 0
-
     # Serper search (needed for Gate 0 tasks)
     serp_api_key: str
 
@@ -67,15 +60,6 @@ class ScraperSettings(BaseSettings):
         if value < 0 or value > 1440:
             raise ValueError("PROXY_ACTIVE_SINCE_MINUTES must be between 0 and 1440")
         return value
-
-    @field_validator("scrape_run_max_retries_per_channel")
-    @classmethod
-    def validate_scrape_run_max_retries_per_channel(cls, value: int) -> int:
-        """Ensure retry count is within a reasonable range."""
-        if value < 0 or value > 5:
-            raise ValueError("SCRAPE_RUN_MAX_RETRIES_PER_CHANNEL must be between 0 and 5")
-        return value
-
 
 # Singleton validates on import.
 scraper_settings = ScraperSettings()

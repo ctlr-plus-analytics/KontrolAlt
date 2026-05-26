@@ -9,6 +9,7 @@ interface DropdownProps {
   value: string;
   onChange: (value: string) => void;
   className?: string;
+  containerClassName?: string;
 }
 
 export function Dropdown({
@@ -17,10 +18,11 @@ export function Dropdown({
   value,
   onChange,
   className,
+  containerClassName,
 }: DropdownProps) {
   return (
-    <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+    <div className={cn("flex flex-col gap-1", containerClassName)}>
+      <label className="text-[11px] font-medium uppercase tracking-wide text-[#6B6B6B]">
         {label}
       </label>
       <select

@@ -5,7 +5,7 @@ import logging
 import redis
 
 from core.config import scraper_settings
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,7 @@ from postgrest.exceptions import APIError
 from worker import celery_app
 from core.config import scraper_settings
 from core.supabase import get_supabase_client
-from core.system_settings import Gate0CompetitorSetting, get_runtime_settings
+from core.runtime_settings import Gate0CompetitorSetting, get_runtime_settings
 from models import Gate0TaskResult
 
 logger = logging.getLogger(__name__)

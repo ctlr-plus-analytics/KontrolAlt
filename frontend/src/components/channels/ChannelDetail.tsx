@@ -16,7 +16,6 @@ import type { Channel, VelocityScore, Gate0Result, ScrapeLog } from "@/types";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Gate0Badge } from "@/components/channels/Gate0Badge";
-import { DemoBadge55 } from "@/components/channels/DemoBadge55";
 import { VelocityBadge } from "@/components/channels/VelocityBadge";
 import { formatNumber, timeAgo, cn } from "@/lib/utils";
 import { triggerGate0Check } from "@/lib/api/backend";
@@ -132,7 +131,6 @@ export function ChannelDetail({
               >
                 {platformLabelMap[channel.platform]}
               </span>
-              {channel.is_55_plus && <DemoBadge55 />}
             </div>
 
             {/* Stat Pills */}

@@ -23,7 +23,7 @@ from core.browser import (
 )
 from core.cf_bypass import human_scroll, inter_request_jitter
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 from scrapers.base import BaseScraper
 from utils.contact_extractor import extract_emails, extract_urls
 from utils.keyword_matcher import compute_channel_demographic, compute_comment_tier
@@ -88,7 +88,10 @@ BITCHUTE_CHANNEL = {
     "video_titles": {
         "primary": "div.q-item__label.bc-text-break.ellipsis-2-lines.bc-responsive-font",
         "fallbacks": [
-            "div.col-xs-12.col-sm-8.col-10 div.bc-text-break.bc-responsive-font"
+            "div.col-xs-12.col-sm-8.col-10 div.bc-text-break.bc-responsive-font",
+            "div.q-item__label.bc-text-break.ellipsis-2-lines.text-subtitle2",
+            "div.q-item__label.bc-text-break.ellipsis-2-lines",
+            "div.q-item__label.bc-text-break.bc-responsive-font",
         ],
         "extract": "text()",
         "normalize": "strip()",
@@ -248,6 +251,7 @@ def parse_bitchute_datetime(dt_str: str) -> datetime | None:
     if not dt_str:
         return None
     text = dt_str.strip()
+    now = datetime.now()
     try:
         parsed = datetime.fromisoformat(re.sub(r"Z$", "+00:00", text))
         return parsed.replace(tzinfo=None)
@@ -262,9 +266,14 @@ def parse_bitchute_datetime(dt_str: str) -> datetime | None:
             return datetime.strptime(text, fmt)
         except ValueError:
             continue
+    for fmt in ("%B %d", "%b %d"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            return parsed.replace(year=now.year)
+        except ValueError:
+            continue
 
     lowered = text.lower()
-    now = datetime.now()
     if "yesterday" in lowered:
         return now - timedelta(days=1)
     if "just now" in lowered:
@@ -629,7 +638,6 @@ class BitChuteScraper(BaseScraper):
                     "contact_info": contact_info,
                     "niche_tags": demographic["niche_tags"],
                     "video_titles": video_titles,
-                    "is_55_plus": demographic["is_55_plus"],
                     "secondary_urls": all_secondary,
                 }
 
@@ -1125,15 +1133,26 @@ class BitChuteScraper(BaseScraper):
         )
 
     def _extract_video_page_views(self, soup: BeautifulSoup) -> int | None:
+        parsed = self._extract_views_from_visibility_chip(soup)
+        if parsed is not None:
+            return parsed
         node = soup.select_one(self.VIDEO_PAGE_VIEW_SELECTOR)
         if node is not None:
-            parsed = parse_bitchute_views(node.get_text(" ", strip=True))
+            text = node.get_text(" ", strip=True)
+            if "view" in text.lower():
+                parsed = parse_bitchute_views(text)
+            else:
+                parsed = None
             if parsed is not None:
                 return parsed
         for fallback in BITCHUTE_VIDEO["view_count"]["fallbacks"]:
             node = soup.select_one(fallback)
             if node is not None:
-                parsed = parse_bitchute_views(node.get_text(" ", strip=True))
+                text = node.get_text(" ", strip=True)
+                if "view" in text.lower():
+                    parsed = parse_bitchute_views(text)
+                else:
+                    parsed = None
                 if parsed is not None:
                     return parsed
         return None
@@ -1252,33 +1271,69 @@ class BitChuteScraper(BaseScraper):
         return ""
 
     def _extract_video_title(self, card: Tag, link: Tag) -> str:
+        candidates: list[str] = []
         node = card.select_one(self.VIDEO_TITLE_SELECTOR)
         if node is not None:
-            text = str(node.get("title") or node.get_text(" ", strip=True)).strip()
-            if text:
-                return text
+            candidates.append(str(node.get("title") or node.get_text(" ", strip=True)).strip())
+        for fallback in BITCHUTE_CHANNEL["video_titles"]["fallbacks"]:
+            node = card.select_one(fallback)
+            if node is not None:
+                candidates.append(str(node.get("title") or node.get_text(" ", strip=True)).strip())
         for attr in ["title", "aria-label"]:
             text = str(link.get(attr) or "").strip()
             if text:
+                candidates.append(text)
+        for text in candidates:
+            if text and not self._is_invalid_video_title(text):
                 return text
-        return link.get_text(" ", strip=True)
+        return ""
 
     def _extract_card_views(self, card: Tag) -> int | None:
+        parsed = self._extract_views_from_visibility_chip(card)
+        if parsed is not None:
+            return parsed
         node = card.select_one(self.VIDEO_VIEWS_SELECTOR)
         if node is not None:
-            parsed = parse_count_text(node.get_text(" ", strip=True))
+            text = node.get_text(" ", strip=True)
+            parsed = None
+            if "view" in text.lower() and not self._is_duration_text(text):
+                parsed = parse_count_text(text)
             if parsed is not None:
                 return parsed
         for node in card.select("div.text-caption"):
             text = node.get_text(" ", strip=True)
-            if re.fullmatch(r"\d+:\d{2}(?::\d{2})?", text):
+            lowered = text.lower()
+            if self._is_duration_text(text):
                 continue
+            # Handle mixed strings like "324 Views - 3 weeks ago".
+            if "view" in lowered:
+                left_segment = text.split("-", 1)[0].strip()
+                parsed = parse_count_text(left_segment)
+                if parsed is not None:
+                    return parsed
             parsed = parse_count_text(text)
             if parsed is not None:
                 return parsed
         return None
 
     def _extract_card_comments(self, card: Tag) -> int | None:
+        for chip in card.select("div.q-chip"):
+            icon = chip.select_one("i.q-chip__icon")
+            icon_text = icon.get_text(" ", strip=True).lower() if icon is not None else ""
+            if icon_text not in {"mode_comment", "comment", "chat_bubble", "forum"}:
+                continue
+            # Precision-first: only trust card comments when the chip carries
+            # an explicit textual comment marker. Otherwise comment totals are
+            # sourced from the video page widget.
+            chip_text = chip.get_text(" ", strip=True).lower()
+            if "comment" not in chip_text:
+                continue
+            value_node = chip.select_one("div.q-chip__content div.text-caption")
+            if value_node is None:
+                continue
+            parsed = parse_count_text(value_node.get_text(" ", strip=True))
+            if parsed is not None:
+                return parsed
         return None
 
     def _extract_card_date(self, card: Tag) -> datetime | None:
@@ -1336,3 +1391,21 @@ class BitChuteScraper(BaseScraper):
     def _has_empty_channel_marker(self, text: str) -> bool:
         lowered = (text or "").strip().lower()
         return any(marker in lowered for marker in self._EMPTY_CHANNEL_MARKERS)
+
+    def _extract_views_from_visibility_chip(self, scope: Tag | BeautifulSoup) -> int | None:
+        for chip in scope.select("div.q-chip"):
+            icon = chip.select_one("i.q-chip__icon")
+            icon_text = icon.get_text(" ", strip=True).lower() if icon is not None else ""
+            if icon_text != "visibility":
+                continue
+            value_node = chip.select_one("div.q-chip__content div.text-caption")
+            if value_node is None:
+                continue
+            text = value_node.get_text(" ", strip=True)
+            parsed = parse_count_text(text)
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _is_duration_text(self, text: str) -> bool:
+        return bool(re.fullmatch(r"\d+:\d{2}(?::\d{2})?", (text or "").strip()))

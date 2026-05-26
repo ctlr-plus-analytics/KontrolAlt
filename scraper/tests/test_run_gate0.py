@@ -16,7 +16,7 @@ from tasks.run_gate0 import (
     _scan_serper_results,
     _should_run_gate0_check,
 )
-from core.system_settings import Gate0CompetitorSetting, _parse_gate0_competitors
+from core.runtime_settings import Gate0CompetitorSetting, _parse_gate0_competitors
 
 
 def test_gate0_skips_recent_clean_channels() -> None:

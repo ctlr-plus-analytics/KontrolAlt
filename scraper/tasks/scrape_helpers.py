@@ -12,16 +12,14 @@ from postgrest.exceptions import APIError
 
 from core.config import scraper_settings
 from core.exceptions import CloudflareBlockError, ScraperBlockedError, ScraperClassifiedError
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 from scrapers.base import BaseScraper
 
 logger = logging.getLogger(__name__)
 _USAGE_KEY_PREFIX = "scraper:usage:bytes:"
 _KEYWORD_DISCOVERY_FAILED_SOURCE = "auto_keyword_failed"
 _SCRAPE_LOCK_KEY_PREFIX = "scraper:lock:channel:"
-_SCRAPE_LOCK_TTL_SECONDS = 20 * 60
 _PLATFORM_SLOT_KEY_PREFIX = "scraper:slot:platform:"
-_PLATFORM_SLOT_TTL_SECONDS = 20 * 60
 
 
 def retry_countdown_seconds(task: Task) -> int:
@@ -63,7 +61,7 @@ def has_retries_remaining(task: Task) -> bool:
 def has_retries_remaining_for_block(task: Task) -> bool:
     """Return True when blocked/challenge errors should still retry."""
     retries = int(task.request.retries or 0)
-    return retries < scraper_settings.scrape_run_max_retries_per_channel
+    return retries < get_runtime_settings().scrape_run_max_retries_per_channel
 
 
 def _infer_platform(channel_url: str) -> str | None:
@@ -294,13 +292,14 @@ def _scrape_lock_key(channel_url: str) -> str:
 def acquire_scrape_lock(channel_url: str) -> bool:
     """Acquire a short-lived distributed lock for a channel URL."""
     try:
+        runtime = get_runtime_settings()
         client = _redis_client()
         return bool(
             client.set(
                 _scrape_lock_key(channel_url),
                 "1",
                 nx=True,
-                ex=_SCRAPE_LOCK_TTL_SECONDS,
+                ex=max(60, int(runtime.scrape_lock_ttl_seconds)),
             )
         )
     except Exception as exc:
@@ -322,9 +321,10 @@ def try_acquire_platform_slot(platform: str, limit: int) -> bool:
         return True
     key = f"{_PLATFORM_SLOT_KEY_PREFIX}{platform}"
     try:
+        runtime = get_runtime_settings()
         client = _redis_client()
         total = int(client.incr(key))
-        client.expire(key, _PLATFORM_SLOT_TTL_SECONDS)
+        client.expire(key, max(60, int(runtime.scrape_platform_slot_ttl_seconds)))
         if total > limit:
             client.decr(key)
             return False
@@ -348,6 +348,24 @@ def release_platform_slot(platform: str) -> None:
             client.decr(key)
     except Exception as exc:
         logger.warning("Failed to release platform slot for %s: %s", platform, exc)
+
+
+def clear_platform_slots(platforms: list[str] | tuple[str, ...] | None = None) -> dict[str, object]:
+    """Delete platform slot counters to recover from stale startup state.
+
+    Safe to run during worker boot in single-worker deployments. In multi-worker
+    deployments, coordinate usage because deleting shared counters can
+    temporarily undercount active slots.
+    """
+    targets = tuple(platforms or ("rumble", "bitchute", "substack"))
+    keys = [f"{_PLATFORM_SLOT_KEY_PREFIX}{platform}" for platform in targets]
+    try:
+        client = _redis_client()
+        deleted = int(client.delete(*keys)) if keys else 0
+        return {"deleted": deleted, "keys": keys}
+    except Exception as exc:
+        logger.warning("Failed to clear platform slots for %s: %s", ",".join(targets), exc)
+        return {"deleted": 0, "keys": keys, "error": str(exc)}
 
 
 def get_daily_bytes_used() -> int:

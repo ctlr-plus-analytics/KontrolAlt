@@ -34,7 +34,7 @@ from core.proxy import (
     record_proxy_success,
     record_proxy_failure,
 )
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
 

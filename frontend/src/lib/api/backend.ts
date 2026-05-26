@@ -22,8 +22,6 @@ import type {
   ResolverConfirmRequest,
   ScrapeTaskResponse,
   AdminMeResponse,
-  SystemSettings,
-  SystemSettingsPatchRequest,
   AdminTaskTriggerRequest,
   AdminTaskTriggerResponse,
   Gate0BatchTriggerRequest,
@@ -119,9 +117,6 @@ export async function getChannels(
   }
   if (filters.gate0_status && filters.gate0_status !== "all") {
     params.set("gate0_status", filters.gate0_status);
-  }
-  if (filters.is_55_plus !== undefined && filters.is_55_plus !== null) {
-    params.set("is_55_plus", String(filters.is_55_plus));
   }
   if (filters.niche_tag) {
     params.set("niche_tag", filters.niche_tag);
@@ -299,23 +294,6 @@ export async function getHealth(): Promise<{
 /** Get current admin identity/capabilities. */
 export async function getAdminMe(token?: string): Promise<AdminMeResponse> {
   return apiFetch<AdminMeResponse>("/api/v1/admin/me", { token });
-}
-
-/** Get mutable system settings for admin control plane. */
-export async function getAdminSettings(token?: string): Promise<SystemSettings> {
-  return apiFetch<SystemSettings>("/api/v1/admin/settings", { token });
-}
-
-/** Patch admin system settings using optimistic lock version. */
-export async function patchAdminSettings(
-  payload: SystemSettingsPatchRequest,
-  token?: string
-): Promise<SystemSettings> {
-  return apiFetch<SystemSettings>("/api/v1/admin/settings", {
-    method: "PATCH",
-    body: payload,
-    token,
-  });
 }
 
 /** Trigger full scrape workflow as admin. */

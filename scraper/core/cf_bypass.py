@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 
 CLOUDFLARE_ERROR_CODES: dict[int, tuple[str, str, bool]] = {
     1020: ("CF_ACCESS_DENIED", "firewall_rule", False),

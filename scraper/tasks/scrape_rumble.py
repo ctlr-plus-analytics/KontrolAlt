@@ -17,7 +17,7 @@ from core.circuit_breaker import is_open, record_failure, record_success
 from core.exceptions import CloudflareBlockError, ScraperBlockedError, ScraperClassifiedError
 from core.proxy import proxy_session_manager
 from core.supabase import get_supabase_client
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 from models import ScrapeTaskArgs, ScrapeTaskResult
 from scrapers.rumble import RumbleScraper
 from tasks.scrape_helpers import (
@@ -105,7 +105,7 @@ def _emit_kpi_alerts(channel_url: str, result: dict[str, object]) -> None:
 
 @celery_app.task(
     bind=True,
-    max_retries=scraper_settings.scrape_run_max_retries_per_channel,
+    max_retries=get_runtime_settings().scrape_run_max_retries_per_channel,
     default_retry_delay=60,
     name="scraper.tasks.scrape_rumble_channel",
 )
@@ -153,7 +153,15 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
         logger.info(
             "Rumble platform concurrency limit reached, rescheduling: %s", channel_url
         )
-        raise self.retry(countdown=random.randint(30, 90))
+        scrape_rumble_channel.apply_async(
+            args=[channel_url],
+            countdown=random.randint(30, 90),
+        )
+        return ScrapeTaskResult(
+            status="skipped",
+            channel_url=channel_url,
+            error="Rumble platform slot busy; rescheduled",
+        ).model_dump(mode="json")
     scraper = RumbleScraper()
     try:
         scraper._session_key = (

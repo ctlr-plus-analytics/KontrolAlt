@@ -26,7 +26,6 @@ def test_demographic_uses_combined_channel_text() -> None:
         ["Physical gold protects fixed income"],
     )
 
-    assert result["is_55_plus"] is True
     assert set(result["niche_tags"]) >= {"gold_investment", "retirement"}
 
 

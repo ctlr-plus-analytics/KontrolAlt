@@ -38,6 +38,7 @@ celery_app.conf.update(
         "tasks.scrape_rumble",
         "tasks.scrape_bitchute",
         "tasks.scrape_substack",
+        "tasks.maintenance",
         "tasks.compute_velocity",
         "tasks.discover_channels",
         "tasks.discover_keyword_expansion",
@@ -82,4 +83,17 @@ def _on_worker_init(**kwargs):
     except Exception as exc:
         logger.warning(
             "Proxy startup health check failed (worker will continue): %s", exc
+        )
+    try:
+        from tasks.scrape_helpers import clear_platform_slots
+
+        result = clear_platform_slots()
+        logger.info(
+            "Worker startup platform-slot cleanup: deleted=%s keys=%s",
+            result.get("deleted"),
+            ",".join(result.get("keys", [])),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Platform-slot startup cleanup failed (worker will continue): %s", exc
         )

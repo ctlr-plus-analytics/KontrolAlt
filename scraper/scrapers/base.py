@@ -9,7 +9,7 @@ from playwright.async_api import Error as PlaywrightError, Page
 
 from core.cf_bypass import check_for_cf_challenge, classify_cloudflare_block, detect_captcha
 from core.exceptions import CloudflareBlockError, ScraperBlockedError, ScraperClassifiedError
-from core.system_settings import get_runtime_settings
+from core.runtime_settings import get_runtime_settings
 from core.supabase import get_supabase_client
 from models import ChannelSnapshotData
 

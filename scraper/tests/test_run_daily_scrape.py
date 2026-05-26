@@ -19,7 +19,7 @@ from tasks.run_daily_scrape import (  # noqa: E402
     _select_weekly_velocity_channels,
     _stage_scrape_signatures,
 )
-from core.system_settings import RuntimeSettings  # noqa: E402
+from core.runtime_settings import RuntimeSettings  # noqa: E402
 
 
 class FakeSignature:

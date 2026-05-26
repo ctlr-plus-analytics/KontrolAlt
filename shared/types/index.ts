@@ -35,7 +35,6 @@ export interface Channel {
   niche_tags: string[];
   video_titles: string[];
   is_active: boolean;
-  is_55_plus: boolean;
   gate0_status: Gate0Status;
   gate0_checked_at: string | null;
   secondary_urls: string[];

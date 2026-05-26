@@ -11,14 +11,7 @@ os.environ.setdefault("SERP_API_KEY", "serper-key")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("FRONTEND_ORIGIN", "http://localhost:3000")
 
-from models.channel import ChannelFilters
 from services.channel_service import _channel_from_discovery_row
-
-
-def test_channel_filters_accept_false_55_plus_filter() -> None:
-    filters = ChannelFilters(is_55_plus=False)
-
-    assert filters.is_55_plus is False
 
 
 def test_discovery_row_maps_velocity_and_gate0_models() -> None:
@@ -38,7 +31,6 @@ def test_discovery_row_maps_velocity_and_gate0_models() -> None:
         "niche_tags": [],
         "video_titles": [],
         "is_active": True,
-        "is_55_plus": False,
         "gate0_status": "clean",
         "gate0_checked_at": "2026-05-01T00:00:00+00:00",
         "secondary_urls": [],

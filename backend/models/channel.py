@@ -68,7 +68,6 @@ class Channel(BaseModel):
     niche_tags: list[str] = Field(default_factory=list)
     video_titles: list[str] = Field(default_factory=list)
     is_active: bool = True
-    is_55_plus: bool = False
     gate0_status: Gate0Status = Gate0Status.unchecked
     gate0_checked_at: datetime | None = None
     secondary_urls: list[str] = Field(default_factory=list)
@@ -113,7 +112,6 @@ class ChannelFilters(BaseModel):
     platform: Platform | None = None
     comment_tier: CommentTier | None = None
     gate0_status: Gate0Status | None = None
-    is_55_plus: bool | None = None
     niche_tag: str | None = None
     search_query: str | None = None
     min_subscriber_count: int | None = None

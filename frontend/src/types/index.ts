@@ -35,7 +35,6 @@ export interface Channel {
   niche_tags: string[];
   video_titles: string[];
   is_active: boolean;
-  is_55_plus: boolean;
   gate0_status: Gate0Status;
   gate0_checked_at: string | null;
   secondary_urls: string[];
@@ -220,7 +219,6 @@ export interface ChannelFilters {
   platform: "all" | Platform;
   comment_tier: "all" | CommentTier;
   gate0_status: "all" | Gate0Status;
-  is_55_plus: boolean | null;
   niche_tag: string | null;
   search_query?: string | null;
   min_subscriber_count?: number | null;
@@ -256,105 +254,6 @@ export interface AdminMeResponse {
   email: string | null;
   roles: string[];
   capabilities: string[];
-}
-
-export interface Gate0Competitor {
-  brand: string;
-  domains: string[];
-}
-
-export interface SystemSettings {
-  daily_scrape_utc_time: string;
-  gate0_enabled: boolean;
-  discovery_enabled: boolean;
-  lookalike_enabled: boolean;
-  scrape_platform_priority: Platform[];
-  scrape_only_new_or_missing_metrics: boolean;
-  scrape_rescrape_min_hours: number;
-  weekly_velocity_enabled: boolean;
-  weekly_velocity_utc_day: "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
-  weekly_velocity_utc_time: string;
-  velocity_weekly_min_avg_comments: number;
-  velocity_weekly_min_avg_views: number;
-  velocity_weekly_min_subscribers: number;
-  velocity_weekly_stale_hours: number;
-  scrape_dispatch_batch_size: number;
-  scrape_dispatch_pause_seconds: number;
-  scrape_run_max_channels: number;
-  scrape_daily_byte_budget_mb: number;
-  scrape_retry_base_delay_seconds: number;
-  scrape_retry_jitter_min: number;
-  scrape_retry_jitter_max: number;
-  scrape_circuit_breaker_fail_threshold: number;
-  scrape_circuit_breaker_window_seconds: number;
-  scrape_circuit_breaker_cooldown_seconds: number;
-  gate0_daily_queue_limit: number;
-  gate0_clean_recheck_days: number;
-  gate0_competitors: Gate0Competitor[];
-  scraper_human_delay_min_seconds: number;
-  scraper_human_delay_max_seconds: number;
-  scraper_content_wait_min_bytes: number;
-  scraper_content_wait_timeout_seconds: number;
-  scraper_content_wait_poll_seconds: number;
-  discovery_serper_query_limit: number;
-  discovery_results_per_query: number;
-  discovery_max_pages_per_query: number;
-  discovery_insert_limit: number;
-  discovery_query_stagnation_limit: number;
-  discovery_global_stop_no_new: number;
-  discovery_max_feedback_terms: number;
-  discovery_new_scrape_limit: number;
-  discovery_channel_page_size: number;
-  discovery_verify_timeout_seconds: number;
-  version: number;
-  updated_at: string;
-  updated_by_email: string | null;
-}
-
-export interface SystemSettingsPatchRequest {
-  daily_scrape_utc_time?: string;
-  gate0_enabled?: boolean;
-  discovery_enabled?: boolean;
-  lookalike_enabled?: boolean;
-  scrape_platform_priority?: Platform[];
-  scrape_only_new_or_missing_metrics?: boolean;
-  scrape_rescrape_min_hours?: number;
-  weekly_velocity_enabled?: boolean;
-  weekly_velocity_utc_day?: "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
-  weekly_velocity_utc_time?: string;
-  velocity_weekly_min_avg_comments?: number;
-  velocity_weekly_min_avg_views?: number;
-  velocity_weekly_min_subscribers?: number;
-  velocity_weekly_stale_hours?: number;
-  scrape_dispatch_batch_size?: number;
-  scrape_dispatch_pause_seconds?: number;
-  scrape_run_max_channels?: number;
-  scrape_daily_byte_budget_mb?: number;
-  scrape_retry_base_delay_seconds?: number;
-  scrape_retry_jitter_min?: number;
-  scrape_retry_jitter_max?: number;
-  scrape_circuit_breaker_fail_threshold?: number;
-  scrape_circuit_breaker_window_seconds?: number;
-  scrape_circuit_breaker_cooldown_seconds?: number;
-  gate0_daily_queue_limit?: number;
-  gate0_clean_recheck_days?: number;
-  gate0_competitors?: Gate0Competitor[];
-  scraper_human_delay_min_seconds?: number;
-  scraper_human_delay_max_seconds?: number;
-  scraper_content_wait_min_bytes?: number;
-  scraper_content_wait_timeout_seconds?: number;
-  scraper_content_wait_poll_seconds?: number;
-  discovery_serper_query_limit?: number;
-  discovery_results_per_query?: number;
-  discovery_max_pages_per_query?: number;
-  discovery_insert_limit?: number;
-  discovery_query_stagnation_limit?: number;
-  discovery_global_stop_no_new?: number;
-  discovery_max_feedback_terms?: number;
-  discovery_new_scrape_limit?: number;
-  discovery_channel_page_size?: number;
-  discovery_verify_timeout_seconds?: number;
-  expected_version: number;
 }
 
 export interface AdminTaskTriggerRequest {

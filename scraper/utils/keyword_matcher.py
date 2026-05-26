@@ -1,4 +1,4 @@
-"""Keyword matching, 55+ demographic inference, and comment tier logic."""
+"""Keyword matching and comment tier logic."""
 
 from utils.taxonomy import KEYWORD_TAXONOMY
 
@@ -22,11 +22,6 @@ def match_keywords(text: str) -> list[str]:
     return matched
 
 
-def is_55_plus_audience(matched_categories: list[str]) -> bool:
-    """Return True if 2+ categories matched, indicating a 55+ audience."""
-    return len(matched_categories) >= 2
-
-
 def compute_channel_demographic(
     channel_name: str, description: str, video_titles: list[str]
 ) -> dict[str, object]:
@@ -38,13 +33,12 @@ def compute_channel_demographic(
         video_titles: List of recent video titles.
 
     Returns:
-        Dict with matched_categories, is_55_plus, niche_tags.
+        Dict with matched_categories and niche_tags.
     """
     combined = channel_name + " " + description + " " + " ".join(video_titles)
     categories = match_keywords(combined)
     return {
         "matched_categories": categories,
-        "is_55_plus": is_55_plus_audience(categories),
         "niche_tags": categories,
     }
 

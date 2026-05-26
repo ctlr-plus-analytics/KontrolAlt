@@ -5,7 +5,6 @@ import Link from "next/link";
 import type { Channel, VelocityScore } from "@/types";
 import { TableRow, TableCell } from "@/components/ui/Table";
 import { Gate0Badge } from "@/components/channels/Gate0Badge";
-import { DemoBadge55 } from "@/components/channels/DemoBadge55";
 import { CommentTierBadge } from "@/components/channels/CommentTierBadge";
 import { formatNumber, timeAgo } from "@/lib/utils";
 
@@ -41,14 +40,6 @@ export function ChannelRow({ channel, index }: ChannelRowProps) {
 
       <TableCell>
         <Gate0Badge status={channel.gate0_status} />
-      </TableCell>
-
-      <TableCell className="text-center">
-        {channel.is_55_plus ? (
-          <DemoBadge55 />
-        ) : (
-          <span className="text-xs text-[#6B6B6B]">-</span>
-        )}
       </TableCell>
 
       <TableCell className="text-right font-mono text-[#0D0D0D]">
