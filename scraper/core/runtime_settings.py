@@ -26,7 +26,7 @@ class RuntimeSettings:
     velocity_weekly_min_avg_views: float = 0.0
     velocity_weekly_min_subscribers: int = 0
     velocity_weekly_stale_hours: int = 144
-    scrape_dispatch_batch_size: int = 1
+    scrape_dispatch_batch_size: int = 3
     scrape_dispatch_pause_seconds: float = 5.0
     scrape_run_max_channels: int = 0
     scrape_daily_byte_budget_mb: int = 0
@@ -39,6 +39,7 @@ class RuntimeSettings:
     scrape_platform_slot_limit_rumble: int = 1
     scrape_platform_slot_limit_bitchute: int = 1
     scrape_platform_slot_limit_substack: int = 1
+    scrape_global_slot_limit: int = 3
     scrape_lock_ttl_seconds: int = 600
     scrape_platform_slot_ttl_seconds: int = 600
     scrape_circuit_breaker_fail_threshold: int = 5

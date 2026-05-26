@@ -20,6 +20,7 @@ _USAGE_KEY_PREFIX = "scraper:usage:bytes:"
 _KEYWORD_DISCOVERY_FAILED_SOURCE = "auto_keyword_failed"
 _SCRAPE_LOCK_KEY_PREFIX = "scraper:lock:channel:"
 _PLATFORM_SLOT_KEY_PREFIX = "scraper:slot:platform:"
+_GLOBAL_SLOT_KEY = "scraper:slot:global"
 
 
 def retry_countdown_seconds(task: Task) -> int:
@@ -350,6 +351,39 @@ def release_platform_slot(platform: str) -> None:
         logger.warning("Failed to release platform slot for %s: %s", platform, exc)
 
 
+def try_acquire_global_slot(limit: int) -> bool:
+    """Acquire one global in-flight scrape slot, capped by `limit`."""
+    if limit <= 0:
+        return True
+    try:
+        runtime = get_runtime_settings()
+        client = _redis_client()
+        total = int(client.incr(_GLOBAL_SLOT_KEY))
+        client.expire(_GLOBAL_SLOT_KEY, max(60, int(runtime.scrape_platform_slot_ttl_seconds)))
+        if total > limit:
+            client.decr(_GLOBAL_SLOT_KEY)
+            return False
+        return True
+    except Exception as exc:
+        logger.warning("Failed to acquire global scrape slot: %s", exc)
+        return True
+
+
+def release_global_slot() -> None:
+    """Release one global in-flight scrape slot."""
+    try:
+        client = _redis_client()
+        current = client.get(_GLOBAL_SLOT_KEY)
+        if current is None:
+            return
+        if int(current) <= 1:
+            client.delete(_GLOBAL_SLOT_KEY)
+        else:
+            client.decr(_GLOBAL_SLOT_KEY)
+    except Exception as exc:
+        logger.warning("Failed to release global scrape slot: %s", exc)
+
+
 def clear_platform_slots(platforms: list[str] | tuple[str, ...] | None = None) -> dict[str, object]:
     """Delete platform slot counters to recover from stale startup state.
 
@@ -359,6 +393,7 @@ def clear_platform_slots(platforms: list[str] | tuple[str, ...] | None = None) -
     """
     targets = tuple(platforms or ("rumble", "bitchute", "substack"))
     keys = [f"{_PLATFORM_SLOT_KEY_PREFIX}{platform}" for platform in targets]
+    keys.append(_GLOBAL_SLOT_KEY)
     try:
         client = _redis_client()
         deleted = int(client.delete(*keys)) if keys else 0

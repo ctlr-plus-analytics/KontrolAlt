@@ -15,7 +15,7 @@ const STATUS_CONFIG: Record<
   unchecked: { variant: "muted", label: "Not Checked" },
   pending: { variant: "warning", label: "Checking..." },
   clean: { variant: "success", label: "Clean Lead" },
-  dirty: { variant: "danger", label: "Brand Risk" },
+  dirty: { variant: "danger", label: "Gold Dirty" },
 };
 
 export function Gate0Badge({ status }: Gate0BadgeProps) {

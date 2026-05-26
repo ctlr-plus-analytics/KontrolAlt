@@ -63,7 +63,7 @@ const GATE0_OPTIONS = [
   { value: "unchecked", label: "Not Checked" },
   { value: "pending", label: "Checking" },
   { value: "clean", label: "Clean Lead" },
-  { value: "dirty", label: "Brand Risk" },
+  { value: "dirty", label: "Gold Dirty" },
 ];
 
 const SORT_OPTIONS = [

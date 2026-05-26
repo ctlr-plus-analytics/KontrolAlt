@@ -32,6 +32,7 @@ const COLUMNS: SortableColumn[] = [
   { key: null, label: "Gate 0" },
   { key: "subscriber_count", label: "Subscribers", align: "right" },
   { key: "avg_views", label: "Avg Views", align: "right" },
+  { key: null, label: "Engagement Rate", align: "right" },
   { key: "last_active_date", label: "Last Active" },
 ];
 
@@ -56,7 +57,10 @@ export function ChannelTable({
   }
 
   return (
-    <Table className="table-auto">
+    <Table
+      className="table-auto"
+      containerClassName="max-h-[clamp(360px,calc(100vh-24rem),620px)] overflow-y-auto"
+    >
       <TableHead>
         <tr>
           {COLUMNS.map((col) => (

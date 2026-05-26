@@ -1,6 +1,5 @@
 """BitChute scraper with resilient channel-card extraction."""
 
-import asyncio
 import logging
 import re
 from datetime import datetime, timedelta
@@ -137,7 +136,7 @@ BITCHUTE_VIDEO = {
     "title": {
         "primary": "div.col-xs-12.col-sm-8.col-10 div.bc-text-break.bc-responsive-font",
         "fallbacks": [
-            "a[href^=\"/video/\"] div.q-item__label.bc-text-break.ellipsis-2-lines.bc-responsive-font"
+            "meta[property=\"og:title\"]"
         ],
         "extract": "text()",
         "normalize": "strip()",
@@ -166,7 +165,7 @@ BITCHUTE_VIDEO = {
     "upload_date": {
         "primary": "div.col-xs-12.col-sm-4.col-2 div.q-item__label.text-right.text-weight-medium.text-subtitle1 > span",
         "fallbacks": [
-            "div.q-item__label.q-item__label--caption.text-caption"
+            "div.col-xs-12.col-sm-4.col-2 div.q-item__label.text-right.text-weight-medium.text-subtitle1"
         ],
         "extract": "text()",
         "normalize": "parse_bitchute_datetime()",
@@ -311,7 +310,7 @@ def parse_bitchute_datetime(dt_str: str) -> datetime | None:
 class BitChuteScraper(BaseScraper):
     """Scraper for BitChute channels using Patchright and BeautifulSoup."""
 
-    VIDEO_COLLECTION_LIMIT = 50
+    VIDEO_COLLECTION_LIMIT = 3
     COMMENT_VIDEO_PAGE_SAMPLE_LIMIT = 3
     DEMOGRAPHIC_TITLE_LIMIT = 20
     CHANNEL_NAV_TIMEOUT_MS = 45000
@@ -325,6 +324,7 @@ class BitChuteScraper(BaseScraper):
     VIDEO_PAGE_TIMEOUT_MS = 30000
     VIDEO_PAGE_CONTENT_TIMEOUT_S = 10.0
     VIDEO_PAGE_COMMENT_TIMEOUT_MS = 15000
+    VIDEO_PAGE_COMMENT_SHORT_TIMEOUT_MS = 5000
     _EMPTY_CHANNEL_MARKERS = (
         "0 videos",
         "no videos",
@@ -481,12 +481,20 @@ class BitChuteScraper(BaseScraper):
                     response_status=None,
                 )
 
-                name = self._extract_name(soup, channel_base_url, page_title)
-                subscriber_count = self._extract_subscribers(soup)
-                description = await self._fetch_about_description(page, about_url, session_key)
+                about_profile = await self._fetch_about_profile_data(
+                    page, about_url, session_key, channel_base_url, page_title
+                )
+                about_fetch_ok = bool(about_profile.get("fetch_ok"))
+                name = str(about_profile.get("name") or "").strip()
+                description = str(about_profile.get("description") or "")
+                subscriber_count = about_profile.get("subscriber_count")
                 stage_marks.append(("about_page_description", perf_counter() - stage_t0))
-                about_socials = self._extract_external_links(soup, channel_base_url)
-                about_contact_soup = soup
+                about_socials = list(about_profile.get("external_links") or [])
+                about_contact_soup = about_profile.get("soup") or soup
+                if not about_fetch_ok:
+                    # Optional resilience fallback only when About navigation fails.
+                    name = self._extract_name(soup, channel_base_url, page_title)
+                    subscriber_count = self._extract_subscribers(soup)
 
                 (
                     comment_pages_attempted,
@@ -712,30 +720,82 @@ class BitChuteScraper(BaseScraper):
             return channel_base_url
         return f"{channel_base_url.rstrip('/')}/{tab.strip('/')}"
 
-    async def _fetch_about_description(self, page, about_url: str, session_key: str) -> str:
-        """Navigate to the /about/ tab and extract the channel description."""
+    async def _fetch_about_profile_data(
+        self,
+        page,
+        about_url: str,
+        session_key: str,
+        channel_url: str,
+        page_title: str,
+    ) -> dict[str, object]:
+        """Navigate to the About tab and extract profile fields from that surface."""
         try:
             await inter_request_jitter()
-            await guarded_goto(
-                page,
-                about_url,
-                session_key=session_key,
-                wait_until="domcontentloaded",
-                timeout=self.ABOUT_NAV_TIMEOUT_MS,
-            )
+            about_opened = await self._open_about_tab(page)
+            if not about_opened:
+                await guarded_goto(
+                    page,
+                    about_url,
+                    session_key=session_key,
+                    wait_until="domcontentloaded",
+                    timeout=self.ABOUT_NAV_TIMEOUT_MS,
+                )
             await wait_for_content(page, min_bytes=3000, timeout_s=self.ABOUT_CONTENT_TIMEOUT_S)
             about_html = await page.content()
             # Targets: <div style="white-space: pre-line;">channel bio text</div>
             # Only present on the /about/ tab, not the videos page.
             about_soup = BeautifulSoup(about_html, "lxml")
-            return self._extract_description(about_soup)
+            return {
+                "fetch_ok": True,
+                "name": self._extract_name(about_soup, channel_url, page_title),
+                "description": self._extract_description(about_soup),
+                "subscriber_count": self._extract_subscribers(about_soup),
+                "external_links": self._extract_external_links(about_soup, channel_url),
+                "soup": about_soup,
+            }
         except Exception as exc:
             logger.warning(
-                "BitChute: about page fetch failed, description will be empty for %s: %s",
+                "BitChute: about page fetch failed, profile fields will use fallbacks for %s: %s",
                 about_url,
                 exc,
             )
-            return ""
+            return {
+                "fetch_ok": False,
+                "name": "",
+                "description": "",
+                "subscriber_count": None,
+                "external_links": [],
+                "soup": None,
+            }
+
+    async def _open_about_tab(self, page) -> bool:
+        """Open About tab via client-side tab switch when available."""
+        clicked = False
+        for action in (
+            lambda: page.get_by_role("tab", name="About").click(timeout=3500),
+            lambda: page.locator("div.q-tab__label", has_text="About").first.click(timeout=3500),
+            lambda: page.locator("text=About").first.click(timeout=3500),
+        ):
+            try:
+                await action()
+                clicked = True
+                break
+            except Exception:
+                continue
+        if not clicked:
+            return False
+        await human_delay(0.1, 0.3)
+        try:
+            await page.wait_for_function(
+                """() => {
+                    const text = (document.body?.innerText || "").toLowerCase();
+                    return text.includes("channel detail") || text.includes("description");
+                }""",
+                timeout=3500,
+            )
+        except Exception:
+            pass
+        return True
 
     def _extract_name(self, soup: BeautifulSoup, channel_url: str, page_title: str) -> str:
         """Extract channel name from the channel-home header selector."""
@@ -906,13 +966,12 @@ class BitChuteScraper(BaseScraper):
 
             title = self._extract_video_title(card, link)
             views = self._extract_card_views(card)
-            comments = self._extract_card_comments(card)
             date_val = self._extract_card_date(card)
 
             video_map[video_id] = {
                 "title": title or "Unknown Title",
                 "views": views,
-                "comments": comments,
+                "comments": None,
                 "date": date_val,
                 "url": video_url,
             }
@@ -1123,6 +1182,32 @@ class BitChuteScraper(BaseScraper):
             soup = BeautifulSoup(html_now, "lxml")
             views = self._extract_video_page_views(soup)
             comments, comment_hit_selector = self._extract_video_page_comments(soup)
+            if comments is None:
+                # CommentFreely occasionally hydrates late and first-pass snapshots
+                # only contain placeholder "( ? )" counters.
+                try:
+                    await human_delay(0.4, 0.9)
+                    await human_scroll(page, direction="down", steps=1)
+                    await self._wait_for_video_page_comment_state(page)
+                except Exception:
+                    pass
+                html_now = await page.content()
+                soup = BeautifulSoup(html_now, "lxml")
+                comments, comment_hit_selector = self._extract_video_page_comments(soup)
+            if (
+                comments is None
+                and self._has_unresolved_comment_placeholder(soup)
+            ):
+                # One extra targeted re-check for unresolved "( ? )" counter states.
+                try:
+                    await human_delay(0.5, 1.0)
+                    await human_scroll(page, direction="down", steps=1)
+                    await self._wait_for_video_page_comment_state(page)
+                except Exception:
+                    pass
+                html_now = await page.content()
+                soup = BeautifulSoup(html_now, "lxml")
+                comments, comment_hit_selector = self._extract_video_page_comments(soup)
             publish_date = self._extract_video_page_upload_date(soup)
             subscribers = self._extract_video_page_subscribers(soup)
             links = self._extract_video_page_external_links(soup)
@@ -1139,12 +1224,35 @@ class BitChuteScraper(BaseScraper):
             await page.close()
 
     async def _wait_for_video_page_comment_state(self, page) -> None:
-        """Wait until the CommentFreely widget loads a count or comment items."""
-        # Targets: span.item.count (navigation count bar) or #comment-list .comment divs
-        await page.wait_for_selector(
-            "#comments-container span.item.count, #comment-list .comment",
-            timeout=self.VIDEO_PAGE_COMMENT_TIMEOUT_MS,
-        )
+        """Wait until comments resolve to a usable state."""
+        # A usable state is any of:
+        # 1) numeric comment count value appears,
+        # 2) rendered comment nodes are present,
+        # 3) explicit no-comments marker/text is visible.
+        predicate = """() => {
+            const container = document.querySelector("#comments-container");
+            if (!container) return false;
+            const valueNodes = container.querySelectorAll("span.item.count span.value");
+            for (const node of valueNodes) {
+                const text = (node.textContent || "").trim();
+                if (/\\d/.test(text)) return true;
+            }
+            if (container.querySelector("#comment-list .comment")) return true;
+            const lowered = (container.textContent || "").toLowerCase();
+            if (lowered.includes("no comments") || lowered.includes("be the first to comment")) return true;
+            if (container.querySelector("div.no-comments.no-data")) return true;
+            return false;
+        }"""
+        try:
+            await page.wait_for_function(
+                predicate,
+                timeout=self.VIDEO_PAGE_COMMENT_SHORT_TIMEOUT_MS,
+            )
+        except Exception:
+            await page.wait_for_function(
+                predicate,
+                timeout=self.VIDEO_PAGE_COMMENT_TIMEOUT_MS,
+            )
 
     def _extract_video_page_views(self, soup: BeautifulSoup) -> int | None:
         parsed = self._extract_views_from_visibility_chip(soup)
@@ -1223,6 +1331,21 @@ class BitChuteScraper(BaseScraper):
             return 0, "div.no-comments.no-data"
         return None, None
 
+    def _has_unresolved_comment_placeholder(self, soup: BeautifulSoup) -> bool:
+        container = soup.select_one("#comments-container")
+        if container is None:
+            return False
+        if container.select_one("#comment-list .comment") is not None:
+            return False
+        value_nodes = container.select("span.item.count span.value")
+        if not value_nodes:
+            return False
+        for node in value_nodes:
+            text = node.get_text(" ", strip=True)
+            if "?" in text:
+                return True
+        return False
+
     def _extract_video_page_upload_date(self, soup: BeautifulSoup) -> datetime | None:
         node = soup.select_one(self.VIDEO_PAGE_DATE_SELECTOR)
         if node is not None:
@@ -1234,6 +1357,9 @@ class BitChuteScraper(BaseScraper):
             node = soup.select_one(fallback)
             if node is not None:
                 text = node.get_text(" ", strip=True).lstrip("-").strip()
+                # Common pattern: "<views> Views - <relative date> ...Show more"
+                if " - " in text:
+                    text = text.split(" - ", 1)[1].split("...Show more", 1)[0].strip()
                 parsed = parse_bitchute_datetime(text)
                 if parsed is not None:
                     return parsed
@@ -1269,7 +1395,10 @@ class BitChuteScraper(BaseScraper):
         for fallback in BITCHUTE_VIDEO["title"]["fallbacks"]:
             node = soup.select_one(fallback)
             if node is not None:
-                title = node.get_text(" ", strip=True)
+                if node.name == "meta":
+                    title = str(node.get("content") or "").strip()
+                else:
+                    title = node.get_text(" ", strip=True)
                 if title:
                     return title
         return ""
@@ -1326,26 +1455,6 @@ class BitChuteScraper(BaseScraper):
                 if parsed is not None:
                     return parsed
             parsed = parse_count_text(text)
-            if parsed is not None:
-                return parsed
-        return None
-
-    def _extract_card_comments(self, card: Tag) -> int | None:
-        for chip in card.select("div.q-chip"):
-            icon = chip.select_one("i.q-chip__icon")
-            icon_text = icon.get_text(" ", strip=True).lower() if icon is not None else ""
-            if icon_text not in {"mode_comment", "comment", "chat_bubble", "forum"}:
-                continue
-            # Precision-first: only trust card comments when the chip carries
-            # an explicit textual comment marker. Otherwise comment totals are
-            # sourced from the video page widget.
-            chip_text = chip.get_text(" ", strip=True).lower()
-            if "comment" not in chip_text:
-                continue
-            value_node = chip.select_one("div.q-chip__content div.text-caption")
-            if value_node is None:
-                continue
-            parsed = parse_count_text(value_node.get_text(" ", strip=True))
             if parsed is not None:
                 return parsed
         return None

@@ -2,15 +2,44 @@
  * Table — styled table primitives with design system styles.
  */
 import { cn } from "@/lib/utils";
+import type { WheelEvent } from "react";
 
 /* ─── Table Root ─── */
 interface TableProps extends React.TableHTMLAttributes<HTMLTableElement> {
   children: React.ReactNode;
+  containerClassName?: string;
 }
 
-export function Table({ children, className, ...props }: TableProps) {
+export function Table({
+  children,
+  className,
+  containerClassName,
+  ...props
+}: TableProps) {
+  const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
+    const container = event.currentTarget;
+    const { deltaY } = event;
+    if (deltaY === 0) return;
+
+    const maxScrollTop = container.scrollHeight - container.clientHeight;
+    const atTop = container.scrollTop <= 0;
+    const atBottom = container.scrollTop >= maxScrollTop - 1;
+
+    // Keep scrolling inside the table while there is room; otherwise let page scroll.
+    if ((deltaY < 0 && !atTop) || (deltaY > 0 && !atBottom)) {
+      event.preventDefault();
+      container.scrollTop += deltaY;
+    }
+  };
+
   return (
-    <div className="overflow-x-auto rounded-lg border border-[#E8E4DC] bg-white shadow-sm">
+    <div
+      className={cn(
+        "overflow-x-auto rounded-lg border border-[#E8E4DC] bg-white shadow-sm",
+        containerClassName
+      )}
+      onWheel={handleWheel}
+    >
       <table className={cn("w-full text-left text-sm", className)} {...props}>
         {children}
       </table>
@@ -20,7 +49,7 @@ export function Table({ children, className, ...props }: TableProps) {
 
 /* ─── Table Head (thead) ─── */
 export function TableHead({ children }: { children: React.ReactNode }) {
-  return <thead className="sticky top-0 z-10 bg-[#1A1A2E] text-white">{children}</thead>;
+  return <thead className="bg-[#1A1A2E] text-white">{children}</thead>;
 }
 
 /* ─── Table Body ─── */
@@ -72,7 +101,7 @@ export function TableHeaderCell({
   return (
     <th
       className={cn(
-        "px-4 py-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap",
+        "sticky top-0 z-20 bg-[#1A1A2E] px-4 py-3 text-xs font-semibold uppercase tracking-wide whitespace-nowrap",
         sortable && "cursor-pointer select-none hover:text-[#C9A84C] transition-colors",
         className
       )}

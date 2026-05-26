@@ -39,7 +39,7 @@ services:
       - redis
     volumes:
       - ./scraper:/app
-    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-1} --prefetch-multiplier=1
+    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-3} --prefetch-multiplier=1
     restart: unless-stopped
 
   beat:

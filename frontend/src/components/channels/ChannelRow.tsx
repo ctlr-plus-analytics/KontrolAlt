@@ -6,7 +6,7 @@ import type { Channel, VelocityScore } from "@/types";
 import { TableRow, TableCell } from "@/components/ui/Table";
 import { Gate0Badge } from "@/components/channels/Gate0Badge";
 import { CommentTierBadge } from "@/components/channels/CommentTierBadge";
-import { formatNumber, timeAgo } from "@/lib/utils";
+import { formatEngagementRate, formatNumber, timeAgo } from "@/lib/utils";
 
 interface ChannelRowProps {
   channel: Channel & { velocity?: VelocityScore | null };
@@ -48,6 +48,10 @@ export function ChannelRow({ channel, index }: ChannelRowProps) {
 
       <TableCell className="text-right font-mono text-[#0D0D0D]">
         {formatNumber(channel.avg_views)}
+      </TableCell>
+
+      <TableCell className="text-right font-mono text-[#0D0D0D]">
+        {formatEngagementRate(channel.subscriber_count, channel.avg_views)}
       </TableCell>
 
       <TableCell className="max-w-0 truncate text-xs text-[#6B6B6B]">

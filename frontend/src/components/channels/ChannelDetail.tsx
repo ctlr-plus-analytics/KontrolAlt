@@ -24,8 +24,8 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Gate0Badge } from "@/components/channels/Gate0Badge";
 import { VelocityBadge } from "@/components/channels/VelocityBadge";
-import { formatNumber, timeAgo, cn } from "@/lib/utils";
-import { getChannelLookalikes, triggerGate0Check } from "@/lib/api/backend";
+import { formatEngagementRate, formatNumber, timeAgo, cn } from "@/lib/utils";
+import { getChannelLookalikes } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
 import { useRealtimeRefresh } from "@/hooks/useRealtimeRefresh";
 import { useRouter } from "next/navigation";
@@ -46,8 +46,6 @@ export function ChannelDetail({
 }: ChannelDetailProps) {
   const router = useRouter();
   const { session } = useAuth();
-  const [gate0Loading, setGate0Loading] = useState(false);
-  const [gate0Error, setGate0Error] = useState<string | null>(null);
   const [lookalikes, setLookalikes] = useState<ChannelLookalikeMatch[]>([]);
   const [lookalikeLoading, setLookalikeLoading] = useState(false);
   const [lookalikeError, setLookalikeError] = useState<string | null>(null);
@@ -82,7 +80,15 @@ export function ChannelDetail({
           session?.access_token ?? undefined
         );
         if (!cancelled) {
-          setLookalikes(response.matches);
+          setLookalikes(
+            response.matches.filter(
+              (match) =>
+                match.channel.subscriber_count !== null &&
+                match.channel.subscriber_count !== undefined &&
+                match.channel.avg_comments !== null &&
+                match.channel.avg_comments !== undefined
+            )
+          );
         }
       } catch (err) {
         if (!cancelled) {
@@ -101,23 +107,6 @@ export function ChannelDetail({
       cancelled = true;
     };
   }, [channel.id, session?.access_token]);
-
-  const handleGate0Check = async () => {
-    setGate0Loading(true);
-    setGate0Error(null);
-    try {
-      await triggerGate0Check(
-        channel.id,
-        session?.access_token ?? undefined
-      );
-    } catch (err) {
-      setGate0Error(
-        err instanceof Error ? err.message : "Failed to queue Gate 0 check"
-      );
-    } finally {
-      setGate0Loading(false);
-    }
-  };
 
   const velocityMetrics = [
     {
@@ -179,6 +168,10 @@ export function ChannelDetail({
             <div className="mt-4 flex flex-wrap gap-3">
               <StatPill label="Subscribers" value={formatNumber(channel.subscriber_count)} />
               <StatPill label="Avg Views" value={formatNumber(channel.avg_views)} />
+              <StatPill
+                label="Engagement Rate"
+                value={formatEngagementRate(channel.subscriber_count, channel.avg_views)}
+              />
               <StatPill label="Avg Comments" value={formatNumber(channel.avg_comments)} />
               <StatPill
                 label="Posts/Week"
@@ -205,21 +198,7 @@ export function ChannelDetail({
                   Visit Channel
                 </Button>
               </a>
-              <Button
-                variant="accent"
-                size="sm"
-                loading={gate0Loading}
-                onClick={handleGate0Check}
-              >
-                <Shield size={14} />
-                Run Gate 0 Check
-              </Button>
             </div>
-            {gate0Error && (
-              <p className="max-w-xs text-right text-xs text-[#B22222]">
-                {gate0Error}
-              </p>
-            )}
           </div>
         </div>
       </div>

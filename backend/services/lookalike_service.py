@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import re
+from uuid import uuid4
 from uuid import UUID
 
 from postgrest.exceptions import APIError
@@ -20,6 +21,29 @@ from services import admin_service
 logger = get_logger(__name__)
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 _SUBSCRIBER_BAND = 0.10
+
+
+def _fetch_lookalike_candidate_channels() -> list[dict[str, object]]:
+    """Use the same quality gates as dashboard table channels."""
+    result = (
+        supabase_admin.table("channels")
+        .select("*")
+        .eq("is_active", True)
+        .eq("dashboard_eligible", True)
+        .execute()
+    )
+    return result.data or []
+
+
+def _fetch_seed_resolution_channels() -> list[dict[str, object]]:
+    """Use all active channels for seed name resolution."""
+    result = (
+        supabase_admin.table("channels")
+        .select("*")
+        .eq("is_active", True)
+        .execute()
+    )
+    return result.data or []
 
 
 def _normalize_name(value: str) -> str:
@@ -165,7 +189,7 @@ async def queue_lookalike_search(
     body: LookalikeSearchRequest,
     user_id: str,
 ) -> LookalikeSearchResponse:
-    """Save seeds, compute matches synchronously, and return immediate results."""
+    """Compute matches synchronously and return immediate (ephemeral) results."""
     if not admin_service.is_feature_enabled("lookalike"):
         return LookalikeSearchResponse(
             message="Lookalike workflows are disabled in system settings.",
@@ -174,61 +198,24 @@ async def queue_lookalike_search(
             results=[],
         )
 
-    seed_ids: list[str] = []
-    seed_map: dict[str, dict[str, object]] = {}
-
-    for name in body.seed_names:
-        try:
-            result = (
-                supabase_admin.table("seed_creators")
-                .upsert(
-                    {
-                        "user_id": user_id,
-                        "name": name,
-                        "created_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                    on_conflict="user_id,name",
-                )
-                .execute()
-            )
-        except APIError as exc:
-            logger.error("Failed to upsert seed creator: %s", exc, exc_info=True)
-            raise SupabaseError(f"Failed to save seed creator: {exc}") from exc
-
-        if result.data:
-            seed_row = result.data[0]
-            seed_id = str(seed_row["id"])
-            seed_ids.append(seed_id)
-            seed_map[seed_id] = seed_row
-        else:
-            logger.warning("Seed upsert returned no row for user=%s name=%s", user_id, name)
-
-    if not seed_ids:
-        logger.error("No seed IDs resolved for lookalike search user=%s", user_id)
-        return LookalikeSearchResponse(
-            message=(
-                "Lookalike search could not start because no valid seeds were persisted. "
-                "Please retry."
-            ),
-            task_id="",
-            seed_count=len(body.seed_names),
-            results=[],
-        )
-
     try:
-        channels_result = supabase_admin.table("channels").select("*").execute()
-        channels = channels_result.data or []
+        seed_resolution_channels = _fetch_seed_resolution_channels()
+        candidate_channels = _fetch_lookalike_candidate_channels()
 
         all_matches: list[dict[str, object]] = []
-        for seed_id in seed_ids:
-            seed_name = str(seed_map.get(seed_id, {}).get("name") or "")
+        for seed_name in body.seed_names:
             if not seed_name:
                 continue
-            seed_channel = _find_seed_channel(seed_name, channels)
+            seed_channel = _find_seed_channel(seed_name, seed_resolution_channels)
             if seed_channel is None:
                 continue
+            seed_id = str(uuid4())
             all_matches.extend(
-                _build_niche_subscriber_matches_for_seed(seed_id, seed_channel, channels)
+                _build_niche_subscriber_matches_for_seed(
+                    seed_id,
+                    seed_channel,
+                    candidate_channels,
+                )
             )
 
         unique_matches: dict[tuple[str, str, str], dict[str, object]] = {}
@@ -241,22 +228,14 @@ async def queue_lookalike_search(
             if key not in unique_matches:
                 unique_matches[key] = match
 
-        persisted_matches: list[dict[str, object]] = []
+        ephemeral_matches: list[dict[str, object]] = []
         for match in unique_matches.values():
             row = dict(match)
+            row["id"] = str(uuid4())
             row["found_at"] = datetime.now(timezone.utc).isoformat()
-            upsert_result = (
-                supabase_admin.table("lookalike_matches")
-                .upsert(
-                    row,
-                    on_conflict="seed_id,matched_channel_id,match_type",
-                )
-                .execute()
-            )
-            if upsert_result.data:
-                persisted_matches.append(upsert_result.data[0])
+            ephemeral_matches.append(row)
 
-        enriched = _enrich_matches_with_channels(persisted_matches, seed_map=seed_map)
+        enriched = _enrich_matches_with_channels(ephemeral_matches, seed_map=None)
     except APIError as exc:
         logger.error("Failed synchronous lookalike compute: %s", exc, exc_info=True)
         raise SupabaseError(f"Failed to compute lookalike search: {exc}") from exc
@@ -270,46 +249,8 @@ async def queue_lookalike_search(
 
 
 async def get_lookalike_results_for_user(user_id: str) -> list[dict[str, object]]:
-    """Fetch all lookalike matches for a user's seed creators."""
-    try:
-        seeds_result = (
-            supabase_admin.table("seed_creators")
-            .select("*")
-            .eq("user_id", user_id)
-            .execute()
-        )
-        seeds = seeds_result.data or []
-        if not seeds:
-            return []
-
-        seed_ids = [seed["id"] for seed in seeds]
-        seed_map = {seed["id"]: seed for seed in seeds}
-
-        matches_result = (
-            supabase_admin.table("lookalike_matches")
-            .select("*, channels(*)")
-            .in_("seed_id", seed_ids)
-            .execute()
-        )
-        matches = matches_result.data or []
-
-        enriched: list[dict[str, object]] = []
-        for match in matches:
-            channel_data = match.pop("channels", None)
-            match["channel"] = channel_data
-            match["seed"] = seed_map.get(match.get("seed_id"))
-            enriched.append(match)
-
-        return enriched
-
-    except APIError as exc:
-        logger.error(
-            "Failed to fetch lookalike results for user %s: %s",
-            user_id,
-            exc,
-            exc_info=True,
-        )
-        raise SupabaseError(f"Failed to fetch lookalike results: {exc}") from exc
+    """Ephemeral mode: no persisted user lookalike history."""
+    return []
 
 
 async def get_lookalikes_for_channel(channel_id: UUID) -> ChannelLookalikeResponse:
@@ -326,8 +267,7 @@ async def get_lookalikes_for_channel(channel_id: UUID) -> ChannelLookalikeRespon
         if seed_channel is None:
             return ChannelLookalikeResponse(seed_channel_id=channel_id, matches=[])
 
-        channels_result = supabase_admin.table("channels").select("*").execute()
-        channels = channels_result.data or []
+        channels = _fetch_lookalike_candidate_channels()
         synthetic_seed_id = str(channel_id)
         matches = _build_niche_subscriber_matches_for_seed(
             synthetic_seed_id,

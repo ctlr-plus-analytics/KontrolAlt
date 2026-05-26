@@ -29,9 +29,11 @@ from tasks.scrape_helpers import (
     log_scrape_task_attempt,
     release_keyword_discovery_hold,
     release_platform_slot,
+    release_global_slot,
     release_scrape_lock,
     retry_countdown_seconds,
     record_daily_bytes_used,
+    try_acquire_global_slot,
     try_acquire_platform_slot,
 )
 
@@ -85,8 +87,22 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
         ).model_dump(mode="json")
 
     runtime = get_runtime_settings()
+    if not try_acquire_global_slot(runtime.scrape_global_slot_limit):
+        release_scrape_lock(channel_url)
+        logger.info("Global scrape concurrency limit reached, rescheduling: %s", channel_url)
+        scrape_substack_channel.apply_async(
+            args=[channel_url],
+            countdown=random.randint(20, 60),
+        )
+        return ScrapeTaskResult(
+            status="skipped",
+            channel_url=channel_url,
+            error="Global scrape slot busy; rescheduled",
+        ).model_dump(mode="json")
+
     limit = runtime.scrape_platform_slot_limit_substack
     if not try_acquire_platform_slot("substack", limit):
+        release_global_slot()
         release_scrape_lock(channel_url)
         logger.info(
             "Substack platform concurrency limit reached, rescheduling: %s", channel_url
@@ -231,6 +247,7 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
         )
     finally:
         release_platform_slot("substack")
+        release_global_slot()
         release_scrape_lock(channel_url)
 
 

@@ -4,16 +4,15 @@
  */
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { GitBranch } from "lucide-react";
 import type { LookalikeMatch } from "@/types";
 import { SeedCreatorInput } from "@/components/lookalike/SeedCreatorInput";
 import { LookalikeMatchCard } from "@/components/lookalike/LookalikeMatchCard";
 import { Spinner } from "@/components/ui/Spinner";
 import { Badge } from "@/components/ui/Badge";
-import { getLookalikeResults, searchLookalikes } from "@/lib/api/backend";
+import { searchLookalikes } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
-import { useRealtimeRefresh } from "@/hooks/useRealtimeRefresh";
 
 export default function LookalikePage() {
   const { session } = useAuth();
@@ -24,45 +23,16 @@ export default function LookalikePage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const displayResults = token ? results : null;
+  const completeMetricResults =
+    displayResults?.filter(
+      (match) =>
+        match.channel?.subscriber_count !== null &&
+        match.channel?.subscriber_count !== undefined &&
+        match.channel?.avg_comments !== null &&
+        match.channel?.avg_comments !== undefined
+    ) ?? null;
   const displayError = token ? error : null;
   const displayNotice = token ? notice : null;
-
-  const refreshResults = useCallback(async (): Promise<void> => {
-    try {
-      const data = await getLookalikeResults(token);
-      setResults(data);
-    } catch {
-      // Keep prior results if refresh fails transiently.
-    }
-  }, [token]);
-
-  const realtimeTables = useMemo(
-    () => [{ table: "lookalike_matches" }, { table: "seed_creators" }],
-    []
-  );
-
-  useEffect(() => {
-    if (!token) {
-      return;
-    }
-
-    const refreshTimer = setTimeout(() => {
-      void refreshResults();
-    }, 0);
-
-    return () => {
-      clearTimeout(refreshTimer);
-    };
-  }, [refreshResults, token]);
-
-  useRealtimeRefresh({
-    channelKey: "lookalike-live-results",
-    tables: realtimeTables,
-    enabled: Boolean(token),
-    onRefresh: () => {
-      void refreshResults();
-    },
-  });
 
   const handleSearch = async () => {
     const validSeeds = seeds.map((s) => s.trim()).filter((s) => s.length > 0);
@@ -112,8 +82,8 @@ export default function LookalikePage() {
             <h2 className="text-lg font-semibold tracking-tight text-[#1A1A2E]">
               Lookalike Channels
             </h2>
-            {displayResults && displayResults.length > 0 && (
-              <Badge variant="gold">{displayResults.length}</Badge>
+            {completeMetricResults && completeMetricResults.length > 0 && (
+              <Badge variant="gold">{completeMetricResults.length}</Badge>
             )}
           </div>
 
@@ -149,7 +119,7 @@ export default function LookalikePage() {
           )}
 
           {/* Results List */}
-          {displayResults && !loading && displayResults.length === 0 && (
+          {completeMetricResults && !loading && completeMetricResults.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16">
               <p className="text-sm text-[#6B6B6B]">
                 No lookalike channels found for the given creators
@@ -157,9 +127,9 @@ export default function LookalikePage() {
             </div>
           )}
 
-          {displayResults && !loading && displayResults.length > 0 && (
+          {completeMetricResults && !loading && completeMetricResults.length > 0 && (
             <div className="space-y-3">
-              {displayResults.map((match) => (
+              {completeMetricResults.map((match) => (
                 <LookalikeMatchCard key={match.id} match={match} />
               ))}
             </div>
