@@ -219,6 +219,8 @@ def parse_count_text(text: str) -> int | None:
         .replace("view", "")
         .strip()
     )
+    # Collapse whitespace introduced by get_text() element boundaries (e.g. "3 .2K" → "3.2K").
+    cleaned = re.sub(r"\s+", "", cleaned)
     match = re.search(r"(\d+(?:\.\d+)?)\s*([kmb])?", cleaned)
     if not match:
         return None
@@ -481,7 +483,8 @@ class BitChuteScraper(BaseScraper):
 
                 name = self._extract_name(soup, channel_base_url, page_title)
                 subscriber_count = self._extract_subscribers(soup)
-                description = self._extract_description(soup)
+                description = await self._fetch_about_description(page, about_url, session_key)
+                stage_marks.append(("about_page_description", perf_counter() - stage_t0))
                 about_socials = self._extract_external_links(soup, channel_base_url)
                 about_contact_soup = soup
 
@@ -502,12 +505,6 @@ class BitChuteScraper(BaseScraper):
                     if video_page_subscribers is not None:
                         subscriber_count = video_page_subscribers
 
-                if not description:
-                    logger.info(
-                        "BitChute selector did not return description for %s; using video page fallback description",
-                        channel_url,
-                    )
-                    description = video_page_description or ""
                 description_fallback_used = self._is_generic_description(description)
                 if description_fallback_used:
                     logger.info(
@@ -531,11 +528,12 @@ class BitChuteScraper(BaseScraper):
                     for video in video_data_map.values()
                     if video.get("title")
                 ][: self.VIDEO_COLLECTION_LIMIT]
+                # Sample view counts from the first 3 video cards only (no video-page navigation).
                 view_counts = [
                     float(video["views"])
-                    for video in video_data_map.values()
+                    for video in list(video_data_map.values())[:3]
                     if video.get("views") is not None
-                ][: self.VIDEO_COLLECTION_LIMIT]
+                ]
                 comment_counts = [
                     float(video["comments"])
                     for video in self._last_comment_page_items(video_data_map)
@@ -547,8 +545,10 @@ class BitChuteScraper(BaseScraper):
                     if isinstance(video.get("date"), datetime)
                 ][: self.VIDEO_COLLECTION_LIMIT]
 
-                avg_views = self.compute_avg(view_counts)
-                avg_comments = self.compute_avg(comment_counts)
+                # Mean of up to 3 card view samples, rounded to nearest integer.
+                avg_views = round(sum(view_counts) / len(view_counts)) if view_counts else None
+                # Mean of up to 3 video-page comment samples; 0s included, Nones excluded.
+                avg_comments = round(sum(comment_counts) / len(comment_counts)) if comment_counts else None
                 is_empty_channel = (
                     not video_titles and self._has_empty_channel_marker(body_text)
                 )
@@ -712,8 +712,30 @@ class BitChuteScraper(BaseScraper):
             return channel_base_url
         return f"{channel_base_url.rstrip('/')}/{tab.strip('/')}"
 
-    # About page fetching is disabled on BitChute (as BitChute does not have a separate about subpath).
-    # All metadata is extracted from the fully rendered main channel page directly.
+    async def _fetch_about_description(self, page, about_url: str, session_key: str) -> str:
+        """Navigate to the /about/ tab and extract the channel description."""
+        try:
+            await inter_request_jitter()
+            await guarded_goto(
+                page,
+                about_url,
+                session_key=session_key,
+                wait_until="domcontentloaded",
+                timeout=self.ABOUT_NAV_TIMEOUT_MS,
+            )
+            await wait_for_content(page, min_bytes=3000, timeout_s=self.ABOUT_CONTENT_TIMEOUT_S)
+            about_html = await page.content()
+            # Targets: <div style="white-space: pre-line;">channel bio text</div>
+            # Only present on the /about/ tab, not the videos page.
+            about_soup = BeautifulSoup(about_html, "lxml")
+            return self._extract_description(about_soup)
+        except Exception as exc:
+            logger.warning(
+                "BitChute: about page fetch failed, description will be empty for %s: %s",
+                about_url,
+                exc,
+            )
+            return ""
 
     def _extract_name(self, soup: BeautifulSoup, channel_url: str, page_title: str) -> str:
         """Extract channel name from the channel-home header selector."""
@@ -1117,18 +1139,10 @@ class BitChuteScraper(BaseScraper):
             await page.close()
 
     async def _wait_for_video_page_comment_state(self, page) -> None:
-        """Wait until the CommentFreely widget exposes a count or loaded comments."""
-        await page.wait_for_function(
-            """
-            () => {
-                const container = document.querySelector("#comments-container");
-                if (!container) return false;
-                const countNode = container.querySelector("span.item.count span.value, .navigation .item.count .value");
-                if (countNode && /\\d/.test(countNode.textContent || "")) return true;
-                if (container.querySelector("#comment-list .comment")) return true;
-                return false;
-            }
-            """,
+        """Wait until the CommentFreely widget loads a count or comment items."""
+        # Targets: span.item.count (navigation count bar) or #comment-list .comment divs
+        await page.wait_for_selector(
+            "#comments-container span.item.count, #comment-list .comment",
             timeout=self.VIDEO_PAGE_COMMENT_TIMEOUT_MS,
         )
 

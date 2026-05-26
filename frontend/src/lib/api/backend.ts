@@ -28,6 +28,8 @@ import type {
   Gate0BatchTriggerResponse,
   AdminTaskStatusResponse,
   PaginatedAdminAuditResponse,
+  CompetitorDef,
+  CompetitorListResponse,
 } from "@/types";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -367,4 +369,23 @@ export async function getAdminAudit(
     `/api/v1/admin/audit?${params.toString()}`,
     { token }
   );
+}
+
+/** Fetch the current Gate 0 competitor list. */
+export async function getAdminCompetitors(
+  token?: string
+): Promise<CompetitorListResponse> {
+  return apiFetch<CompetitorListResponse>("/api/v1/admin/competitors", { token });
+}
+
+/** Replace the Gate 0 competitor list. */
+export async function updateAdminCompetitors(
+  competitors: CompetitorDef[],
+  token?: string
+): Promise<CompetitorListResponse> {
+  return apiFetch<CompetitorListResponse>("/api/v1/admin/competitors", {
+    method: "PUT",
+    body: { competitors },
+    token,
+  });
 }

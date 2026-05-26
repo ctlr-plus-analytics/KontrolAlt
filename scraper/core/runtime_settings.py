@@ -1,21 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
-
-_HOSTNAME_PATTERN = re.compile(
-    r"^(?=.{1,253}$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
-)
-_GENERIC_GATE0_BRAND_TERMS = {
-    "gold",
-    "ira",
-    "silver",
-    "coin",
-    "coins",
-    "bullion",
-    "precious",
-    "metals",
-}
 
 
 @dataclass(frozen=True)
@@ -61,12 +46,6 @@ class RuntimeSettings:
     scrape_circuit_breaker_cooldown_seconds: int = 1800
     gate0_daily_queue_limit: int = 200
     gate0_clean_recheck_days: int = 7
-    gate0_competitors: tuple[Gate0CompetitorSetting, ...] = (
-        Gate0CompetitorSetting("Noble Gold", ("noblegold.com",)),
-        Gate0CompetitorSetting("Birch Gold", ("birchgold.com",)),
-        Gate0CompetitorSetting("Patriot Gold", ("patriotgold.com",)),
-        Gate0CompetitorSetting("Kirk Elliot", ("kirkelliot.com",)),
-    )
     scraper_human_delay_min_seconds: float = 2.0
     scraper_human_delay_max_seconds: float = 8.0
     scraper_content_wait_min_bytes: int = 5000
@@ -109,45 +88,6 @@ class RuntimeSettings:
     cf_bypass_origin_check_enabled: bool = False
     cf_bypass_fingerprint_strict_mode: bool = False
     cf_bypass_captcha_skip_enabled: bool = True
-
-
-def _parse_gate0_competitors(value: object) -> tuple[Gate0CompetitorSetting, ...]:
-    if not isinstance(value, list):
-        return RuntimeSettings.__dataclass_fields__["gate0_competitors"].default
-
-    competitors: list[Gate0CompetitorSetting] = []
-    seen_brands: set[str] = set()
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        brand = " ".join(str(item.get("brand") or "").strip().split())
-        if not brand:
-            continue
-        brand_terms = {term for term in re.findall(r"[a-z0-9]+", brand.lower()) if term}
-        if brand_terms and brand_terms.issubset(_GENERIC_GATE0_BRAND_TERMS):
-            continue
-        brand_key = brand.lower()
-        if brand_key in seen_brands:
-            continue
-
-        raw_domains = item.get("domains") or []
-        if not isinstance(raw_domains, list):
-            raw_domains = []
-        domains: list[str] = []
-        seen_domains: set[str] = set()
-        for raw_domain in raw_domains:
-            domain = str(raw_domain).strip().lower()
-            domain = domain.removeprefix("https://").removeprefix("http://")
-            domain = domain.split("/", 1)[0]
-            if not domain or domain in seen_domains or not _HOSTNAME_PATTERN.match(domain):
-                continue
-            seen_domains.add(domain)
-            domains.append(domain)
-
-        seen_brands.add(brand_key)
-        competitors.append(Gate0CompetitorSetting(brand, tuple(domains)))
-
-    return tuple(competitors)
 
 
 _RUNTIME_SETTINGS = RuntimeSettings()

@@ -68,6 +68,14 @@ def extract_urls(text: str) -> list[str]:
     urls: set[str] = set()
     for candidate in candidates:
         normalized = _normalize_url(candidate)
+        try:
+            parsed = urlsplit(normalized)
+        except ValueError:
+            continue
+        # Drop anything that didn't produce a valid scheme+netloc (e.g. truncated
+        # URLs split at an element boundary by BeautifulSoup's get_text()).
+        if not parsed.scheme or not parsed.netloc:
+            continue
         if not _is_internal_url(normalized):
             urls.add(normalized)
 

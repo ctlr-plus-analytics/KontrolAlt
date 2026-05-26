@@ -59,3 +59,16 @@ class PaginatedAdminAuditResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class CompetitorDef(BaseModel):
+    brand: str
+    domains: list[str]
+
+
+class CompetitorListResponse(BaseModel):
+    competitors: list[CompetitorDef]
+
+
+class UpdateCompetitorsRequest(BaseModel):
+    competitors: list[CompetitorDef]

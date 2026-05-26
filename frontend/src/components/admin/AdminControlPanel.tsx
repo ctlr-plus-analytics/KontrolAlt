@@ -3,15 +3,17 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   getAdminAudit,
+  getAdminCompetitors,
   getAdminMe,
   getAdminTaskStatus,
   triggerAdminDiscoveryNow,
   triggerAdminGate0Now,
   triggerAdminWeeklyVelocityNow,
   triggerAdminScrapeNow,
+  updateAdminCompetitors,
 } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
-import type { AdminAuditRecord, AdminTaskStatusResponse } from "@/types";
+import type { AdminAuditRecord, AdminTaskStatusResponse, CompetitorDef } from "@/types";
 import { Button } from "@/components/ui/Button";
 
 const AUDIT_PAGE_SIZE = 20;
@@ -86,18 +88,31 @@ export function AdminControlPanel() {
   const [gate0IdsInput, setGate0IdsInput] = useState<string>("");
   const [taskRuns, setTaskRuns] = useState<ManualTaskRun[]>([]);
 
+  const [competitors, setCompetitors] = useState<CompetitorDef[]>([]);
+  const [competitorsSaving, setCompetitorsSaving] = useState(false);
+  const [competitorsError, setCompetitorsError] = useState<string | null>(null);
+  const [competitorsSuccess, setCompetitorsSuccess] = useState<string | null>(null);
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [editBrand, setEditBrand] = useState("");
+  const [editDomains, setEditDomains] = useState("");
+  const [isAddingNew, setIsAddingNew] = useState(false);
+  const [newBrand, setNewBrand] = useState("");
+  const [newDomains, setNewDomains] = useState("");
+
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
     const run = async () => {
       try {
-        const [meData, auditData] = await Promise.all([
+        const [meData, auditData, competitorsData] = await Promise.all([
           getAdminMe(token),
           getAdminAudit(1, AUDIT_PAGE_SIZE, token),
+          getAdminCompetitors(token),
         ]);
         if (cancelled) return;
         setAllowed(meData.roles.includes("admin"));
         setAudit(auditData.data);
+        setCompetitors(competitorsData.competitors);
       } catch (error) {
         if (cancelled) return;
         setAllowed(false);
@@ -231,6 +246,77 @@ export function AdminControlPanel() {
     [gate0IdsInput, token]
   );
 
+  const parseDomains = (raw: string): string[] =>
+    raw.split(",").map((d) => d.trim()).filter(Boolean);
+
+  const handleSaveCompetitors = async (updated: CompetitorDef[]) => {
+    if (!token) return;
+    setCompetitorsSaving(true);
+    setCompetitorsError(null);
+    setCompetitorsSuccess(null);
+    try {
+      const result = await updateAdminCompetitors(updated, token);
+      setCompetitors(result.competitors);
+      setCompetitorsSuccess("Competitors saved.");
+      const auditData = await getAdminAudit(1, AUDIT_PAGE_SIZE, token);
+      setAudit(auditData.data);
+    } catch (error) {
+      setCompetitorsError(error instanceof Error ? error.message : "Save failed.");
+    } finally {
+      setCompetitorsSaving(false);
+    }
+  };
+
+  const handleDeleteCompetitor = (idx: number) => {
+    setCompetitorsSuccess(null);
+    void handleSaveCompetitors(competitors.filter((_, i) => i !== idx));
+  };
+
+  const handleStartEdit = (idx: number) => {
+    setEditingIdx(idx);
+    setEditBrand(competitors[idx].brand);
+    setEditDomains(competitors[idx].domains.join(", "));
+    setCompetitorsError(null);
+    setCompetitorsSuccess(null);
+  };
+
+  const handleCancelEdit = () => setEditingIdx(null);
+
+  const handleSaveEdit = () => {
+    if (editingIdx === null) return;
+    const brand = editBrand.trim();
+    const domains = parseDomains(editDomains);
+    if (!brand || domains.length === 0) {
+      setCompetitorsError("Brand and at least one domain are required.");
+      return;
+    }
+    setEditingIdx(null);
+    void handleSaveCompetitors(
+      competitors.map((c, i) => (i === editingIdx ? { brand, domains } : c))
+    );
+  };
+
+  const handleStartAdd = () => {
+    setIsAddingNew(true);
+    setNewBrand("");
+    setNewDomains("");
+    setCompetitorsError(null);
+    setCompetitorsSuccess(null);
+  };
+
+  const handleCancelAdd = () => setIsAddingNew(false);
+
+  const handleSaveNew = () => {
+    const brand = newBrand.trim();
+    const domains = parseDomains(newDomains);
+    if (!brand || domains.length === 0) {
+      setCompetitorsError("Brand and at least one domain are required.");
+      return;
+    }
+    setIsAddingNew(false);
+    void handleSaveCompetitors([...competitors, { brand, domains }]);
+  };
+
   if (loading) {
     return <p className="text-sm text-[#6B6B6B]">Loading admin controls...</p>;
   }
@@ -299,6 +385,105 @@ export function AdminControlPanel() {
                 )}
               </div>
             ))}
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
+        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">Gate 0 Competitors</h2>
+        <p className="mb-3 text-xs text-[#6B6B6B]">Channels promoting these brands are flagged dirty. Changes take effect on the next Gate 0 run.</p>
+
+        {competitorsError && (
+          <p className="mb-3 text-xs text-[#B22222]">{competitorsError}</p>
+        )}
+        {competitorsSuccess && (
+          <p className="mb-3 text-xs text-[#4F8A5B]">{competitorsSuccess}</p>
+        )}
+
+        <table className="min-w-full text-left text-sm">
+          <thead className="text-xs uppercase tracking-wide text-[#6B6B6B]">
+            <tr>
+              <th className="px-2 py-2">Brand</th>
+              <th className="px-2 py-2">Domains</th>
+              <th className="px-2 py-2">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {competitors.map((c, idx) => (
+              <tr key={idx} className="border-t border-[#E8E4DC]">
+                {editingIdx === idx ? (
+                  <>
+                    <td className="px-2 py-2">
+                      <input
+                        value={editBrand}
+                        onChange={(e) => setEditBrand(e.target.value)}
+                        className="w-full rounded border border-[#E8E4DC] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                        placeholder="Brand name"
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        value={editDomains}
+                        onChange={(e) => setEditDomains(e.target.value)}
+                        className="w-full rounded border border-[#E8E4DC] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                        placeholder="domain.com, domain2.com"
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <div className="flex gap-2">
+                        <Button variant="accent" size="sm" onClick={handleSaveEdit} loading={competitorsSaving}>Save</Button>
+                        <Button variant="ghost" size="sm" onClick={handleCancelEdit}>Cancel</Button>
+                      </div>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td className="px-2 py-2 font-medium text-[#1A1A2E]">{c.brand}</td>
+                    <td className="px-2 py-2 text-[#6B6B6B]">{c.domains.join(", ")}</td>
+                    <td className="px-2 py-2">
+                      <div className="flex gap-2">
+                        <Button variant="ghost" size="sm" onClick={() => handleStartEdit(idx)}>Edit</Button>
+                        <Button variant="danger" size="sm" onClick={() => handleDeleteCompetitor(idx)} loading={competitorsSaving}>Delete</Button>
+                      </div>
+                    </td>
+                  </>
+                )}
+              </tr>
+            ))}
+
+            {isAddingNew && (
+              <tr className="border-t border-[#E8E4DC]">
+                <td className="px-2 py-2">
+                  <input
+                    value={newBrand}
+                    onChange={(e) => setNewBrand(e.target.value)}
+                    className="w-full rounded border border-[#E8E4DC] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                    placeholder="Brand name"
+                    autoFocus
+                  />
+                </td>
+                <td className="px-2 py-2">
+                  <input
+                    value={newDomains}
+                    onChange={(e) => setNewDomains(e.target.value)}
+                    className="w-full rounded border border-[#E8E4DC] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                    placeholder="domain.com, domain2.com"
+                  />
+                </td>
+                <td className="px-2 py-2">
+                  <div className="flex gap-2">
+                    <Button variant="accent" size="sm" onClick={handleSaveNew} loading={competitorsSaving}>Add</Button>
+                    <Button variant="ghost" size="sm" onClick={handleCancelAdd}>Cancel</Button>
+                  </div>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+
+        {!isAddingNew && (
+          <div className="mt-3">
+            <Button variant="primary" size="sm" onClick={handleStartAdd}>+ Add Competitor</Button>
           </div>
         )}
       </section>

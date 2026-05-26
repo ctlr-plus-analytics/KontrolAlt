@@ -16,7 +16,7 @@ from tasks.run_gate0 import (
     _scan_serper_results,
     _should_run_gate0_check,
 )
-from core.runtime_settings import Gate0CompetitorSetting, _parse_gate0_competitors
+from core.runtime_settings import Gate0CompetitorSetting
 
 
 def test_gate0_skips_recent_clean_channels() -> None:
@@ -116,16 +116,3 @@ def test_competitor_domain_scan_uses_hostname_boundaries() -> None:
 
     assert brand is None
     assert source_url is None
-
-
-def test_gate0_competitor_parser_filters_invalid_domains_and_generic_brands() -> None:
-    competitors = _parse_gate0_competitors(
-        [
-            {"brand": "Gold", "domains": ["gold"]},
-            {"brand": "Acme Metals", "domains": ["https://partners.acme.com/path"]},
-        ]
-    )
-
-    assert competitors == (
-        Gate0CompetitorSetting("Acme Metals", ("partners.acme.com",)),
-    )

@@ -8,9 +8,11 @@ from models.admin import (
     AdminTaskStatusResponse,
     AdminTaskTriggerRequest,
     AdminTaskTriggerResponse,
+    CompetitorListResponse,
     Gate0BatchTriggerRequest,
     Gate0BatchTriggerResponse,
     PaginatedAdminAuditResponse,
+    UpdateCompetitorsRequest,
 )
 from services import admin_service
 
@@ -86,3 +88,21 @@ async def get_audit(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/competitors", response_model=CompetitorListResponse)
+async def get_competitors(
+    user: dict = Depends(require_admin_user),
+) -> CompetitorListResponse:
+    data = await admin_service.get_gate0_competitors()
+    return CompetitorListResponse(competitors=data)
+
+
+@router.put("/competitors", response_model=CompetitorListResponse)
+async def update_competitors(
+    body: UpdateCompetitorsRequest,
+    user: dict = Depends(require_admin_user),
+) -> CompetitorListResponse:
+    payload = [c.model_dump() for c in body.competitors]
+    updated = await admin_service.update_gate0_competitors(actor=user, competitors=payload)
+    return CompetitorListResponse(competitors=updated)

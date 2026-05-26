@@ -173,6 +173,50 @@ async def get_task_status(task_id: str) -> AdminTaskStatusResponse:
     )
 
 
+async def get_gate0_competitors() -> list[dict]:
+    try:
+        result = (
+            supabase_admin.table("system_settings")
+            .select("gate0_competitors")
+            .eq("singleton_key", "global")
+            .single()
+            .execute()
+        )
+        return result.data.get("gate0_competitors") or []
+    except APIError as exc:
+        raise SupabaseError(f"Failed to read gate0 competitors: {exc}") from exc
+
+
+async def update_gate0_competitors(actor: dict, competitors: list[dict]) -> list[dict]:
+    try:
+        old_result = (
+            supabase_admin.table("system_settings")
+            .select("gate0_competitors")
+            .eq("singleton_key", "global")
+            .single()
+            .execute()
+        )
+        old_value = old_result.data.get("gate0_competitors") or []
+    except APIError:
+        old_value = []
+
+    try:
+        supabase_admin.table("system_settings").update(
+            {"gate0_competitors": competitors}
+        ).eq("singleton_key", "global").execute()
+    except APIError as exc:
+        raise SupabaseError(f"Failed to update gate0 competitors: {exc}") from exc
+
+    _audit(
+        actor=actor,
+        action="settings.update",
+        target="gate0_competitors",
+        old_value={"gate0_competitors": old_value},
+        new_value={"gate0_competitors": competitors},
+    )
+    return competitors
+
+
 async def list_audit(page: int, page_size: int) -> tuple[list[dict[str, object]], int]:
     start = (page - 1) * page_size
     end = start + page_size - 1

@@ -16,12 +16,6 @@ from models import Gate0TaskResult
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_COMPETITORS: tuple[Gate0CompetitorSetting, ...] = (
-    Gate0CompetitorSetting("Noble Gold", ("noblegold.com",)),
-    Gate0CompetitorSetting("Birch Gold", ("birchgold.com",)),
-    Gate0CompetitorSetting("Patriot Gold", ("patriotgold.com",)),
-    Gate0CompetitorSetting("Kirk Elliot", ("kirkelliot.com",)),
-)
 _SERPER_SEARCH_URL = "https://google.serper.dev/search"
 _SERPER_QUOTA_STATUS_CODES = {402, 429}
 _URLISH_PATTERN = re.compile(
@@ -29,6 +23,32 @@ _URLISH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _TRAILING_PUNCTUATION = ".,;:!?)\"]}'"
+
+
+def _load_competitors() -> tuple[Gate0CompetitorSetting, ...]:
+    """Read Gate 0 competitors from system_settings. Returns empty tuple on failure."""
+    try:
+        client = get_supabase_client()
+        result = (
+            client.table("system_settings")
+            .select("gate0_competitors")
+            .eq("singleton_key", "global")
+            .single()
+            .execute()
+        )
+        raw = (result.data or {}).get("gate0_competitors")
+        if isinstance(raw, list):
+            return tuple(
+                Gate0CompetitorSetting(
+                    str(item["brand"]),
+                    tuple(str(d) for d in (item.get("domains") or [])),
+                )
+                for item in raw
+                if isinstance(item, dict) and item.get("brand")
+            )
+    except Exception:
+        logger.warning("Failed to load gate0 competitors from DB", exc_info=True)
+    return ()
 
 
 def _parse_datetime(value: object) -> datetime | None:
@@ -93,7 +113,7 @@ def _iter_scan_values(channel: dict[str, object]) -> list[str]:
 
 def _scan_channel_text_for_competitors(
     channel: dict[str, object],
-    competitors: tuple[Gate0CompetitorSetting, ...] = DEFAULT_COMPETITORS,
+    competitors: tuple[Gate0CompetitorSetting, ...],
 ) -> tuple[str | None, str | None]:
     """Scan stored channel text and URLs for competitor references."""
     channel_url = str(channel.get("channel_url") or "")
@@ -169,7 +189,7 @@ def _scan_text_for_competitors(
 
 def _scan_serper_results(
     organic_results: object,
-    competitors: tuple[Gate0CompetitorSetting, ...] = DEFAULT_COMPETITORS,
+    competitors: tuple[Gate0CompetitorSetting, ...],
 ) -> tuple[str | None, str | None]:
     """Scan top Serper organic results for competitor brands/domains."""
     if not isinstance(organic_results, list):
@@ -326,7 +346,7 @@ def _run_gate0_sync(
 
     channel_name = str(channel.get("name") or "")
     search_query = f'"{channel_name}" "gold IRA"'
-    competitors = runtime.gate0_competitors
+    competitors = _load_competitors()
     if not competitors:
         _mark_gate0_unchecked(channel_id, "no gate0 competitors configured")
         return Gate0TaskResult(

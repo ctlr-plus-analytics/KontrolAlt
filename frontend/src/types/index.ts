@@ -303,3 +303,12 @@ export interface PaginatedAdminAuditResponse {
   page: number;
   page_size: number;
 }
+
+export interface CompetitorDef {
+  brand: string;
+  domains: string[];
+}
+
+export interface CompetitorListResponse {
+  competitors: CompetitorDef[];
+}
