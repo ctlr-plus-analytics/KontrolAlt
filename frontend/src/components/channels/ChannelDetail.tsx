@@ -3,7 +3,7 @@
  */
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ExternalLink,
   Shield,
@@ -12,16 +12,24 @@ import {
   History,
   RefreshCw,
 } from "lucide-react";
-import type { Channel, VelocityScore, Gate0Result, ScrapeLog } from "@/types";
+import type {
+  Channel,
+  VelocityScore,
+  Gate0Result,
+  ScrapeLog,
+  ChannelLookalikeMatch,
+  LookalikeMatch,
+} from "@/types";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Gate0Badge } from "@/components/channels/Gate0Badge";
 import { VelocityBadge } from "@/components/channels/VelocityBadge";
 import { formatNumber, timeAgo, cn } from "@/lib/utils";
-import { triggerGate0Check } from "@/lib/api/backend";
+import { getChannelLookalikes, triggerGate0Check } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
 import { useRealtimeRefresh } from "@/hooks/useRealtimeRefresh";
 import { useRouter } from "next/navigation";
+import { LookalikeMatchCard } from "@/components/lookalike/LookalikeMatchCard";
 
 interface ChannelDetailProps {
   channel: Channel;
@@ -40,6 +48,9 @@ export function ChannelDetail({
   const { session } = useAuth();
   const [gate0Loading, setGate0Loading] = useState(false);
   const [gate0Error, setGate0Error] = useState<string | null>(null);
+  const [lookalikes, setLookalikes] = useState<ChannelLookalikeMatch[]>([]);
+  const [lookalikeLoading, setLookalikeLoading] = useState(false);
+  const [lookalikeError, setLookalikeError] = useState<string | null>(null);
 
   const velocity = initialVelocity;
   const gate0Result = initialGate0;
@@ -59,6 +70,37 @@ export function ChannelDetail({
     enabled: Boolean(session?.access_token),
     onRefresh: () => router.refresh(),
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadLookalikes = async () => {
+      setLookalikeLoading(true);
+      setLookalikeError(null);
+      try {
+        const response = await getChannelLookalikes(
+          channel.id,
+          session?.access_token ?? undefined
+        );
+        if (!cancelled) {
+          setLookalikes(response.matches);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setLookalikeError(
+            err instanceof Error ? err.message : "Failed to fetch lookalikes"
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLookalikeLoading(false);
+        }
+      }
+    };
+    void loadLookalikes();
+    return () => {
+      cancelled = true;
+    };
+  }, [channel.id, session?.access_token]);
 
   const handleGate0Check = async () => {
     setGate0Loading(true);
@@ -272,6 +314,37 @@ export function ChannelDetail({
         </div>
       )}
 
+      <div>
+        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">
+          Lookalike Channels
+        </h2>
+        {lookalikeError && (
+          <div className="mb-4 rounded-lg bg-[#B22222]/10 px-4 py-3 text-sm text-[#B22222]">
+            {lookalikeError}
+          </div>
+        )}
+        {lookalikeLoading ? (
+          <p className="text-sm text-[#6B6B6B]">Loading lookalikes...</p>
+        ) : lookalikes.length === 0 ? (
+          <p className="text-sm text-[#6B6B6B]">No lookalike channels found.</p>
+        ) : (
+          <div className="space-y-3">
+            {lookalikes.map((match) => {
+              const adapted: LookalikeMatch = {
+                id: `${channel.id}-${match.matched_channel_id}-${match.match_type}`,
+                seed_id: channel.id,
+                matched_channel_id: match.matched_channel_id,
+                match_type: match.match_type,
+                match_detail: match.match_detail,
+                found_at: channel.updated_at,
+                channel: match.channel,
+                seed: null,
+              };
+              return <LookalikeMatchCard key={adapted.id} match={adapted} />;
+            })}
+          </div>
+        )}
+      </div>
       {/* ─── Scrape History ─── */}
       <div>
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
@@ -416,3 +489,4 @@ function StatPill({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
+

@@ -26,6 +26,32 @@ logger = get_logger(__name__)
 _celery = Celery(broker=settings.redis_url, backend=settings.redis_url)
 
 _AUDIT_TABLE = "admin_actions_audit"
+_FEATURE_FIELDS = {
+    "gate0": "gate0_enabled",
+    "discovery": "discovery_enabled",
+    "lookalike": "lookalike_enabled",
+}
+
+
+def is_feature_enabled(feature: str) -> bool:
+    """Return runtime feature flag from system_settings with safe fallback."""
+    field = _FEATURE_FIELDS.get(feature)
+    if field is None:
+        return True
+    try:
+        result = (
+            supabase_admin.table("system_settings")
+            .select(field)
+            .eq("singleton_key", "global")
+            .single()
+            .execute()
+        )
+        value = result.data.get(field)
+        if isinstance(value, bool):
+            return value
+    except APIError:
+        logger.warning("Feature flag lookup failed for %s; defaulting enabled", feature)
+    return True
 
 
 def _audit(
@@ -215,6 +241,50 @@ async def update_gate0_competitors(actor: dict, competitors: list[dict]) -> list
         new_value={"gate0_competitors": competitors},
     )
     return competitors
+
+
+async def get_keyword_taxonomy() -> list[dict]:
+    try:
+        result = (
+            supabase_admin.table("system_settings")
+            .select("keyword_taxonomy")
+            .eq("singleton_key", "global")
+            .single()
+            .execute()
+        )
+        return result.data.get("keyword_taxonomy") or []
+    except APIError as exc:
+        raise SupabaseError(f"Failed to read keyword taxonomy: {exc}") from exc
+
+
+async def update_keyword_taxonomy(actor: dict, taxonomy: list[dict]) -> list[dict]:
+    try:
+        old_result = (
+            supabase_admin.table("system_settings")
+            .select("keyword_taxonomy")
+            .eq("singleton_key", "global")
+            .single()
+            .execute()
+        )
+        old_value = old_result.data.get("keyword_taxonomy") or []
+    except APIError:
+        old_value = []
+
+    try:
+        supabase_admin.table("system_settings").update(
+            {"keyword_taxonomy": taxonomy}
+        ).eq("singleton_key", "global").execute()
+    except APIError as exc:
+        raise SupabaseError(f"Failed to update keyword taxonomy: {exc}") from exc
+
+    _audit(
+        actor=actor,
+        action="settings.update",
+        target="keyword_taxonomy",
+        old_value={"keyword_taxonomy": old_value},
+        new_value={"keyword_taxonomy": taxonomy},
+    )
+    return taxonomy
 
 
 async def list_audit(page: int, page_size: int) -> tuple[list[dict[str, object]], int]:

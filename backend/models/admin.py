@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AdminMeResponse(BaseModel):
@@ -72,3 +72,32 @@ class CompetitorListResponse(BaseModel):
 
 class UpdateCompetitorsRequest(BaseModel):
     competitors: list[CompetitorDef]
+
+
+class KeywordTaxonomyDef(BaseModel):
+    niche: str = Field(min_length=1)
+    keywords: list[str] = Field(default_factory=list, min_length=1)
+
+    @field_validator("niche")
+    @classmethod
+    def validate_niche(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Niche must not be empty.")
+        return normalized
+
+    @field_validator("keywords")
+    @classmethod
+    def validate_keywords(cls, value: list[str]) -> list[str]:
+        normalized = [keyword.strip() for keyword in value if keyword.strip()]
+        if len(normalized) == 0:
+            raise ValueError("At least one keyword is required.")
+        return normalized
+
+
+class KeywordTaxonomyListResponse(BaseModel):
+    taxonomy: list[KeywordTaxonomyDef]
+
+
+class UpdateKeywordTaxonomyRequest(BaseModel):
+    taxonomy: list[KeywordTaxonomyDef]

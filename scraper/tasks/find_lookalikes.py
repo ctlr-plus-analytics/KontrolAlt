@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+_SUBSCRIBER_BAND = 0.10
 
 
 def _normalize_name(value: str) -> str:
@@ -109,12 +110,13 @@ def _append_niche_matches(
     channels: list[dict[str, object]],
     matches: list[dict[str, object]],
 ) -> None:
-    """Append 1+ tag niche overlap matches for one seed."""
+    """Append 1+ tag niche overlap + subscriber-similar matches for one seed."""
     if seed_channel is None:
         return
 
     seed_channel_id = seed_channel["id"]
     seed_tags = set(_as_string_list(seed_channel.get("niche_tags")))
+    seed_subscribers = seed_channel.get("subscriber_count")
     if not seed_tags:
         return
 
@@ -124,15 +126,34 @@ def _append_niche_matches(
 
         channel_tags = set(_as_string_list(channel.get("niche_tags")))
         overlap = seed_tags & channel_tags
-        if len(overlap) >= 1:
-            matches.append(
-                {
-                    "seed_id": seed_id,
-                    "matched_channel_id": channel["id"],
-                    "match_type": "niche_overlap",
-                    "match_detail": ", ".join(sorted(overlap)),
-                }
-            )
+        if len(overlap) < 1:
+            continue
+
+        candidate_subscribers = channel.get("subscriber_count")
+        if not isinstance(seed_subscribers, (int, float)) or not isinstance(
+            candidate_subscribers, (int, float)
+        ):
+            continue
+        if seed_subscribers <= 0 or candidate_subscribers <= 0:
+            continue
+        lower = seed_subscribers * (1 - _SUBSCRIBER_BAND)
+        upper = seed_subscribers * (1 + _SUBSCRIBER_BAND)
+        if not (lower <= candidate_subscribers <= upper):
+            continue
+
+        pct_delta = ((candidate_subscribers - seed_subscribers) / seed_subscribers) * 100
+        matches.append(
+            {
+                "seed_id": seed_id,
+                "matched_channel_id": channel["id"],
+                "match_type": "niche_overlap",
+                "match_detail": (
+                    f"Shared tags: {', '.join(sorted(overlap))} | "
+                    f"Subscribers: {int(seed_subscribers)} vs {int(candidate_subscribers)} "
+                    f"({pct_delta:+.2f}%)"
+                ),
+            }
+        )
 
 
 def _find_lookalikes_sync(seed_ids: list[str]) -> dict[str, object]:
@@ -162,17 +183,7 @@ def _find_lookalikes_sync(seed_ids: list[str]) -> dict[str, object]:
         seed_name = str(seed_result.data["name"])
         seed_name_lower = seed_name.lower()
         seed_channel = _find_seed_channel(seed_name_lower, channels)
-        seed_channel_id = (
-            str(seed_channel["id"]) if seed_channel is not None else None
-        )
 
-        _append_guest_matches(
-            seed_id,
-            seed_name_lower,
-            seed_channel_id,
-            channels,
-            all_matches,
-        )
         _append_niche_matches(seed_id, seed_channel, channels, all_matches)
 
     unique_matches: dict[tuple[str, str, str], dict[str, object]] = {}

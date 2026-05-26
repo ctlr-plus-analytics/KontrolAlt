@@ -101,7 +101,9 @@ async def get_channels(
             count="exact",
         )
         query = query.eq("is_active", True)
-        if not filters.include_incomplete:
+        if filters.incomplete_only:
+            query = query.eq("dashboard_eligible", False)
+        else:
             query = query.eq("dashboard_eligible", True)
 
         if filters.platform is not None:
@@ -144,7 +146,8 @@ async def get_channels(
 
         if filters.inactive_filter:
             cutoff = (date.today() - timedelta(days=90)).isoformat()
-            query = query.lte("last_active_date", cutoff)
+            # Exclude channels inactive for 90+ days; keep recently active channels.
+            query = query.gte("last_active_date", cutoff)
 
         if filters.last_active_from is not None:
             query = query.gte(

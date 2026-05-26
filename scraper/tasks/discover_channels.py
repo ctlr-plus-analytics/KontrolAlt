@@ -24,7 +24,7 @@ from utils.channel_urls import (
     canonicalize_channel_url,
     extract_supported_channel_urls,
 )
-from utils.taxonomy import KEYWORD_TAXONOMY
+from utils.runtime_taxonomy import get_runtime_keyword_taxonomy
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +308,11 @@ def _category_phrase(category: str) -> str:
     return category.replace("_", " ")
 
 
-def _keyword_templates(category: str, keyword: str, platforms: set[str]) -> list[str]:
+def _keyword_templates(
+    category: str, keyword: str, platforms: set[str] | None = None
+) -> list[str]:
+    if platforms is None:
+        platforms = set(_SUPPORTED_DISCOVERY_PLATFORMS)
     category_phrase = _category_phrase(category)
     templates: list[str] = []
 
@@ -346,9 +350,11 @@ def _keyword_templates(category: str, keyword: str, platforms: set[str]) -> list
     return list(dict.fromkeys(templates))
 
 
-def _iter_search_queries(platforms: set[str]) -> list[tuple[str, str, str, str]]:
+def _iter_search_queries(
+    platforms: set[str], keyword_taxonomy: dict[str, list[str]]
+) -> list[tuple[str, str, str, str]]:
     queries: list[tuple[str, str, str, str]] = []
-    categories = list(KEYWORD_TAXONOMY.keys())
+    categories = list(keyword_taxonomy.keys())
     keyword_positions: dict[str, int] = {category: 0 for category in categories}
     template_positions: dict[tuple[str, int], int] = {}
 
@@ -358,7 +364,7 @@ def _iter_search_queries(platforms: set[str]) -> list[tuple[str, str, str, str]]
     while len(queries) < query_limit:
         progressed = False
         for category in categories:
-            keywords = KEYWORD_TAXONOMY.get(category, [])
+            keywords = keyword_taxonomy.get(category, [])
             if not keywords:
                 continue
 
@@ -396,9 +402,9 @@ def _append_feedback_queries_round_robin(
     active_queries: list[tuple[str, str, str, str]],
     feedback_by_category: dict[str, list[tuple[str, str, str, str]]],
     max_queries: int,
+    categories: list[str],
 ) -> None:
     """Append one feedback query per category per pass to preserve niche fairness."""
-    categories = list(KEYWORD_TAXONOMY.keys())
     while len(active_queries) < max_queries:
         progressed = False
         for category in categories:
@@ -692,6 +698,25 @@ def _discover_from_keywords(
     platform: str | None = None,
 ) -> dict[str, object]:
     allowed_platforms = _normalize_platform_filter(platform)
+    keyword_taxonomy = get_runtime_keyword_taxonomy()
+    categories = list(keyword_taxonomy.keys())
+    if not categories:
+        return {
+            "searched_queries": 0,
+            "pages_fetched": 0,
+            "raw_links": 0,
+            "discovered": 0,
+            "inserted": 0,
+            "refreshed": 0,
+            "duplicates": 0,
+            "invalid": 0,
+            "inserted_rumble": 0,
+            "inserted_bitchute": 0,
+            "inserted_substack": 0,
+            "category_metrics": {},
+            "feedback_terms": [],
+            "new_urls": [],
+        }
     runtime = get_runtime_settings()
     insert_limit = min(runtime.discovery_insert_limit, _INSERT_LIMIT)
     max_pages_per_query = min(
@@ -733,15 +758,15 @@ def _discover_from_keywords(
             "duplicates": 0,
             "invalid": 0,
         }
-        for category in KEYWORD_TAXONOMY.keys()
+        for category in categories
     }
     feedback_terms_counter: Counter[str] = Counter()
     new_urls: list[dict[str, str]] = []
 
-    seed_queries = _iter_search_queries(allowed_platforms)
+    seed_queries = _iter_search_queries(allowed_platforms, keyword_taxonomy)
     active_queries: list[tuple[str, str, str, str]] = list(seed_queries)
     feedback_by_category: dict[str, list[tuple[str, str, str, str]]] = {
-        category: [] for category in KEYWORD_TAXONOMY.keys()
+        category: [] for category in categories
     }
     seen_feedback_queries: set[str] = set()
     max_active_queries = min(runtime.discovery_serper_query_limit, _QUERY_LIMIT) * 2
@@ -903,6 +928,7 @@ def _discover_from_keywords(
                 active_queries=active_queries,
                 feedback_by_category=feedback_by_category,
                 max_queries=max_active_queries,
+                categories=categories,
             )
 
         if no_new_for_active_query:

@@ -472,11 +472,13 @@ class RumbleScraper(BaseScraper):
                     for video in video_data_map.values()
                     if video.get("title")
                 ][: self.VIDEO_COLLECTION_LIMIT]
+                # Sample view counts from the first 3 video cards only (most recent).
                 view_counts = [
                     float(video["views"])
-                    for video in video_data_map.values()
+                    for video in list(video_data_map.values())[:3]
                     if video.get("views") is not None
-                ][: self.VIDEO_COLLECTION_LIMIT]
+                ]
+                # Comment counts come from individual video pages (up to 3 pages via _last_comment_page_items).
                 comment_counts = [
                     float(video["comments"])
                     for video in self._last_comment_page_items(video_data_map)
@@ -488,8 +490,10 @@ class RumbleScraper(BaseScraper):
                     if isinstance(video.get("date"), datetime)
                 ][: self.VIDEO_COLLECTION_LIMIT]
 
-                avg_views = self.compute_avg(view_counts)
-                avg_comments = self.compute_avg(comment_counts)
+                # Mean of up to 3 card view samples, rounded to nearest integer.
+                avg_views = round(sum(view_counts) / len(view_counts)) if view_counts else None
+                # Mean of up to 3 video-page comment samples; 0s included, Nones excluded.
+                avg_comments = round(sum(comment_counts) / len(comment_counts)) if comment_counts else None
                 if avg_comments is None:
                     reason = (
                         "parse_missing_avg_comments_cf_blocked"

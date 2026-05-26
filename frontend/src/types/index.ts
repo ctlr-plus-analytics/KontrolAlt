@@ -135,6 +135,19 @@ export interface LookalikeSearchResponse {
   message: string;
   task_id: string;
   seed_count: number;
+  results: LookalikeMatch[];
+}
+
+export interface ChannelLookalikeMatch {
+  matched_channel_id: string;
+  match_type: MatchType;
+  match_detail: string | null;
+  channel: Channel;
+}
+
+export interface ChannelLookalikeResponse {
+  seed_channel_id: string;
+  matches: ChannelLookalikeMatch[];
 }
 
 /** Response returned when a scrape job is triggered. */
@@ -230,7 +243,7 @@ export interface ChannelFilters {
   last_active_from?: string | null;
   last_active_to?: string | null;
   inactive_filter: boolean;
-  include_incomplete?: boolean;
+  incomplete_only?: boolean;
   sort_by:
     | "subscriber_count"
     | "avg_views"
@@ -311,4 +324,13 @@ export interface CompetitorDef {
 
 export interface CompetitorListResponse {
   competitors: CompetitorDef[];
+}
+
+export interface KeywordTaxonomyDef {
+  niche: string;
+  keywords: string[];
+}
+
+export interface KeywordTaxonomyListResponse {
+  taxonomy: KeywordTaxonomyDef[];
 }

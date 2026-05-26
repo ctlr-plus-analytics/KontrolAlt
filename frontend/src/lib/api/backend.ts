@@ -14,6 +14,7 @@ import type {
   ApiErrorResponse,
   Gate0CheckResponse,
   LookalikeSearchResponse,
+  ChannelLookalikeResponse,
   ManualChannelIntakeRequest,
   BulkChannelIntakeRequest,
   IntakeSummaryResponse,
@@ -30,6 +31,8 @@ import type {
   PaginatedAdminAuditResponse,
   CompetitorDef,
   CompetitorListResponse,
+  KeywordTaxonomyDef,
+  KeywordTaxonomyListResponse,
 } from "@/types";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -153,8 +156,8 @@ export async function getChannels(
   if (filters.inactive_filter) {
     params.set("inactive_filter", "true");
   }
-  if (filters.include_incomplete) {
-    params.set("include_incomplete", "true");
+  if (filters.incomplete_only) {
+    params.set("incomplete_only", "true");
   }
   if (filters.sort_by) {
     params.set("sort_by", filters.sort_by);
@@ -222,6 +225,16 @@ export async function getLookalikeResults(
   token?: string
 ): Promise<LookalikeMatch[]> {
   return apiFetch<LookalikeMatch[]>("/api/v1/lookalike/results", { token });
+}
+
+/** Compute lookalikes for a single channel seed (detail page). */
+export async function getChannelLookalikes(
+  channelId: string,
+  token?: string
+): Promise<ChannelLookalikeResponse> {
+  return apiFetch<ChannelLookalikeResponse>(`/api/v1/lookalike/channel/${channelId}`, {
+    token,
+  });
 }
 
 /** Trigger a manual scrape run (admin only). */
@@ -386,6 +399,25 @@ export async function updateAdminCompetitors(
   return apiFetch<CompetitorListResponse>("/api/v1/admin/competitors", {
     method: "PUT",
     body: { competitors },
+    token,
+  });
+}
+
+/** Fetch the current editable niche/keyword taxonomy. */
+export async function getAdminKeywordTaxonomy(
+  token?: string
+): Promise<KeywordTaxonomyListResponse> {
+  return apiFetch<KeywordTaxonomyListResponse>("/api/v1/admin/keyword-taxonomy", { token });
+}
+
+/** Replace the editable niche/keyword taxonomy. */
+export async function updateAdminKeywordTaxonomy(
+  taxonomy: KeywordTaxonomyDef[],
+  token?: string
+): Promise<KeywordTaxonomyListResponse> {
+  return apiFetch<KeywordTaxonomyListResponse>("/api/v1/admin/keyword-taxonomy", {
+    method: "PUT",
+    body: { taxonomy },
     token,
   });
 }

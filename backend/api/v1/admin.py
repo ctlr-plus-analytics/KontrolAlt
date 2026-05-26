@@ -11,8 +11,10 @@ from models.admin import (
     CompetitorListResponse,
     Gate0BatchTriggerRequest,
     Gate0BatchTriggerResponse,
+    KeywordTaxonomyListResponse,
     PaginatedAdminAuditResponse,
     UpdateCompetitorsRequest,
+    UpdateKeywordTaxonomyRequest,
 )
 from services import admin_service
 
@@ -106,3 +108,21 @@ async def update_competitors(
     payload = [c.model_dump() for c in body.competitors]
     updated = await admin_service.update_gate0_competitors(actor=user, competitors=payload)
     return CompetitorListResponse(competitors=updated)
+
+
+@router.get("/keyword-taxonomy", response_model=KeywordTaxonomyListResponse)
+async def get_keyword_taxonomy(
+    user: dict = Depends(require_admin_user),
+) -> KeywordTaxonomyListResponse:
+    data = await admin_service.get_keyword_taxonomy()
+    return KeywordTaxonomyListResponse(taxonomy=data)
+
+
+@router.put("/keyword-taxonomy", response_model=KeywordTaxonomyListResponse)
+async def update_keyword_taxonomy(
+    body: UpdateKeywordTaxonomyRequest,
+    user: dict = Depends(require_admin_user),
+) -> KeywordTaxonomyListResponse:
+    payload = [item.model_dump() for item in body.taxonomy]
+    updated = await admin_service.update_keyword_taxonomy(actor=user, taxonomy=payload)
+    return KeywordTaxonomyListResponse(taxonomy=updated)

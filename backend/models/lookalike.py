@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from models.channel import Channel
 
@@ -66,3 +66,20 @@ class LookalikeSearchResponse(BaseModel):
     message: str
     task_id: str
     seed_count: int
+    results: list[LookalikeMatch] = Field(default_factory=list)
+
+
+class ChannelLookalikeMatch(BaseModel):
+    """Lookalike match payload for a channel detail seed."""
+
+    matched_channel_id: UUID
+    match_type: MatchType
+    match_detail: str | None = None
+    channel: Channel
+
+
+class ChannelLookalikeResponse(BaseModel):
+    """Response payload for channel-detail lookalikes."""
+
+    seed_channel_id: UUID
+    matches: list[ChannelLookalikeMatch]

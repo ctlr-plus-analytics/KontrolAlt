@@ -31,6 +31,16 @@ _EXCLUDED_CONTACT_DOMAINS = {
     "www.enable-javascript.com",
 }
 
+# Selector constants — verified against live HTML dumps
+SEL_POST_CARD = "div[role='article'][aria-label*='Post preview']"
+SEL_POST_TITLE = "a[data-testid='post-preview-title']"
+SEL_POST_DATE = "time[datetime]"
+SEL_POST_LIKES = ".like-button-container .label"
+SEL_POST_COMMENTS = ".post-ufi-comment-button .label"
+SEL_CHANNEL_NAME = "h1.publication-name"
+SEL_CHANNEL_BIO = "meta[name='description']"
+SEL_SUBSCRIBER_COUNT = "a[href$='/subscribers']"
+
 SUBSTACK_CHANNEL = {
     "channel_name": {
         "primary": "h1.publication-name, h1[data-testid='publication-name']",
@@ -226,10 +236,10 @@ class SubstackScraper(BaseScraper):
     POST_PAGE_CONTENT_TIMEOUT_S = 10.0
     POST_PAGE_COMMENT_TIMEOUT_MS = 8000
 
-    POST_CARD_SELECTOR = SUBSTACK_CHANNEL["post_card"]["primary"]
-    POST_LINK_SELECTOR = SUBSTACK_CHANNEL["post_link"]["primary"]
-    POST_TITLE_SELECTOR = SUBSTACK_CHANNEL["post_title"]["primary"]
-    POST_DATE_SELECTOR = SUBSTACK_CHANNEL["post_date"]["primary"]
+    POST_CARD_SELECTOR = SEL_POST_CARD
+    POST_LINK_SELECTOR = SEL_POST_TITLE
+    POST_TITLE_SELECTOR = SEL_POST_TITLE
+    POST_DATE_SELECTOR = SEL_POST_DATE
     POST_VIEWS_SELECTOR = SUBSTACK_CHANNEL["post_views"]["primary"]
     POST_COMMENTS_SELECTOR = SUBSTACK_CHANNEL["post_comments"]["primary"]
 
@@ -239,13 +249,16 @@ class SubstackScraper(BaseScraper):
             telemetry = BrowserTelemetry()
             stage_marks: list[tuple[str, float]] = []
             channel_base_url = self._channel_base_url(channel_url)
+            publication_url = self._publication_url(channel_base_url)
+            profile_url = self._profile_url(channel_base_url)
             session_key = self._session_key or channel_base_url
 
             async with launch_browser(session_key=session_key, telemetry=telemetry) as context:
                 page = await context.new_page()
+                # FIX A: Navigate to the publication subdomain page (posts render here)
                 response = await guarded_goto(
                     page,
-                    channel_base_url,
+                    publication_url,
                     session_key=session_key,
                     wait_until="domcontentloaded",
                     timeout=self.CHANNEL_NAV_TIMEOUT_MS,
@@ -304,29 +317,33 @@ class SubstackScraper(BaseScraper):
 
                 name = self._extract_name(soup, channel_base_url, page_title)
                 description = self._extract_description(soup)
-                subscriber_count = self._extract_subscribers(soup)
 
+                # FIX A: Wait for post cards using the single confirmed selector
                 try:
-                    await page.wait_for_selector(self.POST_CARD_SELECTOR, timeout=self.CARD_SELECTOR_TIMEOUT_MS)
+                    await page.wait_for_selector(SEL_POST_CARD, timeout=self.CARD_SELECTOR_TIMEOUT_MS)
                 except PlaywrightError:
-                    logger.warning("Substack: post grid did not render before parsing %s", channel_base_url)
+                    logger.warning("Substack: post card selector not found for %s", publication_url)
 
-                await human_scroll(page, direction="down", steps=5)
-                post_data_map, soup = await self._collect_posts(page)
+                # FIX B: Parse exactly 3 cards from the rendered page (no scroll loop)
+                html = await page.content()
+                soup = BeautifulSoup(html, "lxml")
+                post_data_map = self._extract_posts(soup, page.url)
                 if not post_data_map:
-                    logger.info("Substack: post grid empty on first pass, waiting for JS render %s", channel_base_url)
+                    logger.info("Substack: post cards empty, waiting for JS render %s", publication_url)
                     await human_delay(1.2, 2.2)
-                    post_data_map, soup = await self._collect_posts(page)
-                if not post_data_map:
-                    logger.info("Substack: post grid still empty, running extended wait/scroll parse %s", channel_base_url)
-                    await human_delay(2.5, 4.0)
-                    post_data_map, soup = await self._collect_posts(page)
+                    html = await page.content()
+                    soup = BeautifulSoup(html, "lxml")
+                    post_data_map = self._extract_posts(soup, page.url)
                 stage_marks.append(("fast_path_card_parse", perf_counter() - stage_t0))
 
                 comment_attempted, comment_blocked, comment_success = await self._enrich_latest_post_page_metrics(
                     context, post_data_map
                 )
                 stage_marks.append(("post_page_enrichment", perf_counter() - stage_t0))
+
+                # FIX D: Subscriber count is only present on the profile page, not the publication page
+                subscriber_count = await self._fetch_subscriber_count(context, profile_url, session_key)
+                stage_marks.append(("profile_page_subscriber", perf_counter() - stage_t0))
 
                 secondary_urls = self._extract_external_links(soup, channel_base_url)
                 combined_text = f"{description}\n{soup.get_text(' ', strip=True)}"
@@ -437,6 +454,44 @@ class SubstackScraper(BaseScraper):
             )
         return canonical.rstrip("/")
 
+    def _publication_url(self, channel_base_url: str) -> str:
+        """Build the publication subdomain URL where post cards render."""
+        # channel_base_url = "https://substack.com/@handle/posts"
+        handle = urlsplit(channel_base_url).path.strip("/").split("/")[0].lstrip("@")
+        return f"https://{handle}.substack.com/"
+
+    def _profile_url(self, channel_base_url: str) -> str:
+        """Build the profile page URL where subscriber count is present."""
+        # channel_base_url = "https://substack.com/@handle/posts"
+        handle_part = urlsplit(channel_base_url).path.strip("/").split("/")[0]  # "@handle"
+        return f"https://substack.com/{handle_part}"
+
+    async def _fetch_subscriber_count(self, context, profile_url: str, session_key: str) -> int | None:
+        """Navigate to the profile page and extract subscriber count."""
+        page = await context.new_page()
+        try:
+            await inter_request_jitter()
+            await guarded_goto(
+                page,
+                profile_url,
+                session_key=session_key,
+                wait_until="domcontentloaded",
+                timeout=self.CHANNEL_NAV_TIMEOUT_MS,
+            )
+            await wait_for_content(page, timeout_s=8.0)
+            html = await page.content()
+            profile_soup = BeautifulSoup(html, "lxml")
+            return self._extract_subscribers(profile_soup)
+        except Exception as exc:
+            logger.warning(
+                "Substack: profile page fetch failed, subscriber_count will be None for %s: %s",
+                profile_url,
+                exc,
+            )
+            return None
+        finally:
+            await page.close()
+
     async def _collect_posts(self, page) -> tuple[dict[str, dict[str, object]], BeautifulSoup]:
         collected: dict[str, dict[str, object]] = {}
         last_soup = BeautifulSoup(await page.content(), "lxml")
@@ -467,10 +522,11 @@ class SubstackScraper(BaseScraper):
 
     def _extract_posts(self, soup: BeautifulSoup, base_url: str) -> dict[str, dict[str, object]]:
         post_map: dict[str, dict[str, object]] = {}
-        for card in soup.select(self.POST_CARD_SELECTOR):
-            if len(post_map) >= self.POST_COLLECTION_LIMIT or not isinstance(card, Tag):
+        for card in soup.select(SEL_POST_CARD):
+            if len(post_map) >= 3 or not isinstance(card, Tag):  # FIX B: exactly 3 cards
                 break
-            link = card if (card.name == "a" and "/p/" in str(card.get("href") or "")) else card.select_one(self.POST_LINK_SELECTOR)
+            # FIX B: title link is the confirmed source for both href and title text
+            link = card.select_one(SEL_POST_TITLE)
             if not isinstance(link, Tag):
                 continue
             href = str(link.get("href") or "").strip()
@@ -595,11 +651,12 @@ class SubstackScraper(BaseScraper):
         return channel_url.rstrip("/").split("/")[-1]
 
     def _extract_description(self, soup: BeautifulSoup) -> str:
-        primary = soup.select_one(SUBSTACK_CHANNEL["channel_description"]["primary"])
+        # FIX C: meta[name="description"] requires .get("content"), not .get_text()
+        primary = soup.select_one(SEL_CHANNEL_BIO)
         if isinstance(primary, Tag):
-            text = primary.get_text("\n", strip=True)
-            if text:
-                return text
+            content = str(primary.get("content") or "").strip()
+            if content:
+                return content
         for fallback in SUBSTACK_CHANNEL["channel_description"]["fallbacks"]:
             node = soup.select_one(fallback)
             if not isinstance(node, Tag):
@@ -701,39 +758,35 @@ class SubstackScraper(BaseScraper):
         return link.get_text(" ", strip=True)
 
     def _extract_post_card_views(self, card: Tag) -> int | None:
-        like_button = card.select_one("button[aria-label='Like']")
+        # FIX B primary: confirmed selector from live DOM dump
+        like_label = card.select_one(SEL_POST_LIKES)
+        if isinstance(like_label, Tag):
+            parsed = parse_count_text(like_label.get_text(" ", strip=True))
+            if parsed is not None:
+                return parsed
+        # Fallback: aria-label on like button
+        like_button = card.select_one("button[aria-label*='Like']")
         if isinstance(like_button, Tag):
             parsed = self._extract_metric_from_button(like_button)
             if parsed is not None:
                 return parsed
             return 0
-        like_label = card.select_one(".like-button-container .label")
-        if isinstance(like_label, Tag):
-            parsed = parse_count_text(like_label.get_text(" ", strip=True))
-            if parsed is not None:
-                return parsed
-        for node in card.select("[data-testid='view-count'], [class*='view']"):
-            parsed = parse_count_text(node.get_text(" ", strip=True))
-            if parsed is not None:
-                return parsed
         return None
 
     def _extract_post_card_comments(self, card: Tag) -> int | None:
-        comment_button = card.select_one("button[aria-label='Comment']")
+        # FIX B primary: confirmed selector from live DOM dump
+        comment_label = card.select_one(SEL_POST_COMMENTS)
+        if isinstance(comment_label, Tag):
+            parsed = parse_count_text(comment_label.get_text(" ", strip=True))
+            if parsed is not None:
+                return parsed
+        # Fallback: aria-label on comment button
+        comment_button = card.select_one("button[aria-label*='comment']")
         if isinstance(comment_button, Tag):
             parsed = self._extract_metric_from_button(comment_button)
             if parsed is not None:
                 return parsed
             return 0
-        comment_label = card.select_one(".post-ufi-comment-button .label")
-        if isinstance(comment_label, Tag):
-            parsed = parse_count_text(comment_label.get_text(" ", strip=True))
-            if parsed is not None:
-                return parsed
-        for node in card.select("[data-testid='comment-count'], [class*='comment']"):
-            parsed = parse_count_text(node.get_text(" ", strip=True))
-            if parsed is not None:
-                return parsed
         return None
 
     def _extract_post_card_metric_values(self, card: Tag) -> list[int]:

@@ -91,7 +91,10 @@ if "worker" not in sys.modules:
     sys.modules["worker"] = worker_stub
 if "core.config" not in sys.modules:
     core_config_stub = types.ModuleType("core.config")
-    core_config_stub.scraper_settings = types.SimpleNamespace(serp_api_key="serper-key")
+    core_config_stub.scraper_settings = types.SimpleNamespace(
+        serp_api_key="serper-key",
+        proxy_list="http://user:pass@example.com:8080",
+    )
     sys.modules["core.config"] = core_config_stub
 if "core.supabase" not in sys.modules:
     core_supabase_stub = types.ModuleType("core.supabase")
@@ -100,6 +103,7 @@ if "core.supabase" not in sys.modules:
 for module_name, attr_name in (
     ("tasks.scrape_bitchute", "scrape_bitchute_channel"),
     ("tasks.scrape_rumble", "scrape_rumble_channel"),
+    ("tasks.scrape_substack", "scrape_substack_channel"),
 ):
     if module_name not in sys.modules:
         task_stub = types.ModuleType(module_name)
@@ -378,10 +382,12 @@ def test_iter_search_queries_round_robins_categories(monkeypatch) -> None:
         "beta": ["three", "four"],
         "gamma": ["five", "six"],
     }
-    monkeypatch.setattr(discover_channels, "KEYWORD_TAXONOMY", taxonomy)
     monkeypatch.setattr(discover_channels, "_QUERY_LIMIT", 9)
 
-    queries = discover_channels._iter_search_queries()
+    queries = discover_channels._iter_search_queries(
+        {"rumble", "bitchute", "substack"},
+        taxonomy,
+    )
 
     assert [query[0] for query in queries[:6]] == [
         "alpha",
@@ -395,11 +401,7 @@ def test_iter_search_queries_round_robins_categories(monkeypatch) -> None:
 
 
 def test_feedback_queries_append_round_robin_by_category(monkeypatch) -> None:
-    monkeypatch.setattr(
-        discover_channels,
-        "KEYWORD_TAXONOMY",
-        {"alpha": ["one"], "beta": ["two"], "gamma": ["three"]},
-    )
+    categories = ["alpha", "beta", "gamma"]
     active = []
     feedback_by_category = {
         "alpha": [
@@ -414,6 +416,7 @@ def test_feedback_queries_append_round_robin_by_category(monkeypatch) -> None:
         active_queries=active,
         feedback_by_category=feedback_by_category,
         max_queries=4,
+        categories=categories,
     )
 
     assert [query[0] for query in active] == ["alpha", "beta", "gamma", "alpha"]
@@ -426,15 +429,15 @@ def test_keyword_discovery_reports_category_metrics(monkeypatch) -> None:
     monkeypatch.setattr(
         discover_channels,
         "_iter_search_queries",
-        lambda: [
+        lambda _platforms, _taxonomy: [
             ("alpha", "one", "site:rumble.com one", "base"),
             ("beta", "two", "site:bitchute.com two", "base"),
         ],
     )
     monkeypatch.setattr(
         discover_channels,
-        "KEYWORD_TAXONOMY",
-        {"alpha": ["one"], "beta": ["two"]},
+        "get_runtime_keyword_taxonomy",
+        lambda: {"alpha": ["one"], "beta": ["two"]},
     )
     monkeypatch.setattr(discover_channels, "_MAX_PAGES_PER_QUERY", 1)
     monkeypatch.setattr(discover_channels, "_search_serper", lambda _query, page=1: [])
@@ -450,10 +453,10 @@ def test_keyword_discovery_reports_category_metrics(monkeypatch) -> None:
 def test_discover_channels_isolates_seed_phase_failure(monkeypatch) -> None:
     monkeypatch.setattr(discover_channels, "get_supabase_client", lambda: object())
 
-    def fail_seed(_client):
+    def fail_seed(_client, platform=None):
         raise ValueError("seed failed")
 
-    def keyword_ok(_client):
+    def keyword_ok(_client, platform=None):
         return {
             "searched_queries": 1,
             "pages_fetched": 1,

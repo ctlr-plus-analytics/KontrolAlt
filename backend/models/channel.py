@@ -123,7 +123,7 @@ class ChannelFilters(BaseModel):
     inactive_filter: bool = False
     last_active_from: date | None = None
     last_active_to: date | None = None
-    include_incomplete: bool = False
+    incomplete_only: bool = False
     sort_by: str = "avg_comments"
     sort_order: str = "desc"
     page: int = 1

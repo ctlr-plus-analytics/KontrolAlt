@@ -73,12 +73,12 @@ export default function LookalikePage() {
     setNotice(null);
 
     try {
-      const queued = await searchLookalikes(
+      const completed = await searchLookalikes(
         validSeeds,
         token
       );
-      setNotice(`${queued.message}. Results will appear automatically as matches are written.`);
-      await refreshResults();
+      setResults(completed.results);
+      setNotice(completed.message);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to search for lookalikes"

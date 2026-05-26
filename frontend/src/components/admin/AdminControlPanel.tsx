@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   getAdminAudit,
   getAdminCompetitors,
+  getAdminKeywordTaxonomy,
   getAdminMe,
   getAdminTaskStatus,
   triggerAdminDiscoveryNow,
@@ -11,9 +12,10 @@ import {
   triggerAdminWeeklyVelocityNow,
   triggerAdminScrapeNow,
   updateAdminCompetitors,
+  updateAdminKeywordTaxonomy,
 } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
-import type { AdminAuditRecord, AdminTaskStatusResponse, CompetitorDef } from "@/types";
+import type { AdminAuditRecord, AdminTaskStatusResponse, CompetitorDef, KeywordTaxonomyDef } from "@/types";
 import { Button } from "@/components/ui/Button";
 
 const AUDIT_PAGE_SIZE = 20;
@@ -98,21 +100,33 @@ export function AdminControlPanel() {
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [newBrand, setNewBrand] = useState("");
   const [newDomains, setNewDomains] = useState("");
+  const [keywordTaxonomy, setKeywordTaxonomy] = useState<KeywordTaxonomyDef[]>([]);
+  const [taxonomySaving, setTaxonomySaving] = useState(false);
+  const [taxonomyError, setTaxonomyError] = useState<string | null>(null);
+  const [taxonomySuccess, setTaxonomySuccess] = useState<string | null>(null);
+  const [editingTaxonomyIdx, setEditingTaxonomyIdx] = useState<number | null>(null);
+  const [editNiche, setEditNiche] = useState("");
+  const [editKeywords, setEditKeywords] = useState("");
+  const [isAddingTaxonomy, setIsAddingTaxonomy] = useState(false);
+  const [newNiche, setNewNiche] = useState("");
+  const [newKeywords, setNewKeywords] = useState("");
 
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
     const run = async () => {
       try {
-        const [meData, auditData, competitorsData] = await Promise.all([
+        const [meData, auditData, competitorsData, taxonomyData] = await Promise.all([
           getAdminMe(token),
           getAdminAudit(1, AUDIT_PAGE_SIZE, token),
           getAdminCompetitors(token),
+          getAdminKeywordTaxonomy(token),
         ]);
         if (cancelled) return;
         setAllowed(meData.roles.includes("admin"));
         setAudit(auditData.data);
         setCompetitors(competitorsData.competitors);
+        setKeywordTaxonomy(taxonomyData.taxonomy);
       } catch (error) {
         if (cancelled) return;
         setAllowed(false);
@@ -248,6 +262,8 @@ export function AdminControlPanel() {
 
   const parseDomains = (raw: string): string[] =>
     raw.split(",").map((d) => d.trim()).filter(Boolean);
+  const parseKeywords = (raw: string): string[] =>
+    raw.split(",").map((keyword) => keyword.trim()).filter(Boolean);
 
   const handleSaveCompetitors = async (updated: CompetitorDef[]) => {
     if (!token) return;
@@ -315,6 +331,74 @@ export function AdminControlPanel() {
     }
     setIsAddingNew(false);
     void handleSaveCompetitors([...competitors, { brand, domains }]);
+  };
+
+  const handleSaveTaxonomy = async (updated: KeywordTaxonomyDef[]) => {
+    if (!token) return;
+    setTaxonomySaving(true);
+    setTaxonomyError(null);
+    setTaxonomySuccess(null);
+    try {
+      const result = await updateAdminKeywordTaxonomy(updated, token);
+      setKeywordTaxonomy(result.taxonomy);
+      setTaxonomySuccess("Niche taxonomy saved.");
+      const auditData = await getAdminAudit(1, AUDIT_PAGE_SIZE, token);
+      setAudit(auditData.data);
+    } catch (error) {
+      setTaxonomyError(error instanceof Error ? error.message : "Save failed.");
+    } finally {
+      setTaxonomySaving(false);
+    }
+  };
+
+  const handleDeleteTaxonomy = (idx: number) => {
+    setTaxonomySuccess(null);
+    void handleSaveTaxonomy(keywordTaxonomy.filter((_, i) => i !== idx));
+  };
+
+  const handleStartTaxonomyEdit = (idx: number) => {
+    setEditingTaxonomyIdx(idx);
+    setEditNiche(keywordTaxonomy[idx].niche);
+    setEditKeywords(keywordTaxonomy[idx].keywords.join(", "));
+    setTaxonomyError(null);
+    setTaxonomySuccess(null);
+  };
+
+  const handleCancelTaxonomyEdit = () => setEditingTaxonomyIdx(null);
+
+  const handleSaveTaxonomyEdit = () => {
+    if (editingTaxonomyIdx === null) return;
+    const niche = editNiche.trim();
+    const keywords = parseKeywords(editKeywords);
+    if (!niche || keywords.length === 0) {
+      setTaxonomyError("Niche and at least one keyword are required.");
+      return;
+    }
+    setEditingTaxonomyIdx(null);
+    void handleSaveTaxonomy(
+      keywordTaxonomy.map((entry, i) => (i === editingTaxonomyIdx ? { niche, keywords } : entry))
+    );
+  };
+
+  const handleStartTaxonomyAdd = () => {
+    setIsAddingTaxonomy(true);
+    setNewNiche("");
+    setNewKeywords("");
+    setTaxonomyError(null);
+    setTaxonomySuccess(null);
+  };
+
+  const handleCancelTaxonomyAdd = () => setIsAddingTaxonomy(false);
+
+  const handleSaveNewTaxonomy = () => {
+    const niche = newNiche.trim();
+    const keywords = parseKeywords(newKeywords);
+    if (!niche || keywords.length === 0) {
+      setTaxonomyError("Niche and at least one keyword are required.");
+      return;
+    }
+    setIsAddingTaxonomy(false);
+    void handleSaveTaxonomy([...keywordTaxonomy, { niche, keywords }]);
   };
 
   if (loading) {
@@ -484,6 +568,105 @@ export function AdminControlPanel() {
         {!isAddingNew && (
           <div className="mt-3">
             <Button variant="primary" size="sm" onClick={handleStartAdd}>+ Add Competitor</Button>
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
+        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">Niche Keywords</h2>
+        <p className="mb-3 text-xs text-[#6B6B6B]">Niche tags and keywords are sourced from database settings. Changes take effect on subsequent discovery/scrape runs.</p>
+
+        {taxonomyError && (
+          <p className="mb-3 text-xs text-[#B22222]">{taxonomyError}</p>
+        )}
+        {taxonomySuccess && (
+          <p className="mb-3 text-xs text-[#4F8A5B]">{taxonomySuccess}</p>
+        )}
+
+        <table className="min-w-full text-left text-sm">
+          <thead className="text-xs uppercase tracking-wide text-[#6B6B6B]">
+            <tr>
+              <th className="px-2 py-2">Niche</th>
+              <th className="px-2 py-2">Keywords</th>
+              <th className="px-2 py-2">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {keywordTaxonomy.map((entry, idx) => (
+              <tr key={idx} className="border-t border-[#E8E4DC]">
+                {editingTaxonomyIdx === idx ? (
+                  <>
+                    <td className="px-2 py-2">
+                      <input
+                        value={editNiche}
+                        onChange={(e) => setEditNiche(e.target.value)}
+                        className="w-full rounded border border-[#E8E4DC] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                        placeholder="Niche key"
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <input
+                        value={editKeywords}
+                        onChange={(e) => setEditKeywords(e.target.value)}
+                        className="w-full rounded border border-[#E8E4DC] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                        placeholder="keyword 1, keyword 2"
+                      />
+                    </td>
+                    <td className="px-2 py-2">
+                      <div className="flex gap-2">
+                        <Button variant="accent" size="sm" onClick={handleSaveTaxonomyEdit} loading={taxonomySaving}>Save</Button>
+                        <Button variant="ghost" size="sm" onClick={handleCancelTaxonomyEdit}>Cancel</Button>
+                      </div>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td className="px-2 py-2 font-medium text-[#1A1A2E]">{entry.niche}</td>
+                    <td className="px-2 py-2 text-[#6B6B6B]">{entry.keywords.join(", ")}</td>
+                    <td className="px-2 py-2">
+                      <div className="flex gap-2">
+                        <Button variant="ghost" size="sm" onClick={() => handleStartTaxonomyEdit(idx)}>Edit</Button>
+                        <Button variant="danger" size="sm" onClick={() => handleDeleteTaxonomy(idx)} loading={taxonomySaving}>Delete</Button>
+                      </div>
+                    </td>
+                  </>
+                )}
+              </tr>
+            ))}
+
+            {isAddingTaxonomy && (
+              <tr className="border-t border-[#E8E4DC]">
+                <td className="px-2 py-2">
+                  <input
+                    value={newNiche}
+                    onChange={(e) => setNewNiche(e.target.value)}
+                    className="w-full rounded border border-[#E8E4DC] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                    placeholder="Niche key"
+                    autoFocus
+                  />
+                </td>
+                <td className="px-2 py-2">
+                  <input
+                    value={newKeywords}
+                    onChange={(e) => setNewKeywords(e.target.value)}
+                    className="w-full rounded border border-[#E8E4DC] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
+                    placeholder="keyword 1, keyword 2"
+                  />
+                </td>
+                <td className="px-2 py-2">
+                  <div className="flex gap-2">
+                    <Button variant="accent" size="sm" onClick={handleSaveNewTaxonomy} loading={taxonomySaving}>Add</Button>
+                    <Button variant="ghost" size="sm" onClick={handleCancelTaxonomyAdd}>Cancel</Button>
+                  </div>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+
+        {!isAddingTaxonomy && (
+          <div className="mt-3">
+            <Button variant="primary" size="sm" onClick={handleStartTaxonomyAdd}>+ Add Niche</Button>
           </div>
         )}
       </section>

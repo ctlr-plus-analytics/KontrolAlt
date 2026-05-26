@@ -40,3 +40,18 @@ def test_demographic_matches_new_keyword_categories() -> None:
         "alternative_media_politics",
         "preparedness_self_reliance",
     }
+
+
+def test_demographic_uses_runtime_taxonomy(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "utils.keyword_matcher.get_runtime_keyword_taxonomy",
+        lambda: {"custom_niche": ["special phrase"]},
+    )
+
+    result = compute_channel_demographic(
+        "Channel",
+        "Special phrase appears in description",
+        [],
+    )
+
+    assert result["niche_tags"] == ["custom_niche"]

@@ -39,7 +39,7 @@ const DEFAULT_FILTERS: ChannelFilters = {
   last_active_from: null,
   last_active_to: null,
   inactive_filter: false,
-  include_incomplete: false,
+  incomplete_only: false,
   sort_by: "avg_comments",
   sort_order: "desc",
 };
@@ -204,16 +204,16 @@ export function FilterBar({
     if (filters.inactive_filter) {
       active.push({
         key: "inactive_filter",
-        label: "Inactive 90d+",
+        label: "Exclude Inactive 90d+",
         onClear: () => update({ inactive_filter: false }),
         advanced: true,
       });
     }
-    if (filters.include_incomplete) {
+    if (filters.incomplete_only) {
       active.push({
-        key: "include_incomplete",
-        label: "Include Incomplete",
-        onClear: () => update({ include_incomplete: false }),
+        key: "incomplete_only",
+        label: "Incomplete Only",
+        onClear: () => update({ incomplete_only: false }),
         advanced: true,
       });
     }
@@ -471,27 +471,27 @@ export function FilterBar({
                     : "border-[#E8E4DC] bg-white text-[#6B6B6B] hover:border-[#C9A84C]"
                 )}
               >
-                Only 90d+
+                Exclude 90d+
               </button>
             </div>
 
             <div className="flex w-[140px] flex-col gap-1">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-[#6B6B6B]">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-[#6B6B6B]">
                 Incomplete
               </span>
               <button
                 type="button"
                 onClick={() =>
-                  update({ include_incomplete: !filters.include_incomplete })
+                  update({ incomplete_only: !filters.incomplete_only })
                 }
                 className={cn(
                   "h-9 rounded-md border px-3 text-sm font-medium transition-all duration-150 cursor-pointer",
-                  filters.include_incomplete
+                  filters.incomplete_only
                     ? "border-[#1A1A2E] bg-[#1A1A2E]/10 text-[#1A1A2E]"
                     : "border-[#E8E4DC] bg-white text-[#6B6B6B] hover:border-[#C9A84C]"
                 )}
               >
-                Include
+                Only
               </button>
             </div>
           </div>

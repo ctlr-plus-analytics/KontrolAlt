@@ -1,6 +1,6 @@
 """Keyword matching and comment tier logic."""
 
-from utils.taxonomy import KEYWORD_TAXONOMY
+from utils.runtime_taxonomy import get_runtime_keyword_taxonomy
 
 
 def match_keywords(text: str) -> list[str]:
@@ -14,7 +14,8 @@ def match_keywords(text: str) -> list[str]:
     """
     text_lower = text.lower()
     matched: list[str] = []
-    for category, keywords in KEYWORD_TAXONOMY.items():
+    keyword_taxonomy = get_runtime_keyword_taxonomy()
+    for category, keywords in keyword_taxonomy.items():
         for keyword in keywords:
             if keyword in text_lower:
                 matched.append(category)
