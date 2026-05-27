@@ -136,6 +136,7 @@ class ChannelFilters(BaseModel):
             "subscriber_count",
             "avg_views",
             "avg_comments",
+            "engagement_rate",
             "view_velocity_30d",
             "view_velocity_90d",
             "last_active_date",

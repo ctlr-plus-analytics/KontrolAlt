@@ -126,6 +126,15 @@ export function useChannels(
     onRefresh: refreshChannelsInBackground,
   });
 
+  // Supabase Realtime WebSockets silently drop; poll as fallback so the dashboard never goes stale.
+  useEffect(() => {
+    if (!token) return;
+    const id = setInterval(() => {
+      refreshChannelsInBackground();
+    }, 30_000);
+    return () => clearInterval(id);
+  }, [token, refreshChannelsInBackground]);
+
   return {
     channels,
     total,

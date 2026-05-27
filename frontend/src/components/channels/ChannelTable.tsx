@@ -32,7 +32,7 @@ const COLUMNS: SortableColumn[] = [
   { key: null, label: "Gate 0" },
   { key: "subscriber_count", label: "Subscribers", align: "right" },
   { key: "avg_views", label: "Avg Views", align: "right" },
-  { key: null, label: "Engagement Rate", align: "right" },
+  { key: "engagement_rate", label: "Engagement Rate %", align: "right" },
   { key: "last_active_date", label: "Last Active" },
 ];
 

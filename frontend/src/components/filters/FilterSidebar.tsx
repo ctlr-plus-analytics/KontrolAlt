@@ -542,7 +542,15 @@ export function FilterSidebar({
                 : "border-[#F7F4EE]/15 text-[#F7F4EE]/50 hover:border-[#F7F4EE]/30 hover:text-[#F7F4EE]/80"
             )}
           >
-            Incomplete Only
+            <span className="flex items-center gap-1.5">
+              Incomplete Only
+              <span
+                title="Shows channels where dashboard data collection is incomplete — these channels failed eligibility checks and may be missing subscriber count, average views, or average comments."
+                className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-current text-[10px] font-bold opacity-60"
+              >
+                ?
+              </span>
+            </span>
             <span
               className={cn(
                 "h-4 w-7 rounded-full transition-all duration-200 relative shrink-0",

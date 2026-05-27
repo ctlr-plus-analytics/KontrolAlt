@@ -44,11 +44,12 @@ export function NumericRangeFilter({
   const maxPercent = ((resolvedMax - minLimit) / (maxLimit - minLimit)) * 100;
 
   const onMinInputChange = (raw: string): void => {
-    if (!raw.trim()) {
+    const stripped = raw.replace(/,/g, "");
+    if (!stripped.trim()) {
       onChange({ min: null, max: maxValue });
       return;
     }
-    const numeric = Number(raw);
+    const numeric = Number(stripped);
     if (!Number.isFinite(numeric)) {
       return;
     }
@@ -57,11 +58,12 @@ export function NumericRangeFilter({
   };
 
   const onMaxInputChange = (raw: string): void => {
-    if (!raw.trim()) {
+    const stripped = raw.replace(/,/g, "");
+    if (!stripped.trim()) {
       onChange({ min: minValue, max: null });
       return;
     }
-    const numeric = Number(raw);
+    const numeric = Number(stripped);
     if (!Number.isFinite(numeric)) {
       return;
     }
@@ -144,10 +146,8 @@ export function NumericRangeFilter({
             Min
           </span>
           <input
-            type="number"
-            min={minLimit}
-            max={maxLimit}
-            step={step}
+            type="text"
+            inputMode="numeric"
             value={minValue ?? ""}
             placeholder="Any"
             onChange={(event) => onMinInputChange(event.target.value)}
@@ -159,10 +159,8 @@ export function NumericRangeFilter({
             Max
           </span>
           <input
-            type="number"
-            min={minLimit}
-            max={maxLimit}
-            step={step}
+            type="text"
+            inputMode="numeric"
             value={maxValue ?? ""}
             placeholder="Any"
             onChange={(event) => onMaxInputChange(event.target.value)}

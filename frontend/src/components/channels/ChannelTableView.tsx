@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef, useLayoutEffect } from "react";
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
 import type { Channel, ChannelFilters, Gate0StatusOption, NicheTagOption, VelocityScore } from "@/types";
 import { ChannelTable } from "@/components/channels/ChannelTable";
@@ -18,17 +18,45 @@ interface ChannelTableViewProps {
 }
 
 const PAGE_SIZE = 25;
+const STORAGE_KEY = "channel-table-state";
+
+function readStorage(): { filters?: ChannelFilters; page?: number; scrollTop?: number } {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as { filters?: ChannelFilters; page?: number; scrollTop?: number }) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeStorage(patch: { filters?: ChannelFilters; page?: number; scrollTop?: number }) {
+  try {
+    const current = readStorage();
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, ...patch }));
+  } catch {
+    // sessionStorage unavailable — silently ignore
+  }
+}
 
 export function ChannelTableView({
   initialChannels,
   initialTotal,
 }: ChannelTableViewProps) {
-  const [filters, setFilters] = useState<ChannelFilters>(DEFAULT_FILTERS);
-  const [page, setPage] = useState<number>(1);
+  const [filters, setFilters] = useState<ChannelFilters>(() => {
+    const saved = readStorage();
+    return saved.filters ?? DEFAULT_FILTERS;
+  });
+  const [page, setPage] = useState<number>(() => {
+    const saved = readStorage();
+    return saved.page ?? 1;
+  });
   const [intakeOpen, setIntakeOpen] = useState<boolean>(false);
   const [nicheTagOptions, setNicheTagOptions] = useState<NicheTagOption[]>([]);
   const [gate0StatusOptions, setGate0StatusOptions] = useState<Gate0StatusOption[]>([]);
   const { session } = useAuth();
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const hasRestoredScroll = useRef(false);
 
   const { channels, total, loading, refreshing, refetch } = useChannels(
     filters,
@@ -43,9 +71,36 @@ export function ChannelTableView({
   const totalPages = Math.max(1, Math.ceil(displayTotal / PAGE_SIZE));
   const showBlockingLoader = loading && displayChannels.length === 0;
 
+  // Persist filters + page to sessionStorage whenever they change.
+  useEffect(() => {
+    writeStorage({ filters, page });
+  }, [filters, page]);
+
+  // Save scroll position when navigating away (component unmounts).
+  useEffect(() => {
+    return () => {
+      if (scrollRef.current) {
+        writeStorage({ scrollTop: scrollRef.current.scrollTop });
+      }
+    };
+  }, []);
+
+  // Restore scroll position after the first successful data load.
+  useLayoutEffect(() => {
+    if (!loading && !hasRestoredScroll.current && scrollRef.current) {
+      hasRestoredScroll.current = true;
+      const saved = readStorage();
+      if (saved.scrollTop) {
+        scrollRef.current.scrollTop = saved.scrollTop;
+      }
+    }
+  }, [loading]);
+
   const handleSetFilters = useCallback((newFilters: ChannelFilters) => {
     setFilters(newFilters);
     setPage(1);
+    // Intentional filter change — reset saved scroll so we start from top.
+    writeStorage({ scrollTop: 0 });
   }, []);
 
   const handleSort = useCallback((column: ChannelFilters["sort_by"]) => {
@@ -56,6 +111,7 @@ export function ChannelTableView({
         prev.sort_by === column && prev.sort_order === "desc" ? "asc" : "desc",
     }));
     setPage(1);
+    writeStorage({ scrollTop: 0 });
   }, []);
 
   const handleIntakeComplete = useCallback(() => {
@@ -67,20 +123,30 @@ export function ChannelTableView({
   useEffect(() => {
     let cancelled = false;
     const loadFilterOptions = async () => {
-      try {
-        const [tags, statuses] = await Promise.all([
-          getNicheTags(session?.access_token),
-          getGate0Statuses(session?.access_token),
+      const [tagsResult, statusesResult] = await Promise.allSettled([
+        getNicheTags(session?.access_token),
+        getGate0Statuses(session?.access_token),
+      ]);
+
+      if (cancelled) {
+        return;
+      }
+
+      if (tagsResult.status === "fulfilled") {
+        setNicheTagOptions(tagsResult.value);
+      } else {
+        setNicheTagOptions([]);
+      }
+
+      if (statusesResult.status === "fulfilled") {
+        setGate0StatusOptions(statusesResult.value);
+      } else {
+        setGate0StatusOptions([
+          { status: "unchecked", count: 0 },
+          { status: "pending", count: 0 },
+          { status: "clean", count: 0 },
+          { status: "dirty", count: 0 },
         ]);
-        if (!cancelled) {
-          setNicheTagOptions(tags);
-          setGate0StatusOptions(statuses);
-        }
-      } catch {
-        if (!cancelled) {
-          setNicheTagOptions([]);
-          setGate0StatusOptions([]);
-        }
       }
     };
     void loadFilterOptions();
@@ -98,7 +164,7 @@ export function ChannelTableView({
       />
 
       {/* ── Main Content ── */}
-      <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
+      <div ref={scrollRef} className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between gap-4 border-b border-[#E8E4DC] bg-white px-6 py-4">
           <div>
