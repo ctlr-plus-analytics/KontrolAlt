@@ -116,8 +116,8 @@ async def get_channels(
         if filters.gate0_status is not None:
             query = query.eq("gate0_status", filters.gate0_status.value)
 
-        if filters.niche_tag is not None:
-            query = query.contains("niche_tags", [filters.niche_tag])
+        if filters.niche_tags:
+            query = query.overlaps("niche_tags", filters.niche_tags)
 
         if filters.search_query is not None:
             term = filters.search_query.replace("%", "").replace(",", "").strip()

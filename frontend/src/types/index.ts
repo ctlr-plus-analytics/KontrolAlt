@@ -232,7 +232,7 @@ export interface ChannelFilters {
   platform: "all" | Platform;
   comment_tier: "all" | CommentTier;
   gate0_status: "all" | Gate0Status;
-  niche_tag: string | null;
+  niche_tags: string[];
   search_query?: string | null;
   min_subscriber_count?: number | null;
   max_subscriber_count?: number | null;

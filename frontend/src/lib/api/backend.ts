@@ -124,8 +124,8 @@ export async function getChannels(
   if (filters.gate0_status && filters.gate0_status !== "all") {
     params.set("gate0_status", filters.gate0_status);
   }
-  if (filters.niche_tag) {
-    params.set("niche_tag", filters.niche_tag);
+  if (filters.niche_tags && filters.niche_tags.length > 0) {
+    filters.niche_tags.forEach((tag) => params.append("niche_tags", tag));
   }
   if (filters.search_query && filters.search_query.trim().length > 0) {
     params.set("search_query", filters.search_query.trim());

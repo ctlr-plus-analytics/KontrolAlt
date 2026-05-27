@@ -16,7 +16,7 @@ export const DEFAULT_FILTERS: ChannelFilters = {
   platform: "all",
   comment_tier: "all",
   gate0_status: "all",
-  niche_tag: null,
+  niche_tags: [],
   search_query: null,
   min_subscriber_count: null,
   max_subscriber_count: null,
@@ -116,7 +116,7 @@ export function FilterSidebar({
     if (filters.platform !== "all") count++;
     if (filters.comment_tier !== "all") count++;
     if (filters.gate0_status !== "all") count++;
-    if (filters.niche_tag) count++;
+    if (filters.niche_tags.length > 0) count++;
     if (filters.min_subscriber_count != null || filters.max_subscriber_count != null) count++;
     if (filters.min_avg_views != null || filters.max_avg_views != null) count++;
     if (filters.min_avg_comments != null || filters.max_avg_comments != null) count++;
@@ -348,7 +348,13 @@ export function FilterSidebar({
                 onClick={() => setIsNicheMenuOpen((prev) => !prev)}
                 className="flex w-full items-center justify-between rounded-lg border border-[#F7F4EE]/10 bg-[#F7F4EE]/6 px-3 py-2 text-sm text-[#F7F4EE] transition-shadow hover:border-[#F7F4EE]/20 focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/60"
               >
-                <span className="truncate">{filters.niche_tag ?? "Any / All Niches"}</span>
+                <span className="truncate">
+                  {filters.niche_tags.length === 0
+                    ? "Any / All Niches"
+                    : filters.niche_tags.length === 1
+                      ? filters.niche_tags[0]
+                      : `${filters.niche_tags.length} niches selected`}
+                </span>
                 <ChevronDown
                   size={14}
                   className={cn(
@@ -363,19 +369,18 @@ export function FilterSidebar({
                   <button
                     type="button"
                     onClick={() => {
-                      update({ niche_tag: null });
-                      setIsNicheMenuOpen(false);
+                      update({ niche_tags: [] });
                     }}
                     className={cn(
                       "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
-                      filters.niche_tag === null
+                      filters.niche_tags.length === 0
                         ? "bg-[#C9A84C]/14 text-[#C9A84C]"
                         : "text-[#F7F4EE]/75 hover:bg-[#F7F4EE]/6"
                     )}
                   >
                     <span className="flex items-center gap-2">
                       <span className="flex h-4 w-4 items-center justify-center rounded border border-current/35">
-                        {filters.niche_tag === null && <Check size={12} />}
+                        {filters.niche_tags.length === 0 && <Check size={12} />}
                       </span>
                       Any / All Niches
                     </span>
@@ -385,14 +390,17 @@ export function FilterSidebar({
 
                   <div className="max-h-64 overflow-y-auto scrollbar-thin">
                     {nicheTagOptions.map((option) => {
-                      const isActive = filters.niche_tag === option.tag;
+                      const isActive = filters.niche_tags.includes(option.tag);
                       return (
                         <button
                           key={option.tag}
                           type="button"
                           onClick={() => {
-                            update({ niche_tag: option.tag });
-                            setIsNicheMenuOpen(false);
+                            update({
+                              niche_tags: isActive
+                                ? filters.niche_tags.filter((tag) => tag !== option.tag)
+                                : [...filters.niche_tags, option.tag],
+                            });
                           }}
                           className={cn(
                             "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors",

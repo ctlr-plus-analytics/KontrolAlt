@@ -112,7 +112,7 @@ class ChannelFilters(BaseModel):
     platform: Platform | None = None
     comment_tier: CommentTier | None = None
     gate0_status: Gate0Status | None = None
-    niche_tag: str | None = None
+    niche_tags: list[str] | None = None
     search_query: str | None = None
     min_subscriber_count: int | None = None
     max_subscriber_count: int | None = None
@@ -173,6 +173,19 @@ class ChannelFilters(BaseModel):
         if v is None:
             return None
         cleaned = v.strip()
+        return cleaned or None
+
+    @field_validator("niche_tags", mode="before")
+    @classmethod
+    def validate_niche_tags(cls, v: list[str] | str | None) -> list[str] | None:
+        if v is None:
+            return None
+        values = v if isinstance(v, list) else [v]
+        cleaned: list[str] = []
+        for raw in values:
+            tag = str(raw).strip()
+            if tag and tag not in cleaned:
+                cleaned.append(tag)
         return cleaned or None
 
     @field_validator(
