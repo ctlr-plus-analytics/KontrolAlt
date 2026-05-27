@@ -111,7 +111,7 @@ class ChannelWithMetrics(Channel):
 class ChannelFilters(BaseModel):
     platform: Platform | None = None
     comment_tier: CommentTier | None = None
-    gate0_status: Gate0Status | None = None
+    gate0_statuses: list[Gate0Status] | None = None
     niche_tags: list[str] | None = None
     search_query: str | None = None
     min_subscriber_count: int | None = None
@@ -187,6 +187,21 @@ class ChannelFilters(BaseModel):
             if tag and tag not in cleaned:
                 cleaned.append(tag)
         return cleaned or None
+
+    @field_validator("gate0_statuses", mode="before")
+    @classmethod
+    def validate_gate0_statuses(
+        cls, v: list[Gate0Status] | Gate0Status | str | None
+    ) -> list[Gate0Status] | None:
+        if v is None:
+            return None
+        values = v if isinstance(v, list) else [v]
+        parsed: list[Gate0Status] = []
+        for raw in values:
+            status = raw if isinstance(raw, Gate0Status) else Gate0Status(str(raw).strip())
+            if status not in parsed:
+                parsed.append(status)
+        return parsed or None
 
     @field_validator(
         "min_subscriber_count",
@@ -270,3 +285,23 @@ class NicheTagListResponse(BaseModel):
 
     tags: list[str]
     tag_counts: list[NicheTagCount] = Field(default_factory=list)
+
+
+class Gate0StatusCount(BaseModel):
+    """Gate 0 status with total channel count."""
+
+    status: Gate0Status
+    count: int
+
+
+class Gate0StatusListResponse(BaseModel):
+    """Gate 0 status options with counts for dropdown filters."""
+
+    status_counts: list[Gate0StatusCount] = Field(default_factory=list)
+
+
+class ChannelDeleteResponse(BaseModel):
+    """Response payload for channel delete operations."""
+
+    message: str
+    channel_id: UUID

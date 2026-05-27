@@ -11,6 +11,7 @@ import {
   Tag,
   History,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
 import type {
   Channel,
@@ -25,7 +26,11 @@ import { Button } from "@/components/ui/Button";
 import { Gate0Badge } from "@/components/channels/Gate0Badge";
 import { VelocityBadge } from "@/components/channels/VelocityBadge";
 import { formatEngagementRate, formatNumber, timeAgo, cn } from "@/lib/utils";
-import { getChannelLookalikes } from "@/lib/api/backend";
+import {
+  deleteChannelCompletely,
+  deleteChannelHistory,
+  getChannelLookalikes,
+} from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
 import { useRealtimeRefresh } from "@/hooks/useRealtimeRefresh";
 import { useRouter } from "next/navigation";
@@ -49,6 +54,10 @@ export function ChannelDetail({
   const [lookalikes, setLookalikes] = useState<ChannelLookalikeMatch[]>([]);
   const [lookalikeLoading, setLookalikeLoading] = useState(false);
   const [lookalikeError, setLookalikeError] = useState<string | null>(null);
+  const [deletingHistory, setDeletingHistory] = useState(false);
+  const [deletingCompletely, setDeletingCompletely] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteMessage, setDeleteMessage] = useState<string | null>(null);
 
   const velocity = initialVelocity;
   const gate0Result = initialGate0;
@@ -142,6 +151,58 @@ export function ChannelDetail({
     rumble: "bg-[#E8712B]/10 text-[#E8712B]",
     bitchute: "bg-[#7B3FA0]/10 text-[#7B3FA0]",
     substack: "bg-[#FF6719]/10 text-[#C04A0E]",
+  };
+
+  const handleDeleteHistory = async () => {
+    if (!session?.access_token) {
+      setDeleteError("You must be signed in to delete channel history.");
+      return;
+    }
+    const confirmed = window.confirm(
+      "Delete this channel's snapshot/history data? This keeps the channel but removes historical records."
+    );
+    if (!confirmed) return;
+
+    setDeleteError(null);
+    setDeleteMessage(null);
+    setDeletingHistory(true);
+    try {
+      await deleteChannelHistory(channel.id, session.access_token);
+      setDeleteMessage("Channel history deleted.");
+      router.refresh();
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error ? err.message : "Failed to delete channel history."
+      );
+    } finally {
+      setDeletingHistory(false);
+    }
+  };
+
+  const handleDeleteCompletely = async () => {
+    if (!session?.access_token) {
+      setDeleteError("You must be signed in to delete channels.");
+      return;
+    }
+    const confirmed = window.confirm(
+      "Delete this channel completely from the database? This cannot be undone."
+    );
+    if (!confirmed) return;
+
+    setDeleteError(null);
+    setDeleteMessage(null);
+    setDeletingCompletely(true);
+    try {
+      await deleteChannelCompletely(channel.id, session.access_token);
+      router.push("/");
+      router.refresh();
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error ? err.message : "Failed to delete channel completely."
+      );
+    } finally {
+      setDeletingCompletely(false);
+    }
   };
 
   return (
@@ -453,6 +514,45 @@ export function ChannelDetail({
           </div>
         </div>
       )}
+
+      <div>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
+          <Trash2 size={18} className="text-[#B22222]" />
+          Data Cleanup
+        </h2>
+        <div className="rounded-xl border border-[#E8E4DC] bg-white p-5 shadow-sm">
+          <p className="mb-4 text-sm text-[#6B6B6B]">
+            Use these actions when a channel has bad data quality and needs to be reset
+            or removed.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="danger"
+              size="sm"
+              loading={deletingHistory}
+              disabled={deletingCompletely}
+              onClick={handleDeleteHistory}
+            >
+              Delete History (Snapshot)
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              loading={deletingCompletely}
+              disabled={deletingHistory}
+              onClick={handleDeleteCompletely}
+            >
+              Delete Completely
+            </Button>
+          </div>
+          {deleteError && (
+            <p className="mt-3 text-sm text-[#B22222]">{deleteError}</p>
+          )}
+          {deleteMessage && (
+            <p className="mt-3 text-sm text-[#1A1A2E]">{deleteMessage}</p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

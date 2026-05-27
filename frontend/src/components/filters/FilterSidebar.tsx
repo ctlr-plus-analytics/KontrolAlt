@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search, X, ArrowUp, ArrowDown, Check, ChevronDown } from "lucide-react";
-import type { ChannelFilters, NicheTagOption } from "@/types";
+import type { ChannelFilters, Gate0Status, Gate0StatusOption, NicheTagOption } from "@/types";
 import { NumericRangeFilter } from "@/components/filters/NumericRangeFilter";
 import { cn } from "@/lib/utils";
 
@@ -10,12 +10,13 @@ interface FilterSidebarProps {
   filters: ChannelFilters;
   setFilters: (filters: ChannelFilters) => void;
   nicheTagOptions: NicheTagOption[];
+  gate0StatusOptions: Gate0StatusOption[];
 }
 
 export const DEFAULT_FILTERS: ChannelFilters = {
   platform: "all",
   comment_tier: "all",
-  gate0_status: "all",
+  gate0_statuses: [],
   niche_tags: [],
   search_query: null,
   min_subscriber_count: null,
@@ -42,17 +43,16 @@ const PLATFORMS = [
 const COMMENT_TIERS = [
   { value: "all", label: "All Tiers" },
   { value: "active", label: "Active (10+)" },
-  { value: "sweet_spot", label: "Sweet Spot (20–100)" },
+  { value: "sweet_spot", label: "Sweet Spot (20-100)" },
   { value: "whale", label: "Whale (100+)" },
 ] as const;
 
-const GATE0_OPTIONS = [
-  { value: "all", label: "All Statuses" },
-  { value: "unchecked", label: "Not Checked" },
-  { value: "pending", label: "Checking" },
-  { value: "clean", label: "Clean Lead" },
-  { value: "dirty", label: "Gold Dirty" },
-] as const;
+const GATE0_LABELS: Record<Gate0Status, string> = {
+  unchecked: "Not Checked",
+  pending: "Checking",
+  clean: "Clean Lead",
+  dirty: "Gold Dirty",
+};
 
 const SORT_OPTIONS = [
   { value: "avg_comments", label: "Avg Comments" },
@@ -86,15 +86,21 @@ export function FilterSidebar({
   filters,
   setFilters,
   nicheTagOptions,
+  gate0StatusOptions,
 }: FilterSidebarProps) {
   const [isNicheMenuOpen, setIsNicheMenuOpen] = useState<boolean>(false);
+  const [isGate0MenuOpen, setIsGate0MenuOpen] = useState<boolean>(false);
   const nicheMenuRef = useRef<HTMLDivElement | null>(null);
+  const gate0MenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const onDocumentClick = (event: MouseEvent) => {
       const target = event.target as Node;
       if (!nicheMenuRef.current?.contains(target)) {
         setIsNicheMenuOpen(false);
+      }
+      if (!gate0MenuRef.current?.contains(target)) {
+        setIsGate0MenuOpen(false);
       }
     };
     document.addEventListener("mousedown", onDocumentClick);
@@ -115,7 +121,7 @@ export function FilterSidebar({
     if (filters.search_query) count++;
     if (filters.platform !== "all") count++;
     if (filters.comment_tier !== "all") count++;
-    if (filters.gate0_status !== "all") count++;
+    if (filters.gate0_statuses.length > 0) count++;
     if (filters.niche_tags.length > 0) count++;
     if (filters.min_subscriber_count != null || filters.max_subscriber_count != null) count++;
     if (filters.min_avg_views != null || filters.max_avg_views != null) count++;
@@ -134,13 +140,9 @@ export function FilterSidebar({
 
   return (
     <aside className="flex w-72 shrink-0 flex-col bg-[#1A1A2E] border-r border-[#F7F4EE]/8 overflow-y-auto scrollbar-thin">
-
-      {/* ── Header ── */}
       <div className="flex h-14 shrink-0 items-center justify-between px-4">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-bold uppercase tracking-widest text-[#F7F4EE]/70">
-            Filters
-          </span>
+          <span className="text-xs font-bold uppercase tracking-widest text-[#F7F4EE]/70">Filters</span>
           {activeCount > 0 && (
             <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[#C9A84C] px-1 text-[10px] font-bold text-[#1A1A2E]">
               {activeCount}
@@ -159,39 +161,26 @@ export function FilterSidebar({
         )}
       </div>
 
-      {/* ── Search ── */}
       <div className="px-4 pb-4">
         <div className="relative">
-          <Search
-            size={14}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-[#F7F4EE]/30 pointer-events-none"
-          />
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#F7F4EE]/30 pointer-events-none" />
           <input
             type="text"
             value={filters.search_query ?? ""}
-            onChange={(e) =>
-              update({
-                search_query: e.target.value.trim().length
-                  ? e.target.value
-                  : null,
-              })
-            }
-            placeholder="Name, URL, description…"
+            onChange={(e) => update({ search_query: e.target.value.trim().length ? e.target.value : null })}
+            placeholder="Name, URL, description..."
             className={cn(darkInput, "pl-8")}
           />
         </div>
       </div>
 
-      {/* ── Platform ── */}
       <SectionLabel>Platform</SectionLabel>
       <div className="flex flex-wrap gap-1.5 px-4 pb-4">
         {PLATFORMS.map((p) => (
           <button
             key={p.value}
             type="button"
-            onClick={() =>
-              update({ platform: p.value as ChannelFilters["platform"] })
-            }
+            onClick={() => update({ platform: p.value as ChannelFilters["platform"] })}
             className={cn(
               "rounded-full border px-3 py-1 text-xs font-medium transition-all duration-150 cursor-pointer",
               filters.platform === p.value
@@ -204,7 +193,6 @@ export function FilterSidebar({
         ))}
       </div>
 
-      {/* ── Comment Tier ── */}
       <SectionLabel>Comment Tier</SectionLabel>
       <div className="flex flex-col gap-0.5 px-4 pb-4">
         {COMMENT_TIERS.map((t) => {
@@ -213,11 +201,7 @@ export function FilterSidebar({
             <button
               key={t.value}
               type="button"
-              onClick={() =>
-                update({
-                  comment_tier: t.value as ChannelFilters["comment_tier"],
-                })
-              }
+              onClick={() => update({ comment_tier: t.value as ChannelFilters["comment_tier"] })}
               className={cn(
                 "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-all duration-150 cursor-pointer text-left",
                 active
@@ -228,9 +212,7 @@ export function FilterSidebar({
               <span
                 className={cn(
                   "h-3.5 w-3.5 shrink-0 rounded-full border-2 transition-all",
-                  active
-                    ? "border-[#C9A84C] bg-[#C9A84C]"
-                    : "border-[#F7F4EE]/25"
+                  active ? "border-[#C9A84C] bg-[#C9A84C]" : "border-[#F7F4EE]/25"
                 )}
               />
               {t.label}
@@ -239,42 +221,92 @@ export function FilterSidebar({
         })}
       </div>
 
-      {/* ── Gate 0 Status ── */}
-      <SectionLabel>Gate 0 Status</SectionLabel>
-      <div className="flex flex-col gap-0.5 px-4 pb-4">
-        {GATE0_OPTIONS.map((g) => {
-          const active = filters.gate0_status === g.value;
-          return (
-            <button
-              key={g.value}
-              type="button"
-              onClick={() =>
-                update({
-                  gate0_status: g.value as ChannelFilters["gate0_status"],
-                })
-              }
-              className={cn(
-                "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-all duration-150 cursor-pointer text-left",
-                active
-                  ? "bg-[#C9A84C]/12 text-[#C9A84C]"
-                  : "text-[#F7F4EE]/50 hover:bg-[#F7F4EE]/5 hover:text-[#F7F4EE]/80"
-              )}
-            >
-              <span
-                className={cn(
-                  "h-3.5 w-3.5 shrink-0 rounded-full border-2 transition-all",
-                  active
-                    ? "border-[#C9A84C] bg-[#C9A84C]"
-                    : "border-[#F7F4EE]/25"
-                )}
-              />
-              {g.label}
-            </button>
-          );
-        })}
-      </div>
+      {gate0StatusOptions.length > 0 && (
+        <>
+          <SectionLabel>Gate 0 Status</SectionLabel>
+          <div className="px-4 pb-4">
+            <div className="relative" ref={gate0MenuRef}>
+              <button
+                type="button"
+                onClick={() => setIsGate0MenuOpen((prev) => !prev)}
+                className="flex w-full items-center justify-between rounded-lg border border-[#F7F4EE]/10 bg-[#F7F4EE]/6 px-3 py-2 text-sm text-[#F7F4EE] transition-shadow hover:border-[#F7F4EE]/20 focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/60"
+              >
+                <span className="truncate">
+                  {filters.gate0_statuses.length === 0
+                    ? "Any / All Statuses"
+                    : filters.gate0_statuses.length === 1
+                      ? GATE0_LABELS[filters.gate0_statuses[0]]
+                      : `${filters.gate0_statuses.length} statuses selected`}
+                </span>
+                <ChevronDown
+                  size={14}
+                  className={cn("text-[#F7F4EE]/45 transition-transform", isGate0MenuOpen ? "rotate-180" : "")}
+                />
+              </button>
 
-      {/* ── Sort ── */}
+              {isGate0MenuOpen && (
+                <div className="absolute z-20 mt-1 w-full rounded-xl border border-[#F7F4EE]/15 bg-[#131323] p-1 shadow-2xl">
+                  <button
+                    type="button"
+                    onClick={() => update({ gate0_statuses: [] })}
+                    className={cn(
+                      "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
+                      filters.gate0_statuses.length === 0
+                        ? "bg-[#C9A84C]/14 text-[#C9A84C]"
+                        : "text-[#F7F4EE]/75 hover:bg-[#F7F4EE]/6"
+                    )}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="flex h-4 w-4 items-center justify-center rounded border border-current/35">
+                        {filters.gate0_statuses.length === 0 && <Check size={12} />}
+                      </span>
+                      Any / All Statuses
+                    </span>
+                  </button>
+
+                  <div className="my-1 h-px bg-[#F7F4EE]/10" />
+
+                  <div className="max-h-64 overflow-y-auto scrollbar-thin">
+                    {gate0StatusOptions.map((option) => {
+                      const isActive = filters.gate0_statuses.includes(option.status);
+                      return (
+                        <button
+                          key={option.status}
+                          type="button"
+                          onClick={() =>
+                            update({
+                              gate0_statuses: isActive
+                                ? filters.gate0_statuses.filter((status) => status !== option.status)
+                                : [...filters.gate0_statuses, option.status],
+                            })
+                          }
+                          className={cn(
+                            "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
+                            isActive
+                              ? "bg-[#C9A84C]/14 text-[#C9A84C]"
+                              : "text-[#F7F4EE]/75 hover:bg-[#F7F4EE]/6"
+                          )}
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-current/35">
+                              {isActive && <Check size={12} />}
+                            </span>
+                            <span className="truncate">{GATE0_LABELS[option.status]}</span>
+                          </span>
+                          <span className="ml-3 shrink-0 rounded-full border border-[#F7F4EE]/15 bg-[#F7F4EE]/5 px-2 py-0.5 text-[11px] text-[#F7F4EE]/60">
+                            {option.count.toLocaleString()}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
       <SectionLabel>Sort</SectionLabel>
       <div className="flex flex-col gap-3 px-4 pb-4">
         <div className="flex flex-col gap-1">
@@ -282,9 +314,7 @@ export function FilterSidebar({
           <div className="relative">
             <select
               value={filters.sort_by}
-              onChange={(e) =>
-                update({ sort_by: e.target.value as ChannelFilters["sort_by"] })
-              }
+              onChange={(e) => update({ sort_by: e.target.value as ChannelFilters["sort_by"] })}
               className={darkSelect}
             >
               {SORT_OPTIONS.map((opt) => (
@@ -315,7 +345,7 @@ export function FilterSidebar({
               )}
             >
               <ArrowDown size={12} />
-              High → Low
+              High {"->"} Low
             </button>
             <button
               type="button"
@@ -328,17 +358,14 @@ export function FilterSidebar({
               )}
             >
               <ArrowUp size={12} />
-              Low → High
+              Low {"->"} High
             </button>
           </div>
         </div>
       </div>
 
-      {/* ── Advanced ── */}
       <SectionLabel>Advanced</SectionLabel>
       <div className="flex flex-col gap-4 px-4 pb-6">
-
-        {/* Niche Tag */}
         {nicheTagOptions.length > 0 && (
           <div className="flex flex-col gap-1">
             <FilterLabel>Niche Tag</FilterLabel>
@@ -357,10 +384,7 @@ export function FilterSidebar({
                 </span>
                 <ChevronDown
                   size={14}
-                  className={cn(
-                    "text-[#F7F4EE]/45 transition-transform",
-                    isNicheMenuOpen ? "rotate-180" : ""
-                  )}
+                  className={cn("text-[#F7F4EE]/45 transition-transform", isNicheMenuOpen ? "rotate-180" : "")}
                 />
               </button>
 
@@ -368,9 +392,7 @@ export function FilterSidebar({
                 <div className="absolute z-20 mt-1 w-full rounded-xl border border-[#F7F4EE]/15 bg-[#131323] p-1 shadow-2xl">
                   <button
                     type="button"
-                    onClick={() => {
-                      update({ niche_tags: [] });
-                    }}
+                    onClick={() => update({ niche_tags: [] })}
                     className={cn(
                       "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
                       filters.niche_tags.length === 0
@@ -395,13 +417,13 @@ export function FilterSidebar({
                         <button
                           key={option.tag}
                           type="button"
-                          onClick={() => {
+                          onClick={() =>
                             update({
                               niche_tags: isActive
                                 ? filters.niche_tags.filter((tag) => tag !== option.tag)
                                 : [...filters.niche_tags, option.tag],
-                            });
-                          }}
+                            })
+                          }
                           className={cn(
                             "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
                             isActive
@@ -428,7 +450,6 @@ export function FilterSidebar({
           </div>
         )}
 
-        {/* Numeric ranges */}
         <NumericRangeFilter
           label="Subscribers"
           minLimit={0}
@@ -436,9 +457,7 @@ export function FilterSidebar({
           step={1000}
           minValue={filters.min_subscriber_count ?? null}
           maxValue={filters.max_subscriber_count ?? null}
-          onChange={({ min, max }) =>
-            update({ min_subscriber_count: min, max_subscriber_count: max })
-          }
+          onChange={({ min, max }) => update({ min_subscriber_count: min, max_subscriber_count: max })}
         />
 
         <NumericRangeFilter
@@ -448,9 +467,7 @@ export function FilterSidebar({
           step={500}
           minValue={filters.min_avg_views ?? null}
           maxValue={filters.max_avg_views ?? null}
-          onChange={({ min, max }) =>
-            update({ min_avg_views: min, max_avg_views: max })
-          }
+          onChange={({ min, max }) => update({ min_avg_views: min, max_avg_views: max })}
         />
 
         <NumericRangeFilter
@@ -460,12 +477,9 @@ export function FilterSidebar({
           step={10}
           minValue={filters.min_avg_comments ?? null}
           maxValue={filters.max_avg_comments ?? null}
-          onChange={({ min, max }) =>
-            update({ min_avg_comments: min, max_avg_comments: max })
-          }
+          onChange={({ min, max }) => update({ min_avg_comments: min, max_avg_comments: max })}
         />
 
-        {/* Date range */}
         <div className="flex flex-col gap-2">
           <FilterLabel>Last Active</FilterLabel>
           <div className="flex flex-col gap-1.5">
@@ -474,9 +488,7 @@ export function FilterSidebar({
               <input
                 type="date"
                 value={filters.last_active_from ?? ""}
-                onChange={(e) =>
-                  update({ last_active_from: e.target.value || null })
-                }
+                onChange={(e) => update({ last_active_from: e.target.value || null })}
                 className={darkInput}
               />
             </div>
@@ -485,16 +497,13 @@ export function FilterSidebar({
               <input
                 type="date"
                 value={filters.last_active_to ?? ""}
-                onChange={(e) =>
-                  update({ last_active_to: e.target.value || null })
-                }
+                onChange={(e) => update({ last_active_to: e.target.value || null })}
                 className={darkInput}
               />
             </div>
           </div>
         </div>
 
-        {/* Toggles */}
         <div className="flex flex-col gap-2">
           <FilterLabel>Filters</FilterLabel>
           <button

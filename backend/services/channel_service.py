@@ -9,7 +9,7 @@ from postgrest.exceptions import APIError
 from core.exceptions import NotFoundError, SupabaseError
 from core.logging import get_logger
 from core.supabase import supabase_admin
-from models.channel import ChannelFilters, ChannelWithMetrics
+from models.channel import ChannelFilters, ChannelWithMetrics, Gate0Status
 
 logger = get_logger(__name__)
 
@@ -113,8 +113,11 @@ async def get_channels(
             query = query.eq("comment_tier", filters.comment_tier.value)
         # Removed default 'not null' filter to allow BitChute channels to show
 
-        if filters.gate0_status is not None:
-            query = query.eq("gate0_status", filters.gate0_status.value)
+        if filters.gate0_statuses:
+            query = query.in_(
+                "gate0_status",
+                [status.value for status in filters.gate0_statuses],
+            )
 
         if filters.niche_tags:
             query = query.overlaps("niche_tags", filters.niche_tags)
@@ -212,6 +215,29 @@ async def list_niche_tags() -> tuple[list[str], list[dict[str, int | str]]]:
     except (APIError, TypeError, ValueError) as exc:
         logger.error("Failed to list niche tags: %s", exc, exc_info=True)
         raise SupabaseError(f"Failed to list niche tags: {exc}") from exc
+
+
+async def list_gate0_status_counts() -> list[dict[str, int | str]]:
+    """Return gate0 status counts across active, dashboard-eligible channels."""
+    try:
+        result = (
+            supabase_admin.table(_CHANNELS_TABLE)
+            .select("gate0_status")
+            .eq("is_active", True)
+            .eq("dashboard_eligible", True)
+            .execute()
+        )
+        rows = result.data or []
+        counts: dict[str, int] = {status.value: 0 for status in Gate0Status}
+        for row in rows:
+            raw_status = row.get("gate0_status")
+            if isinstance(raw_status, str) and raw_status in counts:
+                counts[raw_status] += 1
+        order = ["unchecked", "pending", "clean", "dirty"]
+        return [{"status": status, "count": counts.get(status, 0)} for status in order]
+    except (APIError, TypeError, ValueError) as exc:
+        logger.error("Failed to list gate0 status counts: %s", exc, exc_info=True)
+        raise SupabaseError(f"Failed to list gate0 status counts: {exc}") from exc
 
 
 async def get_channel_by_id(channel_id: UUID) -> ChannelWithMetrics | None:
@@ -319,3 +345,98 @@ async def upsert_channel(data: dict[str, object]) -> dict[str, object]:
     except APIError as exc:
         logger.error("Failed to upsert channel: %s", exc, exc_info=True)
         raise SupabaseError(f"Failed to upsert channel: {exc}") from exc
+
+
+async def delete_channel_history(channel_id: UUID) -> None:
+    """Delete historical snapshot/log data and reset computed caches for a channel."""
+    try:
+        existing = (
+            supabase_admin.table("channels")
+            .select("id")
+            .eq("id", str(channel_id))
+            .maybe_single()
+            .execute()
+        )
+        if existing.data is None:
+            raise NotFoundError(f"Channel {channel_id} not found")
+
+        supabase_admin.table("channel_snapshots").delete().eq(
+            "channel_id", str(channel_id)
+        ).execute()
+        supabase_admin.table("scrape_logs").delete().eq(
+            "channel_id", str(channel_id)
+        ).execute()
+        supabase_admin.table("gate0_results").delete().eq(
+            "channel_id", str(channel_id)
+        ).execute()
+        supabase_admin.table("velocity_scores").delete().eq(
+            "channel_id", str(channel_id)
+        ).execute()
+
+        supabase_admin.table("channels").update(
+            {
+                "has_been_scraped": False,
+                "last_scrape_error": None,
+                "view_velocity_30d": None,
+                "view_velocity_90d": None,
+                "comment_velocity_30d": None,
+                "comment_velocity_90d": None,
+                "velocity_computed_at": None,
+                "gate0_checked_at": None,
+                "gate0_result_id": None,
+                "gate0_search_query": None,
+                "gate0_result_status": None,
+                "gate0_flagged_brand": None,
+                "gate0_source_url": None,
+                "gate0_status": "unchecked",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ).eq("id", str(channel_id)).execute()
+    except NotFoundError:
+        raise
+    except (APIError, TypeError, ValueError) as exc:
+        logger.error(
+            "Failed to delete history for channel %s: %s",
+            channel_id,
+            exc,
+            exc_info=True,
+        )
+        raise SupabaseError(f"Failed to delete channel history: {exc}") from exc
+
+
+async def delete_channel_completely(channel_id: UUID) -> None:
+    """Delete a channel and all related dependent records."""
+    try:
+        existing = (
+            supabase_admin.table("channels")
+            .select("id")
+            .eq("id", str(channel_id))
+            .maybe_single()
+            .execute()
+        )
+        if existing.data is None:
+            raise NotFoundError(f"Channel {channel_id} not found")
+
+        supabase_admin.table("channel_snapshots").delete().eq(
+            "channel_id", str(channel_id)
+        ).execute()
+        supabase_admin.table("scrape_logs").delete().eq(
+            "channel_id", str(channel_id)
+        ).execute()
+        supabase_admin.table("gate0_results").delete().eq(
+            "channel_id", str(channel_id)
+        ).execute()
+        supabase_admin.table("velocity_scores").delete().eq(
+            "channel_id", str(channel_id)
+        ).execute()
+        supabase_admin.table("channels").delete().eq("id", str(channel_id)).execute()
+    except NotFoundError:
+        raise
+    except (APIError, TypeError, ValueError) as exc:
+        logger.error(
+            "Failed to delete channel %s completely: %s",
+            channel_id,
+            exc,
+            exc_info=True,
+        )
+        raise SupabaseError(f"Failed to delete channel completely: {exc}") from exc

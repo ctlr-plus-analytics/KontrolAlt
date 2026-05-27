@@ -39,6 +39,18 @@ from tasks.scrape_helpers import (
 
 logger = logging.getLogger(__name__)
 
+_NON_BREAKER_REASON_CODES = {
+    "substack_handle_redirected_to_search",
+    "substack_see_subscribers_stub",
+    "substack_profile_not_found",
+    "substack_too_few_posts",
+}
+
+
+def _should_trip_substack_breaker(exc: ScraperClassifiedError) -> bool:
+    """Return True when a classified Substack failure should count toward breaker."""
+    return exc.reason_code not in _NON_BREAKER_REASON_CODES
+
 
 def _is_supported_substack_channel_url(channel_url: str) -> bool:
     parsed = urlsplit(channel_url.strip())
@@ -191,7 +203,8 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
 
     except ScraperClassifiedError as exc:
         if exc.terminal and not exc.retryable:
-            record_failure("substack")
+            if _should_trip_substack_breaker(exc):
+                record_failure("substack")
             deactivate_channel_for_url(scraper, channel_url)
             log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
             return ScrapeTaskResult(
@@ -201,7 +214,8 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
             ).model_dump(mode="json")
 
         if not has_retries_remaining(self):
-            record_failure("substack")
+            if _should_trip_substack_breaker(exc):
+                record_failure("substack")
             log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
             return ScrapeTaskResult(
                 status="failed",

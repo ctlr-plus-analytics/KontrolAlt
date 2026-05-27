@@ -231,7 +231,7 @@ export interface ResolverConfirmRequest {
 export interface ChannelFilters {
   platform: "all" | Platform;
   comment_tier: "all" | CommentTier;
-  gate0_status: "all" | Gate0Status;
+  gate0_statuses: Gate0Status[];
   niche_tags: string[];
   search_query?: string | null;
   min_subscriber_count?: number | null;
@@ -337,5 +337,10 @@ export interface KeywordTaxonomyListResponse {
 
 export interface NicheTagOption {
   tag: string;
+  count: number;
+}
+
+export interface Gate0StatusOption {
+  status: Gate0Status;
   count: number;
 }

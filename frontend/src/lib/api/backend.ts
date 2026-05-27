@@ -31,6 +31,7 @@ import type {
   PaginatedAdminAuditResponse,
   CompetitorDef,
   CompetitorListResponse,
+  Gate0StatusOption,
   KeywordTaxonomyDef,
   KeywordTaxonomyListResponse,
   NicheTagOption,
@@ -104,6 +105,11 @@ export type ChannelDetail = Channel & {
   scrape_logs?: ScrapeLog[];
 };
 
+export interface ChannelDeleteResponse {
+  message: string;
+  channel_id: string;
+}
+
 /** Fetch paginated channels with filters. */
 export async function getChannels(
   filters: Partial<ChannelFilters>,
@@ -121,8 +127,8 @@ export async function getChannels(
   if (filters.comment_tier && filters.comment_tier !== "all") {
     params.set("comment_tier", filters.comment_tier);
   }
-  if (filters.gate0_status && filters.gate0_status !== "all") {
-    params.set("gate0_status", filters.gate0_status);
+  if (filters.gate0_statuses && filters.gate0_statuses.length > 0) {
+    filters.gate0_statuses.forEach((status) => params.append("gate0_statuses", status));
   }
   if (filters.niche_tags && filters.niche_tags.length > 0) {
     filters.niche_tags.forEach((tag) => params.append("niche_tags", tag));
@@ -185,12 +191,43 @@ export async function getNicheTags(token?: string): Promise<NicheTagOption[]> {
   return response.tags.map((tag) => ({ tag, count: 0 }));
 }
 
+/** Fetch Gate 0 statuses and counts for dropdown filters. */
+export async function getGate0Statuses(token?: string): Promise<Gate0StatusOption[]> {
+  const response = await apiFetch<{ status_counts?: Gate0StatusOption[] }>(
+    "/api/v1/channels/gate0-statuses",
+    { token }
+  );
+  return response.status_counts ?? [];
+}
+
 /** Fetch a single channel with all related data. */
 export async function getChannel(
   id: string,
   token?: string
 ): Promise<ChannelDetail> {
   return apiFetch<ChannelDetail>(`/api/v1/channels/${id}`, { token });
+}
+
+/** Delete channel snapshots/history while keeping the channel record. */
+export async function deleteChannelHistory(
+  channelId: string,
+  token?: string
+): Promise<ChannelDeleteResponse> {
+  return apiFetch<ChannelDeleteResponse>(`/api/v1/channels/${channelId}/history`, {
+    method: "DELETE",
+    token,
+  });
+}
+
+/** Delete channel and related rows permanently. */
+export async function deleteChannelCompletely(
+  channelId: string,
+  token?: string
+): Promise<ChannelDeleteResponse> {
+  return apiFetch<ChannelDeleteResponse>(`/api/v1/channels/${channelId}`, {
+    method: "DELETE",
+    token,
+  });
 }
 
 /** Fetch velocity data for a channel. */

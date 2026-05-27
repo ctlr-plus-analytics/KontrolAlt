@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
-import type { Channel, ChannelFilters, NicheTagOption, VelocityScore } from "@/types";
+import type { Channel, ChannelFilters, Gate0StatusOption, NicheTagOption, VelocityScore } from "@/types";
 import { ChannelTable } from "@/components/channels/ChannelTable";
 import { ChannelIntakePanel } from "@/components/channels/ChannelIntakePanel";
 import { FilterSidebar, DEFAULT_FILTERS } from "@/components/filters/FilterSidebar";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { useChannels } from "@/hooks/useChannels";
 import { useAuth } from "@/hooks/useAuth";
-import { getNicheTags } from "@/lib/api/backend";
+import { getGate0Statuses, getNicheTags } from "@/lib/api/backend";
 
 interface ChannelTableViewProps {
   initialChannels: (Channel & { velocity?: VelocityScore | null })[];
@@ -27,6 +27,7 @@ export function ChannelTableView({
   const [page, setPage] = useState<number>(1);
   const [intakeOpen, setIntakeOpen] = useState<boolean>(false);
   const [nicheTagOptions, setNicheTagOptions] = useState<NicheTagOption[]>([]);
+  const [gate0StatusOptions, setGate0StatusOptions] = useState<Gate0StatusOption[]>([]);
   const { session } = useAuth();
 
   const { channels, total, loading, refreshing, refetch } = useChannels(
@@ -65,15 +66,24 @@ export function ChannelTableView({
 
   useEffect(() => {
     let cancelled = false;
-    const loadNicheTags = async () => {
+    const loadFilterOptions = async () => {
       try {
-        const tags = await getNicheTags(session?.access_token);
-        if (!cancelled) setNicheTagOptions(tags);
+        const [tags, statuses] = await Promise.all([
+          getNicheTags(session?.access_token),
+          getGate0Statuses(session?.access_token),
+        ]);
+        if (!cancelled) {
+          setNicheTagOptions(tags);
+          setGate0StatusOptions(statuses);
+        }
       } catch {
-        if (!cancelled) setNicheTagOptions([]);
+        if (!cancelled) {
+          setNicheTagOptions([]);
+          setGate0StatusOptions([]);
+        }
       }
     };
-    void loadNicheTags();
+    void loadFilterOptions();
     return () => { cancelled = true; };
   }, [session?.access_token]);
 
@@ -84,6 +94,7 @@ export function ChannelTableView({
         filters={filters}
         setFilters={handleSetFilters}
         nicheTagOptions={nicheTagOptions}
+        gate0StatusOptions={gate0StatusOptions}
       />
 
       {/* ── Main Content ── */}
