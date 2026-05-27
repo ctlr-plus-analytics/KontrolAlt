@@ -1,15 +1,15 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
-import { Search, X, ArrowUp, ArrowDown } from "lucide-react";
-import type { ChannelFilters } from "@/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Search, X, ArrowUp, ArrowDown, Check, ChevronDown } from "lucide-react";
+import type { ChannelFilters, NicheTagOption } from "@/types";
 import { NumericRangeFilter } from "@/components/filters/NumericRangeFilter";
 import { cn } from "@/lib/utils";
 
 interface FilterSidebarProps {
   filters: ChannelFilters;
   setFilters: (filters: ChannelFilters) => void;
-  nicheTagOptions: string[];
+  nicheTagOptions: NicheTagOption[];
 }
 
 export const DEFAULT_FILTERS: ChannelFilters = {
@@ -87,6 +87,22 @@ export function FilterSidebar({
   setFilters,
   nicheTagOptions,
 }: FilterSidebarProps) {
+  const [isNicheMenuOpen, setIsNicheMenuOpen] = useState<boolean>(false);
+  const nicheMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const onDocumentClick = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!nicheMenuRef.current?.contains(target)) {
+        setIsNicheMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocumentClick);
+    return () => {
+      document.removeEventListener("mousedown", onDocumentClick);
+    };
+  }, []);
+
   const update = useCallback(
     (partial: Partial<ChannelFilters>): void => {
       setFilters({ ...filters, ...partial });
@@ -326,26 +342,80 @@ export function FilterSidebar({
         {nicheTagOptions.length > 0 && (
           <div className="flex flex-col gap-1">
             <FilterLabel>Niche Tag</FilterLabel>
-            <div className="relative">
-              <select
-                value={filters.niche_tag ?? "all"}
-                onChange={(e) =>
-                  update({ niche_tag: e.target.value === "all" ? null : e.target.value })
-                }
-                className={darkSelect}
+            <div className="relative" ref={nicheMenuRef}>
+              <button
+                type="button"
+                onClick={() => setIsNicheMenuOpen((prev) => !prev)}
+                className="flex w-full items-center justify-between rounded-lg border border-[#F7F4EE]/10 bg-[#F7F4EE]/6 px-3 py-2 text-sm text-[#F7F4EE] transition-shadow hover:border-[#F7F4EE]/20 focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/60"
               >
-                <option value="all" className="bg-[#1A1A2E]">All Tags</option>
-                {nicheTagOptions.map((tag) => (
-                  <option key={tag} value={tag} className="bg-[#1A1A2E]">
-                    {tag}
-                  </option>
-                ))}
-              </select>
-              <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#F7F4EE]/30">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="m6 9 6 6 6-6" />
-                </svg>
-              </div>
+                <span className="truncate">{filters.niche_tag ?? "Any / All Niches"}</span>
+                <ChevronDown
+                  size={14}
+                  className={cn(
+                    "text-[#F7F4EE]/45 transition-transform",
+                    isNicheMenuOpen ? "rotate-180" : ""
+                  )}
+                />
+              </button>
+
+              {isNicheMenuOpen && (
+                <div className="absolute z-20 mt-1 w-full rounded-xl border border-[#F7F4EE]/15 bg-[#131323] p-1 shadow-2xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      update({ niche_tag: null });
+                      setIsNicheMenuOpen(false);
+                    }}
+                    className={cn(
+                      "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
+                      filters.niche_tag === null
+                        ? "bg-[#C9A84C]/14 text-[#C9A84C]"
+                        : "text-[#F7F4EE]/75 hover:bg-[#F7F4EE]/6"
+                    )}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="flex h-4 w-4 items-center justify-center rounded border border-current/35">
+                        {filters.niche_tag === null && <Check size={12} />}
+                      </span>
+                      Any / All Niches
+                    </span>
+                  </button>
+
+                  <div className="my-1 h-px bg-[#F7F4EE]/10" />
+
+                  <div className="max-h-64 overflow-y-auto scrollbar-thin">
+                    {nicheTagOptions.map((option) => {
+                      const isActive = filters.niche_tag === option.tag;
+                      return (
+                        <button
+                          key={option.tag}
+                          type="button"
+                          onClick={() => {
+                            update({ niche_tag: option.tag });
+                            setIsNicheMenuOpen(false);
+                          }}
+                          className={cn(
+                            "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
+                            isActive
+                              ? "bg-[#C9A84C]/14 text-[#C9A84C]"
+                              : "text-[#F7F4EE]/75 hover:bg-[#F7F4EE]/6"
+                          )}
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-current/35">
+                              {isActive && <Check size={12} />}
+                            </span>
+                            <span className="truncate">{option.tag}</span>
+                          </span>
+                          <span className="ml-3 shrink-0 rounded-full border border-[#F7F4EE]/15 bg-[#F7F4EE]/5 px-2 py-0.5 text-[11px] text-[#F7F4EE]/60">
+                            {option.count.toLocaleString()}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}

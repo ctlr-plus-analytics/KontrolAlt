@@ -13,6 +13,7 @@ interface UseChannelsReturn {
   channels: ChannelWithVelocity[];
   total: number;
   loading: boolean;
+  refreshing: boolean;
   error: string | null;
   refetch: () => void;
 }
@@ -20,6 +21,7 @@ interface UseChannelsReturn {
 interface FetchChannelsOptions {
   showLoading?: boolean;
   preserveDataOnError?: boolean;
+  isManualRefresh?: boolean;
 }
 
 export function useChannels(
@@ -34,6 +36,7 @@ export function useChannels(
   const [channels, setChannels] = useState<ChannelWithVelocity[]>(initialChannels);
   const [total, setTotal] = useState<number>(initialTotal);
   const [loading, setLoading] = useState<boolean>(initialChannels.length === 0);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestRequestId = useRef<number>(0);
@@ -50,12 +53,16 @@ export function useChannels(
     const {
       showLoading = true,
       preserveDataOnError = false,
+      isManualRefresh = false,
     } = options;
     const requestId = latestRequestId.current + 1;
     latestRequestId.current = requestId;
 
     if (showLoading && !hasVisibleData.current) {
       setLoading(true);
+    }
+    if (isManualRefresh) {
+      setRefreshing(true);
     }
     setError(null);
     try {
@@ -79,6 +86,9 @@ export function useChannels(
     } finally {
       if (requestId === latestRequestId.current) {
         setLoading(false);
+        if (isManualRefresh) {
+          setRefreshing(false);
+        }
       }
     }
   }, [filters, page, pageSize, token]);
@@ -91,7 +101,7 @@ export function useChannels(
   }, [fetchChannels]);
 
   const refetchChannels = useCallback(() => {
-    void fetchChannels({ showLoading: true });
+    void fetchChannels({ showLoading: true, isManualRefresh: true });
   }, [fetchChannels]);
 
   useEffect(() => {
@@ -120,6 +130,7 @@ export function useChannels(
     channels,
     total,
     loading,
+    refreshing,
     error,
     refetch: refetchChannels,
   };

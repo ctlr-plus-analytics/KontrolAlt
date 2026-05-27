@@ -92,8 +92,8 @@ async def list_niche_tags(
     user: dict = Depends(get_current_user),
 ) -> NicheTagListResponse:
     """Return distinct niche tags for filter dropdowns."""
-    tags = await channel_service.list_niche_tags()
-    return NicheTagListResponse(tags=tags)
+    tags, tag_counts = await channel_service.list_niche_tags()
+    return NicheTagListResponse(tags=tags, tag_counts=tag_counts)
 
 
 @router.post("/intake/manual", response_model=IntakeSummaryResponse)

@@ -33,6 +33,7 @@ import type {
   CompetitorListResponse,
   KeywordTaxonomyDef,
   KeywordTaxonomyListResponse,
+  NicheTagOption,
 } from "@/types";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -172,13 +173,16 @@ export async function getChannels(
   );
 }
 
-/** Fetch distinct niche tags for dropdown filters. */
-export async function getNicheTags(token?: string): Promise<string[]> {
-  const response = await apiFetch<{ tags: string[] }>(
+/** Fetch distinct niche tags and counts for dropdown filters. */
+export async function getNicheTags(token?: string): Promise<NicheTagOption[]> {
+  const response = await apiFetch<{ tags: string[]; tag_counts?: NicheTagOption[] }>(
     "/api/v1/channels/niche-tags",
     { token }
   );
-  return response.tags;
+  if (response.tag_counts && response.tag_counts.length > 0) {
+    return response.tag_counts;
+  }
+  return response.tags.map((tag) => ({ tag, count: 0 }));
 }
 
 /** Fetch a single channel with all related data. */

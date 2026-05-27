@@ -245,7 +245,15 @@ class PaginatedChannels(BaseModel):
     page_size: int
 
 
+class NicheTagCount(BaseModel):
+    """Niche tag with total channel count."""
+
+    tag: str
+    count: int
+
+
 class NicheTagListResponse(BaseModel):
     """Distinct niche tag values used for filter options."""
 
     tags: list[str]
+    tag_counts: list[NicheTagCount] = Field(default_factory=list)

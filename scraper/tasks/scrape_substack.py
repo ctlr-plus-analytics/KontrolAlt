@@ -96,10 +96,16 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
         return ScrapeTaskResult(
             status="skipped",
             channel_url=channel_url,
-            error="Global scrape slot busy; rescheduled",
         ).model_dump(mode="json")
 
     limit = runtime.scrape_platform_slot_limit_substack
+    if limit == 0:
+        release_global_slot()
+        release_scrape_lock(channel_url)
+        return ScrapeTaskResult(
+            status="skipped",
+            channel_url=channel_url,
+        ).model_dump(mode="json")
     if not try_acquire_platform_slot("substack", limit):
         release_global_slot()
         release_scrape_lock(channel_url)
@@ -112,7 +118,6 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
         return ScrapeTaskResult(
             status="skipped",
             channel_url=channel_url,
-            error="Substack platform slot busy; rescheduled",
         ).model_dump(mode="json")
 
     scraper = SubstackScraper()

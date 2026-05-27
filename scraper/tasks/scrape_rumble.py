@@ -159,9 +159,16 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
         return ScrapeTaskResult(
             status="skipped",
             channel_url=channel_url,
-            error="Global scrape slot busy; rescheduled",
         ).model_dump(mode="json")
-    if not try_acquire_platform_slot("rumble", runtime.scrape_platform_slot_limit_rumble):
+    rumble_limit = runtime.scrape_platform_slot_limit_rumble
+    if rumble_limit == 0:
+        release_global_slot()
+        release_scrape_lock(channel_url)
+        return ScrapeTaskResult(
+            status="skipped",
+            channel_url=channel_url,
+        ).model_dump(mode="json")
+    if not try_acquire_platform_slot("rumble", rumble_limit):
         release_global_slot()
         release_scrape_lock(channel_url)
         scrape_rumble_channel.apply_async(
@@ -171,7 +178,6 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
         return ScrapeTaskResult(
             status="skipped",
             channel_url=channel_url,
-            error="Rumble platform slot busy; rescheduled",
         ).model_dump(mode="json")
     scraper = RumbleScraper()
     try:

@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
-import type { Channel, ChannelFilters, VelocityScore } from "@/types";
+import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
+import type { Channel, ChannelFilters, NicheTagOption, VelocityScore } from "@/types";
 import { ChannelTable } from "@/components/channels/ChannelTable";
 import { ChannelIntakePanel } from "@/components/channels/ChannelIntakePanel";
 import { FilterSidebar, DEFAULT_FILTERS } from "@/components/filters/FilterSidebar";
@@ -26,10 +26,10 @@ export function ChannelTableView({
   const [filters, setFilters] = useState<ChannelFilters>(DEFAULT_FILTERS);
   const [page, setPage] = useState<number>(1);
   const [intakeOpen, setIntakeOpen] = useState<boolean>(false);
-  const [nicheTagOptions, setNicheTagOptions] = useState<string[]>([]);
+  const [nicheTagOptions, setNicheTagOptions] = useState<NicheTagOption[]>([]);
   const { session } = useAuth();
 
-  const { channels, total, loading, refetch } = useChannels(
+  const { channels, total, loading, refreshing, refetch } = useChannels(
     filters,
     page,
     PAGE_SIZE,
@@ -98,10 +98,21 @@ export function ChannelTableView({
               {displayTotal.toLocaleString()} channel{displayTotal !== 1 ? "s" : ""}
             </p>
           </div>
-          <Button variant="accent" size="sm" onClick={() => setIntakeOpen(true)}>
-            <Plus size={14} />
-            Add / Resolve Channels
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={refreshing}
+              onClick={() => void refetch()}
+            >
+              <RefreshCw size={14} />
+              Refresh
+            </Button>
+            <Button variant="accent" size="sm" onClick={() => setIntakeOpen(true)}>
+              <Plus size={14} />
+              Add / Resolve Channels
+            </Button>
+          </div>
         </div>
 
         {/* Table */}

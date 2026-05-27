@@ -14,9 +14,9 @@ class RuntimeSettings:
     settings_loaded: bool = True
     daily_scrape_utc_time: str = "02:00"
     gate0_enabled: bool = True
-    discovery_enabled: bool = True
+    discovery_enabled: bool = False
     lookalike_enabled: bool = True
-    scrape_platform_priority: tuple[str, ...] = ("rumble", "bitchute", "substack")
+    scrape_platform_priority: tuple[str, ...] = ("substack", "rumble", "bitchute")
     scrape_only_new_or_missing_metrics: bool = True
     scrape_rescrape_min_hours: int = 72
     weekly_velocity_enabled: bool = True
@@ -36,9 +36,9 @@ class RuntimeSettings:
     scrape_retry_jitter_max: float = 1.2
     scrape_blocked_retry_multiplier: float = 2.0
     scrape_blocked_retry_min_seconds: int = 180
-    scrape_platform_slot_limit_rumble: int = 3
-    scrape_platform_slot_limit_bitchute: int = 1
-    scrape_platform_slot_limit_substack: int = 3
+    scrape_platform_slot_limit_rumble: int = 0
+    scrape_platform_slot_limit_bitchute: int = 0
+    scrape_platform_slot_limit_substack: int = 7
     scrape_global_slot_limit: int = 7
     scrape_lock_ttl_seconds: int = 600
     scrape_platform_slot_ttl_seconds: int = 600

@@ -334,3 +334,8 @@ export interface KeywordTaxonomyDef {
 export interface KeywordTaxonomyListResponse {
   taxonomy: KeywordTaxonomyDef[];
 }
+
+export interface NicheTagOption {
+  tag: string;
+  count: number;
+}

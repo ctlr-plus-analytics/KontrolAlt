@@ -157,9 +157,16 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
         return ScrapeTaskResult(
             status="skipped",
             channel_url=channel_url,
-            error="Global scrape slot busy; rescheduled",
         ).model_dump(mode="json")
-    if not try_acquire_platform_slot("bitchute", runtime.scrape_platform_slot_limit_bitchute):
+    bitchute_limit = runtime.scrape_platform_slot_limit_bitchute
+    if bitchute_limit == 0:
+        release_global_slot()
+        release_scrape_lock(channel_url)
+        return ScrapeTaskResult(
+            status="skipped",
+            channel_url=channel_url,
+        ).model_dump(mode="json")
+    if not try_acquire_platform_slot("bitchute", bitchute_limit):
         release_global_slot()
         release_scrape_lock(channel_url)
         scrape_bitchute_channel.apply_async(
@@ -169,7 +176,6 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
         return ScrapeTaskResult(
             status="skipped",
             channel_url=channel_url,
-            error="BitChute platform slot busy; rescheduled",
         ).model_dump(mode="json")
     scraper = BitChuteScraper()
     try:

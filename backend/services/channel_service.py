@@ -178,8 +178,8 @@ async def get_channels(
         raise SupabaseError(f"Failed to fetch channels: {exc}") from exc
 
 
-async def list_niche_tags() -> list[str]:
-    """Return sorted distinct niche tags across all channels."""
+async def list_niche_tags() -> tuple[list[str], list[dict[str, int | str]]]:
+    """Return sorted distinct niche tags and per-tag channel counts."""
     try:
         result = (
             supabase_admin.table(_CHANNELS_TABLE)
@@ -190,17 +190,25 @@ async def list_niche_tags() -> list[str]:
         )
         rows = result.data or []
         unique: set[str] = set()
+        counts: dict[str, int] = {}
         for row in rows:
             tags = row.get("niche_tags")
             if not isinstance(tags, list):
                 continue
+            seen_in_channel: set[str] = set()
             for raw_tag in tags:
                 if not isinstance(raw_tag, str):
                     continue
                 tag = raw_tag.strip()
                 if tag:
                     unique.add(tag)
-        return sorted(unique, key=lambda value: value.lower())
+                    seen_in_channel.add(tag)
+            for tag in seen_in_channel:
+                counts[tag] = counts.get(tag, 0) + 1
+
+        sorted_tags = sorted(unique, key=lambda value: value.lower())
+        tag_counts = [{"tag": tag, "count": counts.get(tag, 0)} for tag in sorted_tags]
+        return sorted_tags, tag_counts
     except (APIError, TypeError, ValueError) as exc:
         logger.error("Failed to list niche tags: %s", exc, exc_info=True)
         raise SupabaseError(f"Failed to list niche tags: {exc}") from exc

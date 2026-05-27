@@ -12,6 +12,9 @@ from schedules.beat_schedule import CELERY_BEAT_SCHEDULE
 # Reduce noisy request logs from HTTP clients used by Supabase/PostgREST.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+# Suppress Celery per-task trace lines like:
+# "Task ... succeeded in ...: {...}"
+logging.getLogger("celery.app.trace").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
