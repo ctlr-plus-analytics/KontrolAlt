@@ -60,7 +60,7 @@ export default function LookalikePage() {
   };
 
   return (
-    <div>
+    <div className="h-full overflow-y-auto p-6 scrollbar-thin">
       <h1 className="mb-6 text-2xl font-semibold tracking-tight text-[#1A1A2E]">
         Lookalike Search
       </h1>

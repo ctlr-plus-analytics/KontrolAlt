@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 import re
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -101,7 +102,7 @@ RUMBLE_CHANNEL = {
     "video_upload_dates": {
         "primary": "time.videostream__data--subitem.videostream__time",
         "fallbacks": [
-            "div.media-description-info-stream-time > div[title]"
+            "div.media-description-info-stream-time time[datetime]"
         ],
         "extract": "attr(datetime)",
         "normalize": "parse_rumble_datetime()",
@@ -143,17 +144,22 @@ RUMBLE_VIDEO = {
     },
     "comment_count": {
         "primary": "div.comments-header > h3.comment-count",
-        "fallbacks": [],
+        "fallbacks": [
+            "#video-comments h3.comment-count",
+            "#comments h3.comment-count",
+            "button[data-js='comments-toggle'] .count",
+            "a[href*='#comments'] .count",
+        ],
         "extract": "text()",
         "normalize": "parse_count_text()",
         "js_required": False,
     },
     "upload_date": {
-        "primary": "div.media-description-info-stream-time > div[title]",
+        "primary": "div.media-description-info-stream-time time[datetime]",
         "fallbacks": [
             "time.videostream__data--subitem.videostream__time"
         ],
-        "extract": "attr(title)",
+        "extract": "attr(datetime)",
         "normalize": "parse_rumble_datetime()",
         "js_required": False,
     },
@@ -257,7 +263,7 @@ def parse_rumble_datetime(dt_str: str) -> datetime | None:
 class RumbleScraper(BaseScraper):
     """Scraper for Rumble channels using Patchright and BeautifulSoup."""
 
-    VIDEO_COLLECTION_LIMIT = 50
+    VIDEO_COLLECTION_LIMIT = 3
     COMMENT_VIDEO_PAGE_SAMPLE_LIMIT = 3
     DEMOGRAPHIC_TITLE_LIMIT = 20
     CHANNEL_NAV_TIMEOUT_MS = 45000
@@ -311,9 +317,12 @@ class RumbleScraper(BaseScraper):
                     await pre_warm_homepage(
                         page, RUMBLE_BASE_URL + "/", session_key=session_key
                     )
+                # Go directly to the videos tab. The channel header (name + subscriber
+                # count) is present on every tab, so the separate home page visit is
+                # unnecessary and saves one full navigation + content-wait cycle.
                 response = await guarded_goto(
                     page,
-                    channel_base_url,
+                    videos_url,
                     session_key=session_key,
                     wait_until="domcontentloaded",
                     timeout=self.CHANNEL_NAV_TIMEOUT_MS,
@@ -367,34 +376,10 @@ class RumbleScraper(BaseScraper):
                     raise ScraperBlockedError(
                         f"Rumble page appears unresolved challenge stub: {channel_url} bytes={len(current_html)}"
                     )
-                home_soup = BeautifulSoup(current_html, "lxml")
-                home_page_title = await page.title() or ""
                 response_status = response.status if response is not None else None
-                home_body_text = home_soup.get_text(" ", strip=True).lower()
-                self.classify_terminal_page_state(
-                    channel_url=channel_base_url,
-                    page_title=home_page_title,
-                    current_url=page.url,
-                    body_text=home_body_text,
-                    response_status=response_status,
-                )
-                name = self._extract_name(home_soup, channel_base_url, home_page_title)
-                subscriber_count = self._extract_subscribers(home_soup)
-                about_task = asyncio.create_task(self._fetch_about_with_retry(context, about_url))
 
-                await guarded_goto(
-                    page,
-                    videos_url,
-                    session_key=session_key,
-                    wait_until="domcontentloaded",
-                    timeout=self.CHANNEL_NAV_TIMEOUT_MS,
-                )
-                videos_content_ok = await wait_for_content(
-                    page, timeout_s=self.PRIMARY_CONTENT_TIMEOUT_S
-                )
-                await self.ensure_not_blocked(page, videos_url)
-                if not videos_content_ok:
-                    raise ScraperBlockedError(f"Rumble videos tab empty after load: {videos_url}")
+                # Start about page fetch in parallel while we wait for video cards.
+                about_task = asyncio.create_task(self._fetch_about_with_retry(context, about_url))
 
                 try:
                     await page.wait_for_selector(
@@ -407,13 +392,8 @@ class RumbleScraper(BaseScraper):
                         channel_url,
                     )
 
-                video_data_map, soup = await self._collect_videos_with_scroll(page)
-                if not video_data_map:
-                    logger.warning(
-                        "Rumble: no videos parsed from videos-tab selectors for %s",
-                        videos_url,
-                    )
-                stage_marks.append(("fast_path_card_parse", perf_counter() - stage_t0))
+                html = await page.content()
+                soup = BeautifulSoup(html, "lxml")
                 page_title = await page.title() or ""
                 body_text = soup.get_text(" ", strip=True).lower()
                 self.classify_terminal_page_state(
@@ -421,8 +401,17 @@ class RumbleScraper(BaseScraper):
                     page_title=page_title,
                     current_url=page.url,
                     body_text=body_text,
-                    response_status=None,
+                    response_status=response_status,
                 )
+                name = self._extract_name(soup, channel_base_url, page_title)
+                subscriber_count = self._extract_subscribers(soup)
+                video_data_map = self._extract_videos(soup)
+                if not video_data_map:
+                    logger.warning(
+                        "Rumble: no videos parsed from videos-tab selectors for %s",
+                        videos_url,
+                    )
+                stage_marks.append(("fast_path_card_parse", perf_counter() - stage_t0))
 
                 description, about_socials, about_contact_soup, about_error_reasons = await about_task
 
@@ -471,56 +460,68 @@ class RumbleScraper(BaseScraper):
                     str(video["title"])
                     for video in video_data_map.values()
                     if video.get("title")
-                ][: self.VIDEO_COLLECTION_LIMIT]
-                # Sample view counts from the first 3 video cards only (most recent).
+                ]
                 view_counts = [
                     float(video["views"])
-                    for video in list(video_data_map.values())[:3]
+                    for video in video_data_map.values()
                     if video.get("views") is not None
                 ]
-                # Comment counts come from individual video pages (up to 3 pages via _last_comment_page_items).
                 comment_counts = [
                     float(video["comments"])
-                    for video in self._last_comment_page_items(video_data_map)
+                    for video in video_data_map.values()
                     if video.get("comments") is not None
                 ]
                 upload_dates = [
                     video["date"]
                     for video in video_data_map.values()
                     if isinstance(video.get("date"), datetime)
-                ][: self.VIDEO_COLLECTION_LIMIT]
+                ]
 
                 # Mean of up to 3 card view samples, rounded to nearest integer.
                 avg_views = round(sum(view_counts) / len(view_counts)) if view_counts else None
                 # Mean of up to 3 video-page comment samples; 0s included, Nones excluded.
                 avg_comments = round(sum(comment_counts) / len(comment_counts)) if comment_counts else None
                 if avg_comments is None:
-                    reason = (
-                        "parse_missing_avg_comments_cf_blocked"
-                        if comment_pages_attempted > 0 and comment_pages_attempted == comment_pages_blocked
-                        else "parse_missing_avg_comments_selector_miss"
-                    )
-                    raise ScraperClassifiedError(
-                        reason,
-                        f"No comment counts extracted from latest video pages for {channel_base_url}",
-                        terminal=False,
-                        retryable=True,
+                    if comment_pages_attempted > 0 and comment_pages_attempted == comment_pages_blocked:
+                        raise ScraperClassifiedError(
+                            "parse_missing_avg_comments_cf_blocked",
+                            f"No comment counts extracted from latest video pages for {channel_base_url}",
+                            terminal=False,
+                            retryable=True,
+                        )
+                    # Selector/layout miss: treat as zero-comments signal instead of
+                    # retrying indefinitely when pages load but expose no parseable counts.
+                    avg_comments = 0
+                    logger.warning(
+                        "Rumble comments unavailable from video pages for %s; defaulting avg_comments=0 "
+                        "(attempted=%d blocked=%d parsed_success=%d selectors=%s)",
+                        channel_base_url,
+                        comment_pages_attempted,
+                        comment_pages_blocked,
+                        comment_pages_parsed_success,
+                        sorted(comment_selectors_hit),
                     )
                 comment_tier = compute_comment_tier(avg_comments)
                 demographic = compute_channel_demographic(
                     name, description, video_titles[: self.DEMOGRAPHIC_TITLE_LIMIT]
                 )
                 posts_per_week = self.compute_posting_cadence(upload_dates)
-                if posts_per_week is None and len(upload_dates) <= 1:
+                if posts_per_week is None:
+                    # Covers: no dates, single date, or multiple dates all on the
+                    # same day (total_days == 0). Can't derive a weekly cadence
+                    # from the card-level sample in any of these cases.
                     posts_per_week = 0.0
                 last_active_date = max(upload_dates).date() if upload_dates else None
                 is_empty_channel = (
                     not video_titles and self._has_empty_channel_marker(body_text)
                 )
                 if is_empty_channel:
-                    avg_views = 0 if avg_views is None else avg_views
-                    avg_comments = 0 if avg_comments is None else avg_comments
-                    posts_per_week = 0.0
+                    raise ScraperClassifiedError(
+                        "no_videos_found",
+                        f"Channel has no videos: {channel_base_url}",
+                        terminal=True,
+                        retryable=False,
+                    )
                 logger.info(
                     "Rumble extraction quality for %s: videos=%d views=%d comments=%d dates=%d",
                     channel_base_url,
@@ -558,7 +559,7 @@ class RumbleScraper(BaseScraper):
                     current_url=page.url,
                     body_text=body_text,
                     response_status=None,
-                    allow_empty_channel=is_empty_channel,
+                    allow_empty_channel=False,
                 )
 
                 channel_data = {
@@ -718,100 +719,6 @@ class RumbleScraper(BaseScraper):
             return parse_follower_count(node.get_text(" ", strip=True))
         return None
 
-    async def _collect_videos_with_scroll(self, page) -> tuple[dict[str, dict[str, object]], BeautifulSoup]:
-        """Collect a deeper recent-video window across scrolls and paginated pages."""
-        collected: dict[str, dict[str, object]] = {}
-        visited_pages: set[str] = set()
-        max_pages = 3
-
-        last_soup = BeautifulSoup(await page.content(), "lxml")
-        for _ in range(max_pages):
-            current_page_url = page.url
-            if current_page_url in visited_pages:
-                break
-            visited_pages.add(current_page_url)
-
-            stagnant_rounds = 0
-            next_page_url: str | None = None
-            for _ in range(4):
-                html = await page.content()
-                soup = BeautifulSoup(html, "lxml")
-                last_soup = soup
-                parsed = self._extract_videos(soup)
-                before = len(collected)
-                for video_id, payload in parsed.items():
-                    if video_id not in collected:
-                        collected[video_id] = payload
-
-                if len(collected) >= self.VIDEO_COLLECTION_LIMIT:
-                    break
-
-                next_page_url = self._extract_next_page_url(soup, page.url)
-                stagnant_rounds = stagnant_rounds + 1 if len(collected) == before else 0
-                if stagnant_rounds >= 1 and next_page_url:
-                    break
-                if stagnant_rounds >= 2:
-                    break
-
-                prev_count = len(collected)
-                await human_scroll(page, direction="down", steps=4)
-                try:
-                    await page.wait_for_function(
-                        "(selector, prev) => document.querySelectorAll(selector).length > prev",
-                        self.VIDEO_CARD_SELECTOR,
-                        prev_count,
-                        timeout=2500,
-                    )
-                except Exception:
-                    await human_delay(0.05, 0.2)
-
-            if len(collected) >= self.VIDEO_COLLECTION_LIMIT:
-                break
-            if not next_page_url or next_page_url in visited_pages:
-                break
-            try:
-                await guarded_goto(
-                    page,
-                    next_page_url,
-                    session_key=self._session_key or next_page_url,
-                    wait_until="domcontentloaded",
-                    timeout=self.CHANNEL_NAV_TIMEOUT_MS,
-                )
-                await page.wait_for_selector(self.VIDEO_CARD_SELECTOR, timeout=2500)
-            except PlaywrightError as exc:
-                logger.debug("Rumble: Could not follow next page %s: %s", next_page_url, exc)
-                break
-
-        return self._trim_video_map(collected), last_soup
-
-    def _extract_next_page_url(self, soup: BeautifulSoup, base_url: str) -> str | None:
-        """Extract the next pagination URL from a Rumble channel page."""
-        for anchor in soup.select("a[href]"):
-            text = anchor.get_text(" ", strip=True).lower()
-            rel_values = [str(value).lower() for value in anchor.get("rel", [])]
-            if text != "next" and "next" not in rel_values:
-                continue
-            href = str(anchor.get("href") or "").strip()
-            if not href:
-                continue
-            next_url = urljoin(base_url, href)
-            if urlsplit(next_url).netloc.endswith("rumble.com"):
-                return next_url
-        return None
-
-    def _trim_video_map(
-        self, video_map: dict[str, dict[str, object]]
-    ) -> dict[str, dict[str, object]]:
-        """Keep insertion order while limiting the extracted recent-video window."""
-        if len(video_map) <= self.VIDEO_COLLECTION_LIMIT:
-            return video_map
-        trimmed: dict[str, dict[str, object]] = {}
-        for idx, (video_id, payload) in enumerate(video_map.items()):
-            if idx >= self.VIDEO_COLLECTION_LIMIT:
-                break
-            trimmed[video_id] = payload
-        return trimmed
-
     def _extract_videos(self, soup: BeautifulSoup) -> dict[str, dict[str, object]]:
         """Extract recent videos from the videos tab using the supplied card selectors."""
         video_map: dict[str, dict[str, object]] = {}
@@ -820,6 +727,11 @@ class RumbleScraper(BaseScraper):
         for card in cards:
             if len(video_map) >= self.VIDEO_COLLECTION_LIMIT or not isinstance(card, Tag):
                 break
+            # Skip the featured banner card — it duplicates the first grid card but
+            # lacks the h3 title element, so processing it first would store a
+            # malformed title and then silently skip the well-formed grid duplicate.
+            if "videostream--featured" in (card.get("class") or []):
+                continue
             link = card.select_one(self.VIDEO_LINK_SELECTOR)
             if not isinstance(link, Tag):
                 continue
@@ -873,59 +785,45 @@ class RumbleScraper(BaseScraper):
         if needs_date and publish_date is not None:
             item["date"] = publish_date
 
-    def _video_signal_counts(
-        self, video_data_map: dict[str, dict[str, object]]
-    ) -> dict[str, int]:
-        """Count extracted signals to gate fallback work conservatively."""
-        items = list(video_data_map.values())[: self.VIDEO_COLLECTION_LIMIT]
-        valid_titles = sum(1 for item in items if item.get("title"))
-        valid_views = sum(
-            1
-            for item in items
-            if isinstance(item.get("views"), (int, float))
-            and float(item["views"]) > 0
-        )
-        valid_comments = sum(
-            1
-            for item in items
-            if isinstance(item.get("comments"), (int, float))
-            and float(item["comments"]) >= 0
-        )
-        valid_dates = sum(
-            1 for item in items if isinstance(item.get("date"), datetime)
-        )
-        return {
-            "valid_titles": valid_titles,
-            "valid_views": valid_views,
-            "valid_comments": valid_comments,
-            "valid_dates": valid_dates,
-        }
-
-    def _last_comment_page_items(
-        self, video_data_map: dict[str, dict[str, object]]
-    ) -> list[dict[str, object]]:
-        """Return exactly the latest N videos to open for comment extraction."""
-        items = list(video_data_map.values())[: self.VIDEO_COLLECTION_LIMIT]
-        return items[: self.COMMENT_VIDEO_PAGE_SAMPLE_LIMIT]
-
     async def _enrich_latest_video_page_comments(
         self,
         context,
         video_data_map: dict[str, dict[str, object]],
     ) -> tuple[int, int, int, set[str]]:
-        """Fetch video-page comments for the latest three uploaded videos."""
-        attempted = 0
+        """Fetch video-page signals for all collected videos in parallel.
+
+        Tasks are staggered so they don't all navigate simultaneously —
+        simultaneous requests from the same proxy IP to multiple video pages
+        are a primary Cloudflare bot-detection trigger.  Each subsequent task
+        waits 5–12 s before opening its tab, keeping the overlap benefit while
+        spreading the CF-visible request pattern.
+        """
+        work = [
+            (item, str(item.get("url") or "").strip())
+            for item in video_data_map.values()
+        ]
+        work = [(item, url) for item, url in work if url]
+        if not work:
+            return 0, 0, 0, set()
+
+        results = await asyncio.gather(
+            *[
+                self._extract_video_page_signals(
+                    context, url, stagger_s=i * random.uniform(5, 12)
+                )
+                for i, (_, url) in enumerate(work)
+            ],
+            return_exceptions=True,
+        )
+
+        attempted = len(work)
         blocked = 0
         parsed_success = 0
         selectors_hit: set[str] = set()
-        for item in self._last_comment_page_items(video_data_map):
-            video_url = str(item.get("url") or "").strip()
-            if not video_url:
+        for (item, _), result in zip(work, results):
+            if isinstance(result, Exception):
                 continue
-            views, comments, publish_date, title, comment_hit_selector, blocked_stub = (
-                await self._extract_video_page_signals(context, video_url)
-            )
-            attempted += 1
+            views, comments, publish_date, title, comment_hit_selector, blocked_stub = result
             if blocked_stub:
                 blocked += 1
             if comment_hit_selector:
@@ -964,9 +862,17 @@ class RumbleScraper(BaseScraper):
         return sorted(set(filtered))
 
     async def _extract_video_page_signals(
-        self, context, video_url: str
+        self, context, video_url: str, *, stagger_s: float = 0.0
     ) -> tuple[int | None, int | None, datetime | None, str | None, str | None, bool]:
-        """Open a Rumble video page and extract missing views, comments, and date."""
+        """Open a Rumble video page and extract missing views, comments, and date.
+
+        Args:
+            stagger_s: Seconds to sleep before opening the tab.  Use non-zero
+                values when launching multiple tasks via asyncio.gather so they
+                don't all hit Cloudflare simultaneously.
+        """
+        if stagger_s > 0:
+            await asyncio.sleep(stagger_s)
         page = await context.new_page()
         try:
             await inter_request_jitter()
@@ -1025,17 +931,36 @@ class RumbleScraper(BaseScraper):
         return None
 
     def _extract_video_page_comments(self, soup: BeautifulSoup) -> tuple[int | None, str | None]:
+        # Primary: server-rendered comment count heading — present even for 0-comment videos.
+        # Text is "0 Comments" / "42 Comments" etc.; parse_count_text strips the word.
         node = soup.select_one(self.VIDEO_PAGE_COMMENT_SELECTOR)
         if node is not None:
             parsed = parse_count_text(node.get_text(" ", strip=True))
             if parsed is not None:
                 return parsed, self.VIDEO_PAGE_COMMENT_SELECTOR
+        for selector in RUMBLE_VIDEO["comment_count"]["fallbacks"]:
+            node = soup.select_one(selector)
+            if node is None:
+                continue
+            parsed = parse_count_text(node.get_text(" ", strip=True))
+            if parsed is not None:
+                return parsed, selector
+        # Body-text fallbacks: Rumble shows these phrases when the comments section
+        # is empty and the h3.comment-count element failed to render or was missed.
+        lowered = soup.get_text(" ", strip=True).lower()
+        if (
+            "be the first to comment" in lowered
+            or "no comments yet" in lowered
+            or "0 comments" in lowered
+        ):
+            return 0, "comments-empty-marker"
         return None, None
 
     def _extract_video_page_upload_date(self, soup: BeautifulSoup) -> datetime | None:
         node = soup.select_one(self.VIDEO_PAGE_DATE_SELECTOR)
         if node is not None:
             for candidate in [
+                str(node.get("datetime") or ""),
                 str(node.get("title") or ""),
                 node.get_text(" ", strip=True),
             ]:

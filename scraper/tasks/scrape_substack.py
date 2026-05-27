@@ -89,7 +89,6 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
     runtime = get_runtime_settings()
     if not try_acquire_global_slot(runtime.scrape_global_slot_limit):
         release_scrape_lock(channel_url)
-        logger.info("Global scrape concurrency limit reached, rescheduling: %s", channel_url)
         scrape_substack_channel.apply_async(
             args=[channel_url],
             countdown=random.randint(20, 60),
@@ -104,9 +103,6 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
     if not try_acquire_platform_slot("substack", limit):
         release_global_slot()
         release_scrape_lock(channel_url)
-        logger.info(
-            "Substack platform concurrency limit reached, rescheduling: %s", channel_url
-        )
         # Queue contention is operational, not a scrape failure: re-dispatch
         # without burning this task's failure-retry budget.
         scrape_substack_channel.apply_async(

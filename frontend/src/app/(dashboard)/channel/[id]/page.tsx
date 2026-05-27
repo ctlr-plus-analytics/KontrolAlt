@@ -32,13 +32,15 @@ export default async function ChannelDetailPage({
 
   if (!channel) {
     return (
-      <div className="flex flex-col items-center justify-center py-20">
-        <p className="text-lg font-medium text-[#1A1A2E]">
-          Channel not found
-        </p>
-        <p className="mt-1 text-sm text-[#6B6B6B]">
-          The channel you are looking for does not exist.
-        </p>
+      <div className="h-full overflow-y-auto p-6 scrollbar-thin">
+        <div className="flex flex-col items-center justify-center py-20">
+          <p className="text-lg font-medium text-[#1A1A2E]">
+            Channel not found
+          </p>
+          <p className="mt-1 text-sm text-[#6B6B6B]">
+            The channel you are looking for does not exist.
+          </p>
+        </div>
       </div>
     );
   }
@@ -78,11 +80,13 @@ export default async function ChannelDetailPage({
     .limit(10);
 
   return (
-    <ChannelDetail
-      channel={channel as unknown as Channel}
-      velocity={velocity}
-      gate0={gate0}
-      scrapeLogs={(scrapeLogs as unknown as ScrapeLog[]) ?? []}
-    />
+    <div className="h-full overflow-y-auto p-6 scrollbar-thin">
+      <ChannelDetail
+        channel={channel as unknown as Channel}
+        velocity={velocity}
+        gate0={gate0}
+        scrapeLogs={(scrapeLogs as unknown as ScrapeLog[]) ?? []}
+      />
+    </div>
   );
 }

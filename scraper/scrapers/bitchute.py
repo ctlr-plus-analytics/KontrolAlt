@@ -580,16 +580,22 @@ class BitChuteScraper(BaseScraper):
                     name, description, video_titles[: self.DEMOGRAPHIC_TITLE_LIMIT]
                 )
                 posts_per_week = self.compute_posting_cadence(upload_dates)
-                if posts_per_week is None and len(upload_dates) <= 1:
+                if posts_per_week is None:
+                    # Covers: no dates, single date, or multiple dates all on the
+                    # same day (total_days == 0). Can't derive a weekly cadence
+                    # from the card-level sample in any of these cases.
                     posts_per_week = 0.0
                 last_active_date = max(upload_dates).date() if upload_dates else None
                 is_empty_channel = (
                     not video_titles and self._has_empty_channel_marker(body_text)
                 )
                 if is_empty_channel:
-                    avg_views = 0 if avg_views is None else avg_views
-                    avg_comments = 0 if avg_comments is None else avg_comments
-                    posts_per_week = 0.0
+                    raise ScraperClassifiedError(
+                        "no_videos_found",
+                        f"Channel has no videos: {channel_base_url}",
+                        terminal=True,
+                        retryable=False,
+                    )
                 logger.info(
                     "BitChute extraction quality for %s: videos=%d views=%d comments=%d dates=%d",
                     channel_base_url,
@@ -627,7 +633,7 @@ class BitChuteScraper(BaseScraper):
                     current_url=page.url,
                     body_text=body_text,
                     response_status=None,
-                    allow_empty_channel=is_empty_channel,
+                    allow_empty_channel=False,
                 )
 
                 channel_data = {
@@ -1255,29 +1261,28 @@ class BitChuteScraper(BaseScraper):
             )
 
     def _extract_video_page_views(self, soup: BeautifulSoup) -> int | None:
-        parsed = self._extract_views_from_visibility_chip(soup)
-        if parsed is not None:
-            return parsed
+        # Try specific CSS selectors FIRST — these are scoped to the main video
+        # detail area and won't be confused by related-video cards that also
+        # carry visibility chips on the full page.
         node = soup.select_one(self.VIDEO_PAGE_VIEW_SELECTOR)
         if node is not None:
             text = node.get_text(" ", strip=True)
             if "view" in text.lower():
                 parsed = parse_bitchute_views(text)
-            else:
-                parsed = None
-            if parsed is not None:
-                return parsed
+                if parsed is not None:
+                    return parsed
         for fallback in BITCHUTE_VIDEO["view_count"]["fallbacks"]:
             node = soup.select_one(fallback)
             if node is not None:
                 text = node.get_text(" ", strip=True)
                 if "view" in text.lower():
                     parsed = parse_bitchute_views(text)
-                else:
-                    parsed = None
-                if parsed is not None:
-                    return parsed
-        return None
+                    if parsed is not None:
+                        return parsed
+        # Chip scan as last resort — operates on the full page soup so it can
+        # accidentally pick up related-video chips; only reached if the specific
+        # selectors above found nothing.
+        return self._extract_views_from_visibility_chip(soup)
 
     def _extract_video_page_comments(self, soup: BeautifulSoup) -> tuple[int | None, str | None]:
         selectors = [
@@ -1432,31 +1437,35 @@ class BitChuteScraper(BaseScraper):
         return ""
 
     def _extract_card_views(self, card: Tag) -> int | None:
+        # 1. Visibility chip: icon-validated, most accurate.
         parsed = self._extract_views_from_visibility_chip(card)
         if parsed is not None:
             return parsed
+        # 2. Primary chip-content selector — only accept if "view" keyword present.
+        #    BitChute view chips often show a bare number ("324K") without the word
+        #    "views"; the chip scan above handles that.  This selector is kept as a
+        #    keyword-gated safety net for alternate chip text like "324K Views".
         node = card.select_one(self.VIDEO_VIEWS_SELECTOR)
         if node is not None:
             text = node.get_text(" ", strip=True)
-            parsed = None
             if "view" in text.lower() and not self._is_duration_text(text):
                 parsed = parse_count_text(text)
-            if parsed is not None:
-                return parsed
+                if parsed is not None:
+                    return parsed
+        # 3. Broader text-caption scan — "view" keyword required throughout.
+        #    Deliberately avoid a bare parse_count_text() fallback here: other
+        #    div.text-caption nodes in the card (date labels, subscriber counts,
+        #    duration chips that slipped through) would produce false view counts.
         for node in card.select("div.text-caption"):
             text = node.get_text(" ", strip=True)
-            lowered = text.lower()
             if self._is_duration_text(text):
                 continue
-            # Handle mixed strings like "324 Views - 3 weeks ago".
-            if "view" in lowered:
+            if "view" in text.lower():
+                # Handle mixed strings like "324 Views - 3 weeks ago".
                 left_segment = text.split("-", 1)[0].strip()
                 parsed = parse_count_text(left_segment)
                 if parsed is not None:
                     return parsed
-            parsed = parse_count_text(text)
-            if parsed is not None:
-                return parsed
         return None
 
     def _extract_card_date(self, card: Tag) -> datetime | None:
@@ -1515,10 +1524,17 @@ class BitChuteScraper(BaseScraper):
         lowered = (text or "").strip().lower()
         return any(marker in lowered for marker in self._EMPTY_CHANNEL_MARKERS)
 
+    # Regex that matches ONLY a bare count: "324", "1.2K", "333.335K", "2.1M"
+    # No letters other than k/m/b suffix, no colons (duration), no words (date).
+    _BARE_COUNT_RE = re.compile(r"^[\d,\.]+\s*[kmb]?$", re.I)
+
     def _extract_views_from_visibility_chip(self, scope: Tag | BeautifulSoup) -> int | None:
+        # Pass 1 — icon-validated: requires the Quasar chip to carry a Material
+        # Icons ligature with text "visibility".  Most accurate; fails when
+        # BitChute renders icons as SVG or Unicode codepoints instead of ligatures.
         for chip in scope.select("div.q-chip"):
             icon = chip.select_one("i.q-chip__icon")
-            icon_text = icon.get_text(" ", strip=True).lower() if icon is not None else ""
+            icon_text = (icon.get_text(" ", strip=True).lower() if icon is not None else "")
             if icon_text != "visibility":
                 continue
             value_node = chip.select_one("div.q-chip__content div.text-caption")
@@ -1528,6 +1544,23 @@ class BitChuteScraper(BaseScraper):
             parsed = parse_count_text(text)
             if parsed is not None:
                 return parsed
+
+        # Pass 2 — numeric-only chip fallback: when icon text is absent or a
+        # codepoint, identify the view-count chip by its content shape.
+        # BitChute view-count chips show only a bare number ("324", "333.335K").
+        # Duration chips ("10:23") are filtered by _is_duration_text.
+        # Date/text nodes ("3 weeks ago") don't match the bare-count pattern.
+        for chip in scope.select("div.q-chip"):
+            value_node = chip.select_one("div.q-chip__content div.text-caption")
+            if value_node is None:
+                continue
+            text = value_node.get_text(" ", strip=True)
+            if self._is_duration_text(text):
+                continue
+            if self._BARE_COUNT_RE.match(text.strip()):
+                parsed = parse_count_text(text)
+                if parsed is not None:
+                    return parsed
         return None
 
     def _is_duration_text(self, text: str) -> bool:

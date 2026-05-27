@@ -150,7 +150,6 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
     runtime = get_runtime_settings()
     if not try_acquire_global_slot(runtime.scrape_global_slot_limit):
         release_scrape_lock(channel_url)
-        logger.info("Global scrape concurrency limit reached, rescheduling: %s", channel_url)
         scrape_bitchute_channel.apply_async(
             args=[channel_url],
             countdown=random.randint(20, 60),
@@ -163,9 +162,6 @@ def scrape_bitchute_channel(self: Task, channel_url: str) -> dict[str, object]:
     if not try_acquire_platform_slot("bitchute", runtime.scrape_platform_slot_limit_bitchute):
         release_global_slot()
         release_scrape_lock(channel_url)
-        logger.info(
-            "BitChute platform concurrency limit reached, rescheduling: %s", channel_url
-        )
         scrape_bitchute_channel.apply_async(
             args=[channel_url],
             countdown=random.randint(30, 90),

@@ -180,6 +180,19 @@ def test_video_page_comments_do_not_use_body_text_fallback() -> None:
     assert source is None
 
 
+def test_video_page_comments_empty_marker_maps_to_zero() -> None:
+    from bs4 import BeautifulSoup
+
+    scraper = RumbleScraper.__new__(RumbleScraper)
+    soup = BeautifulSoup(
+        '<section id="video-comments"><div>Be the first to comment</div></section>',
+        "html.parser",
+    )
+    count, source = scraper._extract_video_page_comments(soup)
+    assert count == 0
+    assert source == "comments-empty-marker"
+
+
 def test_channel_tab_url_normalizes_input_tabs() -> None:
     scraper = RumbleScraper.__new__(RumbleScraper)
     base = scraper._channel_base_url("https://rumble.com/c/GrahamAllen/videos?x=1")

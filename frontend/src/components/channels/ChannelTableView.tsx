@@ -1,7 +1,3 @@
-/**
- * ChannelTableView — client component managing filter state,
- * pagination, and data fetching for the channel discovery table.
- */
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
@@ -9,7 +5,7 @@ import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import type { Channel, ChannelFilters, VelocityScore } from "@/types";
 import { ChannelTable } from "@/components/channels/ChannelTable";
 import { ChannelIntakePanel } from "@/components/channels/ChannelIntakePanel";
-import { FilterBar, DEFAULT_FILTERS } from "@/components/filters/FilterBar";
+import { FilterSidebar, DEFAULT_FILTERS } from "@/components/filters/FilterSidebar";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { useChannels } from "@/hooks/useChannels";
@@ -46,28 +42,20 @@ export function ChannelTableView({
   const totalPages = Math.max(1, Math.ceil(displayTotal / PAGE_SIZE));
   const showBlockingLoader = loading && displayChannels.length === 0;
 
-  const handleSetFilters = useCallback(
-    (newFilters: ChannelFilters) => {
-      setFilters(newFilters);
-      setPage(1);
-    },
-    []
-  );
+  const handleSetFilters = useCallback((newFilters: ChannelFilters) => {
+    setFilters(newFilters);
+    setPage(1);
+  }, []);
 
-  const handleSort = useCallback(
-    (column: ChannelFilters["sort_by"]) => {
-      setFilters((prev) => ({
-        ...prev,
-        sort_by: column,
-        sort_order:
-          prev.sort_by === column && prev.sort_order === "desc"
-            ? "asc"
-            : "desc",
-      }));
-      setPage(1);
-    },
-    []
-  );
+  const handleSort = useCallback((column: ChannelFilters["sort_by"]) => {
+    setFilters((prev) => ({
+      ...prev,
+      sort_by: column,
+      sort_order:
+        prev.sort_by === column && prev.sort_order === "desc" ? "asc" : "desc",
+    }));
+    setPage(1);
+  }, []);
 
   const handleIntakeComplete = useCallback(() => {
     setPage(1);
@@ -80,87 +68,91 @@ export function ChannelTableView({
     const loadNicheTags = async () => {
       try {
         const tags = await getNicheTags(session?.access_token);
-        if (!cancelled) {
-          setNicheTagOptions(tags);
-        }
+        if (!cancelled) setNicheTagOptions(tags);
       } catch {
-        if (!cancelled) {
-          setNicheTagOptions([]);
-        }
+        if (!cancelled) setNicheTagOptions([]);
       }
     };
     void loadNicheTags();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [session?.access_token]);
 
   return (
-    <div>
-      <div className="mb-6 flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight text-[#1A1A2E]">
-          Channel Discovery
-        </h1>
-        <Button variant="accent" size="sm" onClick={() => setIntakeOpen(true)}>
-          <Plus size={14} />
-          Add / Resolve Channels
-        </Button>
-      </div>
-
-      <FilterBar
+    <div className="flex h-full overflow-hidden">
+      {/* ── Filter Sidebar ── */}
+      <FilterSidebar
         filters={filters}
         setFilters={handleSetFilters}
         nicheTagOptions={nicheTagOptions}
       />
 
-      <div className="relative min-h-[400px]">
-        {showBlockingLoader && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-white/60 backdrop-blur-sm">
-            <Spinner size="lg" />
+      {/* ── Main Content ── */}
+      <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
+        {/* Header */}
+        <div className="flex shrink-0 items-center justify-between gap-4 border-b border-[#E8E4DC] bg-white px-6 py-4">
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight text-[#1A1A2E]">
+              Channel Discovery
+            </h1>
+            <p className="mt-0.5 text-sm text-[#6B6B6B]">
+              {displayTotal.toLocaleString()} channel{displayTotal !== 1 ? "s" : ""}
+            </p>
           </div>
-        )}
-        <ChannelTable
-          channels={displayChannels}
-          sortBy={filters.sort_by}
-          sortOrder={filters.sort_order}
-          onSort={handleSort}
-        />
-      </div>
+          <Button variant="accent" size="sm" onClick={() => setIntakeOpen(true)}>
+            <Plus size={14} />
+            Add / Resolve Channels
+          </Button>
+        </div>
 
-      {/* Pagination */}
-      <div className="mt-4 flex items-center justify-between">
-        <p className="text-sm text-[#6B6B6B]">
-          Showing {displayChannels.length} of {displayTotal} channels
-        </p>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={page <= 1}
-            onClick={() => {
-              setPage((p) => Math.max(1, p - 1));
-            }}
-          >
-            <ChevronLeft size={16} />
-            Previous
-          </Button>
-          <span className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-1.5 text-sm font-medium text-[#1A1A2E]">
-            {page} / {totalPages}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={page >= totalPages}
-            onClick={() => {
-              setPage((p) => Math.min(totalPages, p + 1));
-            }}
-          >
-            Next
-            <ChevronRight size={16} />
-          </Button>
+        {/* Table */}
+        <div className="flex-1 p-6">
+          <div className="relative min-h-[400px]">
+            {showBlockingLoader && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-white/60 backdrop-blur-sm">
+                <Spinner size="lg" />
+              </div>
+            )}
+            <ChannelTable
+              channels={displayChannels}
+              sortBy={filters.sort_by}
+              sortOrder={filters.sort_order}
+              onSort={handleSort}
+            />
+          </div>
+
+          {/* Pagination */}
+          <div className="mt-4 flex items-center justify-between">
+            <p className="text-sm text-[#6B6B6B]">
+              Showing {displayChannels.length} of {displayTotal} channels
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                <ChevronLeft size={16} />
+                Previous
+              </Button>
+              <span className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-1.5 text-sm font-medium text-[#1A1A2E]">
+                {page} / {totalPages}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Next
+                <ChevronRight size={16} />
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
 
+      {/* ── Intake Modal ── */}
       {intakeOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1A1A2E]/55 p-4">
           <div className="max-h-[90vh] w-full max-w-7xl overflow-y-auto rounded-2xl border border-[#E8E4DC] bg-[#F7F4EE] p-4 shadow-2xl">

@@ -35,7 +35,7 @@ export default async function DashboardPage() {
   }
 
   return (
-    <div>
+    <div className="h-full">
       <ChannelTableView
         initialChannels={initialChannels as never[]}
         initialTotal={initialTotal}

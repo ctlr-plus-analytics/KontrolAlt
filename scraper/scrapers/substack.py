@@ -292,6 +292,19 @@ class SubstackScraper(BaseScraper):
                         retryable=False,
                     )
 
+                # Parse the profile page while we are still on it — "See subscribers"
+                # only appears here, not on the /posts tab the scraper navigates to next.
+                preflight_html = await page.content()
+                preflight_soup = BeautifulSoup(preflight_html, "lxml")
+                preflight_body = preflight_soup.get_text(" ", strip=True).lower()
+                if self._is_see_subscribers_stub(preflight_soup, preflight_body):
+                    raise ScraperClassifiedError(
+                        "substack_see_subscribers_stub",
+                        f"Substack profile shows 'See subscribers' — subscriber count too low: {preflight_profile_url}",
+                        terminal=True,
+                        retryable=False,
+                    )
+
                 redirected_posts_url = self._posts_url_from_current_url(page.url)
                 if redirected_posts_url is None:
                     raise ScraperClassifiedError(
@@ -371,6 +384,13 @@ class SubstackScraper(BaseScraper):
                     body_text=body_text,
                     response_status=response_status,
                 )
+                if self._is_profile_not_found(soup, body_text):
+                    raise ScraperClassifiedError(
+                        "substack_profile_not_found",
+                        f"Substack profile not found: {resolved_channel_base_url}",
+                        terminal=True,
+                        retryable=False,
+                    )
 
                 name = self._extract_name(soup, resolved_channel_base_url, page_title)
                 description = self._extract_description(soup)
@@ -388,6 +408,14 @@ class SubstackScraper(BaseScraper):
                             break
                 stage_marks.append(("fast_path_card_parse", perf_counter() - stage_t0))
 
+                if len(post_data_map) < 3:
+                    raise ScraperClassifiedError(
+                        "substack_too_few_posts",
+                        f"Substack profile has fewer than 3 posts — channel is too sparse to scrape: {resolved_channel_base_url}",
+                        terminal=True,
+                        retryable=False,
+                    )
+
                 # Enrich post pages only when card-level fields are missing.
                 needs_enrichment = any(
                     item.get("views") is None
@@ -404,6 +432,14 @@ class SubstackScraper(BaseScraper):
                 stage_marks.append(("post_page_enrichment", perf_counter() - stage_t0))
 
                 subscriber_count = self._extract_subscribers(soup)
+
+                if self._is_see_subscribers_stub(soup, body_text):
+                    raise ScraperClassifiedError(
+                        "substack_see_subscribers_stub",
+                        f"Substack profile shows 'See subscribers' — subscriber count too low to display: {resolved_channel_base_url}",
+                        terminal=True,
+                        retryable=False,
+                    )
 
                 secondary_urls = self._extract_external_links(soup, resolved_channel_base_url)
                 combined_text = f"{description}\n{soup.get_text(' ', strip=True)}"
@@ -428,6 +464,11 @@ class SubstackScraper(BaseScraper):
                 avg_views = self.compute_avg(view_counts)
                 avg_comments = self.compute_avg(comment_counts)
                 posts_per_week = self.compute_posting_cadence(upload_dates)
+                if posts_per_week is None:
+                    # Covers: no dates, single date, or multiple dates all on the
+                    # same day (total_days == 0). Can't derive a weekly cadence
+                    # from the available sample in any of these cases.
+                    posts_per_week = 0.0
                 last_active_date = max(upload_dates) if upload_dates else None
                 comment_tier = compute_comment_tier(avg_comments)
                 demographic = compute_channel_demographic(name, description, post_titles[: self.DEMOGRAPHIC_TITLE_LIMIT])
@@ -794,6 +835,35 @@ class SubstackScraper(BaseScraper):
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
         return None
+
+    def _is_profile_not_found(self, soup: BeautifulSoup, body_text: str) -> bool:
+        # Primary: "Search people on Substack" button only appears on the
+        # profile-not-found error page — stable landmark regardless of class names.
+        if soup.select_one("button[class*='search']") or soup.find(
+            lambda tag: isinstance(tag, Tag)
+            and tag.name == "button"
+            and "search people on substack" in tag.get_text(" ", strip=True).lower()
+        ):
+            return True
+        # Fallback: body text phrases shown on the error page.
+        return (
+            "profile not found" in body_text
+            or "we couldn't load this profile" in body_text
+        )
+
+    def _is_see_subscribers_stub(self, soup: BeautifulSoup, body_text: str = "") -> bool:
+        # 1. Anchor link variant — most common on the /posts tab.
+        node = soup.select_one("a[href$='/subscribers']")
+        if isinstance(node, Tag) and "see subscribers" in node.get_text(" ", strip=True).lower():
+            return True
+        # 2. Non-anchor variant — Substack sometimes renders this as a button or span
+        #    on the profile page. Match any element whose full visible text is exactly
+        #    "see subscribers" (case-insensitive).
+        for tag in soup.find_all(["button", "span", "div", "a"]):
+            if tag.get_text(" ", strip=True).lower() == "see subscribers":
+                return True
+        # 3. Body-text fallback — catches any future rendering changes.
+        return "see subscribers" in body_text
 
     def _extract_preloads_payload(self, soup: BeautifulSoup) -> object | None:
         for script in soup.select("script"):

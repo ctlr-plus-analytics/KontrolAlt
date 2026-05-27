@@ -36,10 +36,10 @@ class RuntimeSettings:
     scrape_retry_jitter_max: float = 1.2
     scrape_blocked_retry_multiplier: float = 2.0
     scrape_blocked_retry_min_seconds: int = 180
-    scrape_platform_slot_limit_rumble: int = 1
+    scrape_platform_slot_limit_rumble: int = 3
     scrape_platform_slot_limit_bitchute: int = 1
-    scrape_platform_slot_limit_substack: int = 1
-    scrape_global_slot_limit: int = 3
+    scrape_platform_slot_limit_substack: int = 3
+    scrape_global_slot_limit: int = 7
     scrape_lock_ttl_seconds: int = 600
     scrape_platform_slot_ttl_seconds: int = 600
     scrape_circuit_breaker_fail_threshold: int = 5

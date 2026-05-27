@@ -142,7 +142,7 @@ def log_scrape_task_attempt(
             .maybe_single()
             .execute()
         )
-        channel_id = str(result.data["id"]) if result.data else None
+        channel_id = str(result.data["id"]) if result is not None and result.data else None
         if channel_id is None:
             channel_id_raw = _ensure_channel_for_logging(scraper, channel_url)
             if channel_id_raw is None:
@@ -317,8 +317,15 @@ def release_scrape_lock(channel_url: str) -> None:
 
 
 def try_acquire_platform_slot(platform: str, limit: int) -> bool:
-    """Acquire one in-flight slot for a platform, capped by `limit`."""
-    if limit <= 0:
+    """Acquire one in-flight slot for a platform, capped by `limit`.
+
+    limit == 0  → platform is disabled; always deny (returns False).
+    limit  < 0  → no cap; always allow (returns True).
+    limit  > 0  → cap at N concurrent slots.
+    """
+    if limit == 0:
+        return False
+    if limit < 0:
         return True
     key = f"{_PLATFORM_SLOT_KEY_PREFIX}{platform}"
     try:
