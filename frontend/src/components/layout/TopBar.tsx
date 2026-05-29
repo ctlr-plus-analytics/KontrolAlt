@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LogOut, LayoutDashboard, GitBranch, Shield } from "lucide-react";
+import { LogOut, LayoutDashboard, Shield } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 
@@ -14,7 +14,6 @@ interface NavItem {
 
 const BASE_NAV: NavItem[] = [
   { label: "Channels", href: "/", icon: <LayoutDashboard size={15} /> },
-  { label: "Lookalike", href: "/lookalike", icon: <GitBranch size={15} /> },
 ];
 
 function isActive(href: string, pathname: string): boolean {

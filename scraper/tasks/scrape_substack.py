@@ -40,6 +40,13 @@ _NON_BREAKER_REASON_CODES = {
     "substack_see_subscribers_stub",
     "substack_profile_not_found",
     "substack_too_few_posts",
+    # Parse errors: data was absent in the API response, not a platform outage.
+    # Should not penalise the breaker or permanently strand the channel.
+    "parse_missing_subscriber_count",
+    "parse_missing_avg_views",
+    "parse_missing_avg_comments",
+    "parse_missing_posts_per_week",
+    "parse_missing_last_active_date",
 }
 
 
@@ -186,7 +193,9 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
         if not has_retries_remaining(self):
             if _should_trip_substack_breaker(exc):
                 record_failure("substack")
-            log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
+            # Non-breaker parse errors re-queue so the next daily batch retries them.
+            log_status = "retry" if not _should_trip_substack_breaker(exc) else "failed"
+            log_scrape_task_attempt(scraper, channel_url, log_status, exc, self)
             return ScrapeTaskResult(
                 status="failed",
                 channel_url=channel_url,

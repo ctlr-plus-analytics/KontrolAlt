@@ -12,7 +12,7 @@ const STATUS_CONFIG: Record<
   Gate0Status,
   { variant: "muted" | "success" | "danger" | "warning"; label: string }
 > = {
-  unchecked: { variant: "muted", label: "Not Checked" },
+  unchecked: { variant: "muted", label: "In-progress" },
   pending: { variant: "warning", label: "Checking..." },
   clean: { variant: "success", label: "Clean Lead" },
   dirty: { variant: "danger", label: "Gold Dirty" },
