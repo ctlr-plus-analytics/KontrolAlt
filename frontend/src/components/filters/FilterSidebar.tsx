@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search, X, ArrowUp, ArrowDown, Check, ChevronDown } from "lucide-react";
-import type { ChannelFilters, Gate0Status, Gate0StatusOption, NicheTagOption } from "@/types";
+import type { ChannelFilters, NicheTagOption } from "@/types";
 import { NumericRangeFilter } from "@/components/filters/NumericRangeFilter";
 import { cn } from "@/lib/utils";
 
@@ -10,7 +10,6 @@ interface FilterSidebarProps {
   filters: ChannelFilters;
   setFilters: (filters: ChannelFilters) => void;
   nicheTagOptions: NicheTagOption[];
-  gate0StatusOptions: Gate0StatusOption[];
 }
 
 export const DEFAULT_FILTERS: ChannelFilters = {
@@ -47,13 +46,6 @@ const COMMENT_TIERS = [
   { value: "whale", label: "Whale (100+)" },
 ] as const;
 
-const GATE0_LABELS: Record<Gate0Status, string> = {
-  unchecked: "Not Checked",
-  pending: "Checking",
-  clean: "Clean Lead",
-  dirty: "Gold Dirty",
-};
-
 const SORT_OPTIONS = [
   { value: "avg_comments", label: "Avg Comments" },
   { value: "subscriber_count", label: "Subscribers" },
@@ -86,21 +78,15 @@ export function FilterSidebar({
   filters,
   setFilters,
   nicheTagOptions,
-  gate0StatusOptions,
 }: FilterSidebarProps) {
   const [isNicheMenuOpen, setIsNicheMenuOpen] = useState<boolean>(false);
-  const [isGate0MenuOpen, setIsGate0MenuOpen] = useState<boolean>(false);
   const nicheMenuRef = useRef<HTMLDivElement | null>(null);
-  const gate0MenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const onDocumentClick = (event: MouseEvent) => {
       const target = event.target as Node;
       if (!nicheMenuRef.current?.contains(target)) {
         setIsNicheMenuOpen(false);
-      }
-      if (!gate0MenuRef.current?.contains(target)) {
-        setIsGate0MenuOpen(false);
       }
     };
     document.addEventListener("mousedown", onDocumentClick);
@@ -121,7 +107,6 @@ export function FilterSidebar({
     if (filters.search_query) count++;
     if (filters.platform !== "all") count++;
     if (filters.comment_tier !== "all") count++;
-    if (filters.gate0_statuses.length > 0) count++;
     if (filters.niche_tags.length > 0) count++;
     if (filters.min_subscriber_count != null || filters.max_subscriber_count != null) count++;
     if (filters.min_avg_views != null || filters.max_avg_views != null) count++;
@@ -220,92 +205,6 @@ export function FilterSidebar({
           );
         })}
       </div>
-
-      {gate0StatusOptions.length > 0 && (
-        <>
-          <SectionLabel>Gate 0 Status</SectionLabel>
-          <div className="px-4 pb-4">
-            <div className="relative" ref={gate0MenuRef}>
-              <button
-                type="button"
-                onClick={() => setIsGate0MenuOpen((prev) => !prev)}
-                className="flex w-full items-center justify-between rounded-lg border border-[#F7F4EE]/10 bg-[#F7F4EE]/6 px-3 py-2 text-sm text-[#F7F4EE] transition-shadow hover:border-[#F7F4EE]/20 focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/60"
-              >
-                <span className="truncate">
-                  {filters.gate0_statuses.length === 0
-                    ? "Any / All Statuses"
-                    : filters.gate0_statuses.length === 1
-                      ? GATE0_LABELS[filters.gate0_statuses[0]]
-                      : `${filters.gate0_statuses.length} statuses selected`}
-                </span>
-                <ChevronDown
-                  size={14}
-                  className={cn("text-[#F7F4EE]/45 transition-transform", isGate0MenuOpen ? "rotate-180" : "")}
-                />
-              </button>
-
-              {isGate0MenuOpen && (
-                <div className="absolute z-20 mt-1 w-full rounded-xl border border-[#F7F4EE]/15 bg-[#131323] p-1 shadow-2xl">
-                  <button
-                    type="button"
-                    onClick={() => update({ gate0_statuses: [] })}
-                    className={cn(
-                      "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
-                      filters.gate0_statuses.length === 0
-                        ? "bg-[#C9A84C]/14 text-[#C9A84C]"
-                        : "text-[#F7F4EE]/75 hover:bg-[#F7F4EE]/6"
-                    )}
-                  >
-                    <span className="flex items-center gap-2">
-                      <span className="flex h-4 w-4 items-center justify-center rounded border border-current/35">
-                        {filters.gate0_statuses.length === 0 && <Check size={12} />}
-                      </span>
-                      Any / All Statuses
-                    </span>
-                  </button>
-
-                  <div className="my-1 h-px bg-[#F7F4EE]/10" />
-
-                  <div className="max-h-64 overflow-y-auto scrollbar-thin">
-                    {gate0StatusOptions.map((option) => {
-                      const isActive = filters.gate0_statuses.includes(option.status);
-                      return (
-                        <button
-                          key={option.status}
-                          type="button"
-                          onClick={() =>
-                            update({
-                              gate0_statuses: isActive
-                                ? filters.gate0_statuses.filter((status) => status !== option.status)
-                                : [...filters.gate0_statuses, option.status],
-                            })
-                          }
-                          className={cn(
-                            "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
-                            isActive
-                              ? "bg-[#C9A84C]/14 text-[#C9A84C]"
-                              : "text-[#F7F4EE]/75 hover:bg-[#F7F4EE]/6"
-                          )}
-                        >
-                          <span className="flex min-w-0 items-center gap-2">
-                            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-current/35">
-                              {isActive && <Check size={12} />}
-                            </span>
-                            <span className="truncate">{GATE0_LABELS[option.status]}</span>
-                          </span>
-                          <span className="ml-3 shrink-0 rounded-full border border-[#F7F4EE]/15 bg-[#F7F4EE]/5 px-2 py-0.5 text-[11px] text-[#F7F4EE]/60">
-                            {option.count.toLocaleString()}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </>
-      )}
 
       <SectionLabel>Sort</SectionLabel>
       <div className="flex flex-col gap-3 px-4 pb-4">

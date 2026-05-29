@@ -369,9 +369,6 @@ async def delete_channel_history(channel_id: UUID) -> None:
         supabase_admin.table("gate0_results").delete().eq(
             "channel_id", str(channel_id)
         ).execute()
-        supabase_admin.table("velocity_scores").delete().eq(
-            "channel_id", str(channel_id)
-        ).execute()
 
         supabase_admin.table("channels").update(
             {
@@ -424,9 +421,6 @@ async def delete_channel_completely(channel_id: UUID) -> None:
             "channel_id", str(channel_id)
         ).execute()
         supabase_admin.table("gate0_results").delete().eq(
-            "channel_id", str(channel_id)
-        ).execute()
-        supabase_admin.table("velocity_scores").delete().eq(
             "channel_id", str(channel_id)
         ).execute()
         supabase_admin.table("channels").delete().eq("id", str(channel_id)).execute()

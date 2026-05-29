@@ -38,8 +38,8 @@ class RuntimeSettings:
     scrape_blocked_retry_min_seconds: int = 180
     scrape_platform_slot_limit_rumble: int = 0
     scrape_platform_slot_limit_bitchute: int = 0
-    scrape_platform_slot_limit_substack: int = 7
-    scrape_global_slot_limit: int = 7
+    scrape_platform_slot_limit_substack: int = -1
+    scrape_global_slot_limit: int = -1
     scrape_lock_ttl_seconds: int = 600
     scrape_platform_slot_ttl_seconds: int = 600
     scrape_circuit_breaker_fail_threshold: int = 5

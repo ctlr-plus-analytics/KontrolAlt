@@ -101,3 +101,13 @@ class KeywordTaxonomyListResponse(BaseModel):
 
 class UpdateKeywordTaxonomyRequest(BaseModel):
     taxonomy: list[KeywordTaxonomyDef]
+
+
+class PurgeQueueRequest(BaseModel):
+    reason: str | None = None
+
+
+class PurgeQueueResponse(BaseModel):
+    message: str
+    stats: dict
+    purged_at: datetime

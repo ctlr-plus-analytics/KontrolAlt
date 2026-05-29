@@ -40,6 +40,20 @@ from tasks.scrape_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+_NON_BREAKER_REASON_CODES: frozenset[str] = frozenset(
+    {
+        "rumble_zero_followers",
+        "rumble_too_few_videos",
+    }
+)
+
+
+def _should_trip_rumble_breaker(exc: ScraperClassifiedError) -> bool:
+    """Return True when a classified Rumble failure should count toward the circuit breaker."""
+    return exc.reason_code not in _NON_BREAKER_REASON_CODES
+
+
 _KPI_WINDOW = 20
 _kpi_description_fallback = deque(maxlen=_KPI_WINDOW)
 _kpi_responses = deque(maxlen=_KPI_WINDOW)
@@ -258,7 +272,8 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
         )
     except ScraperClassifiedError as exc:
         if exc.terminal and not exc.retryable:
-            record_failure("rumble")
+            if _should_trip_rumble_breaker(exc):
+                record_failure("rumble")
             deactivate_channel_for_url(scraper, channel_url)
             log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
             logger.error(
@@ -273,7 +288,8 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
             ).model_dump(mode="json")
 
         if not has_retries_remaining(self):
-            record_failure("rumble")
+            if _should_trip_rumble_breaker(exc):
+                record_failure("rumble")
             log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
             return ScrapeTaskResult(
                 status="failed",
@@ -350,6 +366,9 @@ def scrape_rumble_all() -> dict[str, object]:
         Dict with count of queued tasks.
     """
     logger.info("Starting batch Rumble scrape")
+    if get_runtime_settings().scrape_platform_slot_limit_rumble == 0:
+        logger.info("Skipping batch Rumble scrape: platform disabled (slot limit=0)")
+        return {"queued": 0, "skipped": "platform_disabled"}
     try:
         client = get_supabase_client()
         result = (

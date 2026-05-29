@@ -348,6 +348,9 @@ def scrape_bitchute_all() -> dict[str, object]:
         Dict with count of queued tasks.
     """
     logger.info("Starting batch BitChute scrape")
+    if get_runtime_settings().scrape_platform_slot_limit_bitchute == 0:
+        logger.info("Skipping batch BitChute scrape: platform disabled (slot limit=0)")
+        return {"queued": 0, "skipped": "platform_disabled"}
     try:
         client = get_supabase_client()
         result = (

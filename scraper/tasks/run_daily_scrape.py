@@ -54,6 +54,19 @@ def _stage_scrape_signatures(
     return staged
 
 
+def _enabled_platforms() -> frozenset[str]:
+    """Return the set of platform names that are not slot-disabled (limit != 0)."""
+    runtime = get_runtime_settings()
+    enabled: set[str] = set()
+    if runtime.scrape_platform_slot_limit_rumble != 0:
+        enabled.add("rumble")
+    if runtime.scrape_platform_slot_limit_bitchute != 0:
+        enabled.add("bitchute")
+    if runtime.scrape_platform_slot_limit_substack != 0:
+        enabled.add("substack")
+    return frozenset(enabled)
+
+
 def _parse_datetime(value: object) -> datetime | None:
     """Parse a Supabase timestamp into an aware datetime."""
     if not isinstance(value, str):
@@ -153,19 +166,8 @@ def _latest_snapshot_by_channel_id(channel_ids: list[str]) -> dict[str, datetime
 def _prioritize_channels_for_scrape(
     channels: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    """Prioritize never-scraped channels first, then stalest channels."""
-    def has_missing_core_metrics(row: dict[str, object]) -> bool:
-        """Return True when any dashboard-critical metric is missing (N/A)."""
-        return any(
-            row.get(metric) is None
-            for metric in (
-                "subscriber_count",
-                "avg_views",
-                "avg_comments",
-                "last_active_date",
-            )
-        )
-
+    """Return only never-scraped channels for daily scrape queueing."""
+    runtime = get_runtime_settings()
     channel_ids: list[str] = []
     for row in channels:
         raw_id = row.get("id")
@@ -175,32 +177,16 @@ def _prioritize_channels_for_scrape(
             continue
 
     latest_by_id = _latest_snapshot_by_channel_id(channel_ids)
-    now = datetime.now(timezone.utc)
-    runtime = get_runtime_settings()
-    min_age = timedelta(hours=max(0, runtime.scrape_rescrape_min_hours))
     prioritized: list[tuple[bool, datetime, dict[str, object]]] = []
 
     for row in channels:
         channel_id = str(row.get("id") or "")
         latest = latest_by_id.get(channel_id)
         never_scraped = (row.get("has_been_scraped") is False) or latest is None
-        missing_metrics = has_missing_core_metrics(row)
-        discovery_status = row.get("discovery_status")
-        discovered_unresolved = discovery_status in {"new", "queued"}
-
-        if (
-            runtime.scrape_only_new_or_missing_metrics
-            and not never_scraped
-            and not missing_metrics
-            and not discovered_unresolved
-        ):
+        if not never_scraped:
             continue
-        if not never_scraped and latest is not None and not missing_metrics and now - latest < min_age:
-            continue
-        if never_scraped or discovered_unresolved:
-            prioritized.append((True, datetime.min.replace(tzinfo=timezone.utc), row))
-        else:
-            prioritized.append((False, latest, row))
+        # Keep unresolved/new channels and all never-scraped channels.
+        prioritized.append((True, datetime.min.replace(tzinfo=timezone.utc), row))
 
     platform_rank = {
         platform: index for index, platform in enumerate(runtime.scrape_platform_priority)
@@ -361,11 +347,14 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
         logger.error("Failed to fetch weekly velocity channels: %s", exc, exc_info=True)
         return {"queued": 0, "error": str(exc)}
 
+    enabled_platforms = _enabled_platforms()
     scrape_signatures: list[tuple[str, _ScrapeSignature]] = []
     for channel in channels:
         channel_url = str(channel.get("channel_url") or "")
         platform = str(channel.get("platform") or "")
         if not channel_url:
+            continue
+        if platform not in enabled_platforms:
             continue
         if platform in {"rumble", "bitchute", "substack"} and is_open(platform):
             logger.warning(
@@ -428,11 +417,14 @@ def run_daily_scrape() -> dict[str, object]:
         logger.error("Failed to fetch active channel URLs: %s", exc, exc_info=True)
         return {"queued": 0, "error": str(exc)}
 
+    enabled_platforms = _enabled_platforms()
     scrape_signatures: list[tuple[str, _ScrapeSignature]] = []
     for channel in channels:
         channel_url = str(channel.get("channel_url") or "")
         platform = str(channel.get("platform") or "")
         if not channel_url:
+            continue
+        if platform not in enabled_platforms:
             continue
         if platform in {"rumble", "bitchute", "substack"} and is_open(platform):
             logger.warning(

@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef, useLayoutEffect } from "react";
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
-import type { Channel, ChannelFilters, Gate0StatusOption, NicheTagOption, VelocityScore } from "@/types";
+import type { Channel, ChannelFilters, NicheTagOption, VelocityScore } from "@/types";
 import { ChannelTable } from "@/components/channels/ChannelTable";
 import { ChannelIntakePanel } from "@/components/channels/ChannelIntakePanel";
 import { FilterSidebar, DEFAULT_FILTERS } from "@/components/filters/FilterSidebar";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { useChannels } from "@/hooks/useChannels";
 import { useAuth } from "@/hooks/useAuth";
-import { getGate0Statuses, getNicheTags } from "@/lib/api/backend";
+import { getNicheTags } from "@/lib/api/backend";
 
 interface ChannelTableViewProps {
   initialChannels: (Channel & { velocity?: VelocityScore | null })[];
@@ -42,21 +42,24 @@ export function ChannelTableView({
   initialChannels,
   initialTotal,
 }: ChannelTableViewProps) {
-  const [filters, setFilters] = useState<ChannelFilters>(() => {
-    const saved = readStorage();
-    return saved.filters ?? DEFAULT_FILTERS;
-  });
-  const [page, setPage] = useState<number>(() => {
-    const saved = readStorage();
-    return saved.page ?? 1;
-  });
+  // Always start with defaults so SSR and initial client render match.
+  // sessionStorage is read in a useEffect below (client-only, post-hydration).
+  const [filters, setFilters] = useState<ChannelFilters>(DEFAULT_FILTERS);
+  const [page, setPage] = useState<number>(1);
   const [intakeOpen, setIntakeOpen] = useState<boolean>(false);
   const [nicheTagOptions, setNicheTagOptions] = useState<NicheTagOption[]>([]);
-  const [gate0StatusOptions, setGate0StatusOptions] = useState<Gate0StatusOption[]>([]);
   const { session } = useAuth();
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasRestoredScroll = useRef(false);
+
+  // Restore filters + page from sessionStorage after hydration (client-only).
+  // Must run after the initial render so SSR and client HTML match exactly.
+  useEffect(() => {
+    const saved = readStorage();
+    if (saved.filters) setFilters(saved.filters);
+    if (saved.page) setPage(saved.page);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { channels, total, loading, refreshing, refetch } = useChannels(
     filters,
@@ -123,30 +126,9 @@ export function ChannelTableView({
   useEffect(() => {
     let cancelled = false;
     const loadFilterOptions = async () => {
-      const [tagsResult, statusesResult] = await Promise.allSettled([
-        getNicheTags(session?.access_token),
-        getGate0Statuses(session?.access_token),
-      ]);
-
-      if (cancelled) {
-        return;
-      }
-
-      if (tagsResult.status === "fulfilled") {
-        setNicheTagOptions(tagsResult.value);
-      } else {
-        setNicheTagOptions([]);
-      }
-
-      if (statusesResult.status === "fulfilled") {
-        setGate0StatusOptions(statusesResult.value);
-      } else {
-        setGate0StatusOptions([
-          { status: "unchecked", count: 0 },
-          { status: "pending", count: 0 },
-          { status: "clean", count: 0 },
-          { status: "dirty", count: 0 },
-        ]);
+      const tagsResult = await getNicheTags(session?.access_token).catch(() => null);
+      if (!cancelled) {
+        setNicheTagOptions(tagsResult ?? []);
       }
     };
     void loadFilterOptions();
@@ -160,7 +142,6 @@ export function ChannelTableView({
         filters={filters}
         setFilters={handleSetFilters}
         nicheTagOptions={nicheTagOptions}
-        gate0StatusOptions={gate0StatusOptions}
       />
 
       {/* ── Main Content ── */}

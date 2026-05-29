@@ -28,13 +28,9 @@ from tasks.scrape_helpers import (
     has_retries_remaining_for_block,
     log_scrape_task_attempt,
     release_keyword_discovery_hold,
-    release_platform_slot,
-    release_global_slot,
     release_scrape_lock,
     retry_countdown_seconds,
     record_daily_bytes_used,
-    try_acquire_global_slot,
-    try_acquire_platform_slot,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,35 +94,8 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
             error="Duplicate in-flight scrape skipped",
         ).model_dump(mode="json")
 
-    runtime = get_runtime_settings()
-    if not try_acquire_global_slot(runtime.scrape_global_slot_limit):
+    if get_runtime_settings().scrape_platform_slot_limit_substack == 0:
         release_scrape_lock(channel_url)
-        scrape_substack_channel.apply_async(
-            args=[channel_url],
-            countdown=random.randint(20, 60),
-        )
-        return ScrapeTaskResult(
-            status="skipped",
-            channel_url=channel_url,
-        ).model_dump(mode="json")
-
-    limit = runtime.scrape_platform_slot_limit_substack
-    if limit == 0:
-        release_global_slot()
-        release_scrape_lock(channel_url)
-        return ScrapeTaskResult(
-            status="skipped",
-            channel_url=channel_url,
-        ).model_dump(mode="json")
-    if not try_acquire_platform_slot("substack", limit):
-        release_global_slot()
-        release_scrape_lock(channel_url)
-        # Queue contention is operational, not a scrape failure: re-dispatch
-        # without burning this task's failure-retry budget.
-        scrape_substack_channel.apply_async(
-            args=[channel_url],
-            countdown=random.randint(30, 90),
-        )
         return ScrapeTaskResult(
             status="skipped",
             channel_url=channel_url,
@@ -157,7 +126,8 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
         except Exception as exc:
             logger.warning("Could not record Substack proxy byte usage: %s", exc)
 
-        release_keyword_discovery_hold(scraper, channel_url)
+        storage_url = result.get("channel_url", channel_url) if isinstance(result, dict) else channel_url
+        release_keyword_discovery_hold(scraper, storage_url)
         record_success("substack")
         logger.info("Substack scrape complete: %s", channel_url)
         return ScrapeTaskResult(
@@ -261,23 +231,36 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
             countdown=retry_countdown_seconds(self),
         )
     finally:
-        release_platform_slot("substack")
-        release_global_slot()
         release_scrape_lock(channel_url)
 
 
 @celery_app.task(name="scraper.tasks.scrape_substack_all")
-def scrape_substack_all() -> dict[str, object]:
-    logger.info("Starting batch Substack scrape")
+def scrape_substack_all(never_scraped_only: bool = True) -> dict[str, object]:
+    logger.info("Starting batch Substack scrape (never_scraped_only=%s)", never_scraped_only)
+    if get_runtime_settings().scrape_platform_slot_limit_substack == 0:
+        logger.info("Skipping batch Substack scrape: platform disabled (slot limit=0)")
+        return {"queued": 0, "skipped": "platform_disabled"}
     try:
         client = get_supabase_client()
-        result = (
+        query = (
             client.table("channels")
             .select("channel_url")
             .eq("platform", "substack")
             .eq("is_active", True)
-            .execute()
         )
+        if never_scraped_only:
+            query = (
+                query
+                .is_("subscriber_count", "null")
+                .is_("avg_views", "null")
+                .is_("avg_comments", "null")
+                .eq("has_been_scraped", False)
+                .in_("discovery_status", ["new", "queued"])
+                .eq("dashboard_metrics_complete", False)
+                .eq("dashboard_url_valid", True)
+                .eq("dashboard_eligible", False)
+            )
+        result = query.execute()
         urls = [row["channel_url"] for row in (result.data or [])]
     except APIError as exc:
         logger.error("Failed to fetch Substack channel URLs: %s", exc)

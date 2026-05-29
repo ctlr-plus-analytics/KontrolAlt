@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
+import redis as redis_lib
 from celery import Celery
 from celery.exceptions import CeleryError
 from celery.result import AsyncResult
@@ -17,6 +18,7 @@ from models.admin import (
     AdminTaskStatusResponse,
     AdminTaskTriggerResponse,
     Gate0BatchTriggerResponse,
+    PurgeQueueResponse,
 )
 from workers.tasks import TASK_DISCOVER_CHANNELS
 from workers.tasks import TASK_RUN_DAILY_SCRAPE, TASK_RUN_GATE0
@@ -285,6 +287,102 @@ async def update_keyword_taxonomy(actor: dict, taxonomy: list[dict]) -> list[dic
         new_value={"keyword_taxonomy": taxonomy},
     )
     return taxonomy
+
+
+def _scan_keys(client: redis_lib.Redis, pattern: str) -> list[bytes]:
+    """Scan Redis for all keys matching pattern, returning them as a flat list."""
+    keys: list[bytes] = []
+    cursor = 0
+    while True:
+        cursor, batch = client.scan(cursor, match=pattern, count=200)
+        keys.extend(batch)
+        if cursor == 0:
+            break
+    return keys
+
+
+async def purge_queues(actor: dict, reason: str | None) -> PurgeQueueResponse:
+    """Discard all queued/reserved/active Celery tasks and clear Redis scraper state.
+
+    Intended as a troubleshooting reset. Safe to call at any time; partial
+    failures are logged but do not prevent remaining cleanup steps.
+    """
+    client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=False)
+    stats: dict[str, object] = {}
+
+    # Step 1 — revoke active, reserved, and scheduled tasks via control channel
+    try:
+        inspector = _celery.control.inspect(timeout=3.0)
+        active_map = inspector.active() or {}
+        reserved_map = inspector.reserved() or {}
+        scheduled_map = inspector.scheduled() or {}
+
+        task_ids: set[str] = set()
+        for task_list in [*active_map.values(), *reserved_map.values()]:
+            for task in task_list:
+                task_ids.add(task["id"])
+        for task_list in scheduled_map.values():
+            for entry in task_list:
+                task_ids.add(entry["request"]["id"])
+
+        for task_id in task_ids:
+            _celery.control.revoke(task_id, terminate=True)
+        stats["revoked"] = len(task_ids)
+    except Exception as exc:
+        logger.warning("Task revocation step failed: %s", exc)
+        stats["revoked"] = 0
+        stats["revoke_error"] = str(exc)
+
+    # Step 2 — purge the broker queue via Celery's control API
+    try:
+        purged = _celery.control.purge()
+        stats["broker_purged"] = purged
+    except Exception as exc:
+        logger.warning("Broker purge step failed: %s", exc)
+        stats["broker_purged"] = 0
+        stats["broker_error"] = str(exc)
+
+    # Step 3 — delete queue and late-ack in-flight keys directly in Redis
+    try:
+        deleted = client.delete("celery", "unacked", "unacked_index")
+        stats["direct_keys_deleted"] = int(deleted)
+    except Exception as exc:
+        logger.warning("Direct Redis key deletion failed: %s", exc)
+        stats["direct_keys_deleted"] = 0
+
+    # Step 4 — scan and delete all scraper:* state keys
+    # (platform slots, scrape locks, circuit breakers, proxy health, RPM counters, byte budget)
+    try:
+        scraper_keys = _scan_keys(client, "scraper:*")
+        if scraper_keys:
+            client.delete(*scraper_keys)
+        stats["scraper_keys_deleted"] = len(scraper_keys)
+    except Exception as exc:
+        logger.warning("Scraper key cleanup failed: %s", exc)
+        stats["scraper_keys_deleted"] = 0
+
+    # Step 5 — scan and delete Celery result backend keys
+    try:
+        result_keys = _scan_keys(client, "celery-task-meta-*")
+        if result_keys:
+            client.delete(*result_keys)
+        stats["result_keys_deleted"] = len(result_keys)
+    except Exception as exc:
+        logger.warning("Result key cleanup failed: %s", exc)
+        stats["result_keys_deleted"] = 0
+
+    _audit(
+        actor=actor,
+        action="tasks.purge",
+        target="queue.all",
+        metadata={"stats": stats, "reason": reason},
+    )
+    logger.info("Queue purge complete: %s", stats)
+    return PurgeQueueResponse(
+        message="All queued, reserved, and active tasks cleared; Redis scraper state reset.",
+        stats=stats,
+        purged_at=datetime.now(timezone.utc),
+    )
 
 
 async def list_audit(page: int, page_size: int) -> tuple[list[dict[str, object]], int]:

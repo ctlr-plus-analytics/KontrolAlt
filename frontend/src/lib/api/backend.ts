@@ -35,6 +35,8 @@ import type {
   KeywordTaxonomyDef,
   KeywordTaxonomyListResponse,
   NicheTagOption,
+  PurgeQueueRequest,
+  PurgeQueueResponse,
 } from "@/types";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -459,6 +461,18 @@ export async function updateAdminKeywordTaxonomy(
   return apiFetch<KeywordTaxonomyListResponse>("/api/v1/admin/keyword-taxonomy", {
     method: "PUT",
     body: { taxonomy },
+    token,
+  });
+}
+
+/** Purge all queued/reserved/active tasks and reset Redis scraper state. */
+export async function purgeAdminQueue(
+  payload: PurgeQueueRequest,
+  token?: string
+): Promise<PurgeQueueResponse> {
+  return apiFetch<PurgeQueueResponse>("/api/v1/admin/tasks/purge-all", {
+    method: "POST",
+    body: payload,
     token,
   });
 }

@@ -193,7 +193,9 @@ BITCHUTE_VIDEO = {
     "description": {
         "primary": "div.text-grey-8.bc-text-break.bc-description",
         "fallbacks": [
-            "div[style*=\"white-space: pre-line\"]"
+            # og:description is always present and gives the platform-level truncated
+            # text (~300 chars), but it's better than nothing when the primary fails.
+            "meta[name=\"description\"]",
         ],
         "extract": "text()",
         "normalize": "strip()",
@@ -347,6 +349,13 @@ class BitChuteScraper(BaseScraper):
     VIDEO_PAGE_COMMENT_SELECTOR = BITCHUTE_VIDEO["comment_count"]["primary"]
     VIDEO_PAGE_SUBSCRIBERS_SELECTOR = BITCHUTE_VIDEO["subscriber_count"]["primary"]
     VIDEO_PAGE_LINKS_SELECTOR = BITCHUTE_VIDEO["external_links"]["primary"]
+    VIDEO_PAGE_DESC_SELECTOR = BITCHUTE_VIDEO["description"]["primary"]
+    # "Show more" button that expands a truncated video-page description.
+    # BitChute renders the description as a DOM-truncated string; the full text
+    # is only injected after this sibling button is clicked.
+    VIDEO_PAGE_DESC_SHOW_MORE_SELECTOR = (
+        "div.text-grey-8.bc-text-break.bc-description + div.flex.justify-center .q-item--clickable"
+    )
 
     async def scrape(self, channel_url: str) -> dict[str, object]:
         """Scrape a single BitChute channel."""
@@ -506,6 +515,7 @@ class BitChuteScraper(BaseScraper):
                     video_page_links,
                     video_page_title,
                     video_page_description,
+                    video_desc_contacts,
                 ) = await self._enrich_latest_video_page_comments(context, video_data_map)
                 stage_marks.append(("video_page_comments", perf_counter() - stage_t0))
 
@@ -529,6 +539,18 @@ class BitChuteScraper(BaseScraper):
                 contact_info = self._filter_contact_info(
                     sorted(set(emails + urls + all_secondary))
                 )
+                # Merge links and emails extracted from individual video-page descriptions.
+                if video_desc_contacts:
+                    new_from_desc = set(video_desc_contacts) - set(contact_info)
+                    contact_info = self._filter_contact_info(
+                        sorted(set(contact_info) | set(video_desc_contacts))
+                    )
+                    logger.info(
+                        "BitChute video desc contacts for %s: %d new items merged (total contact_info=%d)",
+                        channel_base_url,
+                        len(new_from_desc),
+                        len(contact_info),
+                    )
                 stage_marks.append(("about_and_contact", perf_counter() - stage_t0))
 
                 video_titles = [
@@ -1072,8 +1094,15 @@ class BitChuteScraper(BaseScraper):
         list[str],
         str | None,
         str | None,
+        list[str],
     ]:
-        """Fetch video-page comments for the latest three uploaded videos."""
+        """Fetch video-page comments for the latest three uploaded videos.
+
+        Returns a 10-tuple:
+            (attempted, blocked, parsed_success, selectors_hit,
+             per_video_selector_hits, extracted_subs, extracted_links,
+             extracted_title, extracted_desc, video_desc_contacts)
+        """
         attempted = 0
         blocked = 0
         parsed_success = 0
@@ -1083,13 +1112,23 @@ class BitChuteScraper(BaseScraper):
         extracted_links: list[str] = []
         extracted_title: str | None = None
         extracted_desc: str | None = None
+        all_desc_contacts: set[str] = set()
         for item in self._last_comment_page_items(video_data_map):
             video_url = str(item.get("url") or "").strip()
             if not video_url:
                 continue
-            views, comments, publish_date, subscribers, links, title, description, comment_hit_selector, blocked_stub = (
-                await self._extract_video_page_signals(context, video_url)
-            )
+            (
+                views,
+                comments,
+                publish_date,
+                subscribers,
+                links,
+                title,
+                description,
+                desc_contacts,
+                comment_hit_selector,
+                blocked_stub,
+            ) = await self._extract_video_page_signals(context, video_url)
             attempted += 1
             if blocked_stub:
                 blocked += 1
@@ -1118,6 +1157,8 @@ class BitChuteScraper(BaseScraper):
                 extracted_title = title
             if description and not extracted_desc:
                 extracted_desc = description
+            if desc_contacts:
+                all_desc_contacts.update(desc_contacts)
             self._merge_video_page_signals(
                 item=item,
                 needs_title=self._is_invalid_video_title(item.get("title")),
@@ -1139,6 +1180,7 @@ class BitChuteScraper(BaseScraper):
             sorted(set(extracted_links)),
             extracted_title,
             extracted_desc,
+            sorted(all_desc_contacts),
         )
 
     def _is_generic_description(self, description: str) -> bool:
@@ -1158,8 +1200,13 @@ class BitChuteScraper(BaseScraper):
 
     async def _extract_video_page_signals(
         self, context, video_url: str
-    ) -> tuple[int | None, int | None, datetime | None, int | None, list[str], str | None, str | None, str | None, bool]:
-        """Open a BitChute video page and extract missing views, comments, date, subscribers, and links."""
+    ) -> tuple[int | None, int | None, datetime | None, int | None, list[str], str | None, str | None, list[str], str | None, bool]:
+        """Open a BitChute video page and extract missing views, comments, date, subscribers, links, and description.
+
+        Returns a 10-tuple:
+            (views, comments, publish_date, subscribers, links, title,
+             description, desc_contacts, comment_hit_selector, blocked_stub)
+        """
         page = await context.new_page()
         try:
             await inter_request_jitter()
@@ -1214,18 +1261,33 @@ class BitChuteScraper(BaseScraper):
                 html_now = await page.content()
                 soup = BeautifulSoup(html_now, "lxml")
                 comments, comment_hit_selector = self._extract_video_page_comments(soup)
+
+            # Expand "Show more" on the video description before extracting it.
+            # BitChute truncates the description text in the DOM (~300 chars); the
+            # full text and any embedded links only appear after this click.
+            try:
+                show_more = page.locator(self.VIDEO_PAGE_DESC_SHOW_MORE_SELECTOR).first
+                if await show_more.count() > 0:
+                    await show_more.click(timeout=2000)
+                    await human_delay(0.1, 0.25)
+                    html_now = await page.content()
+                    soup = BeautifulSoup(html_now, "lxml")
+            except Exception:
+                pass  # Description will be extracted from current soup (possibly truncated)
+
             publish_date = self._extract_video_page_upload_date(soup)
             subscribers = self._extract_video_page_subscribers(soup)
+            # Extract external links from the (now expanded) description.
             links = self._extract_video_page_external_links(soup)
             title = self._extract_video_page_title(soup)
-            description = self._extract_video_page_description(soup)
+            description, desc_contacts = self._extract_video_page_description(soup)
 
-            return views, comments, publish_date, subscribers, links, title, description, comment_hit_selector, False
+            return views, comments, publish_date, subscribers, links, title, description, desc_contacts, comment_hit_selector, False
         except ScraperBlockedError:
-            return None, None, None, None, [], None, None, None, True
+            return None, None, None, None, [], None, None, [], None, True
         except Exception as exc:
             logger.debug("BitChute: Could not extract video signals from %s: %s", video_url, exc)
-            return None, None, None, None, [], None, None, None, False
+            return None, None, None, None, [], None, None, [], None, False
         finally:
             await page.close()
 
@@ -1408,15 +1470,61 @@ class BitChuteScraper(BaseScraper):
                     return title
         return ""
 
-    def _extract_video_page_description(self, soup: BeautifulSoup) -> str:
-        node = soup.select_one(BITCHUTE_VIDEO["description"]["primary"])
-        if node is not None:
-            return node.get_text("\n", strip=True)
-        for fallback in BITCHUTE_VIDEO["description"]["fallbacks"]:
-            node = soup.select_one(fallback)
-            if node is not None:
-                return node.get_text("\n", strip=True)
-        return ""
+    def _extract_video_page_description(
+        self, soup: BeautifulSoup
+    ) -> tuple[str, list[str]]:
+        """Extract the full video-page description text and any contact links / emails.
+
+        The description container (``div.text-grey-8.bc-text-break.bc-description``)
+        only holds the full text after the "Show more" button has been clicked in the
+        Playwright context.  Call this method *after* performing that click so that
+        BeautifulSoup sees the expanded HTML.
+
+        Returns:
+            (text, contacts) where ``text`` is the plain description string and
+            ``contacts`` is a deduplicated, filtered list of external URLs / emails
+            found either as ``<a href>`` anchors or via regex extraction of the text.
+        """
+        node = soup.select_one(self.VIDEO_PAGE_DESC_SELECTOR)
+        if node is None:
+            for fallback in BITCHUTE_VIDEO["description"]["fallbacks"]:
+                node = soup.select_one(fallback)
+                if node is not None:
+                    break
+        if node is None:
+            return "", []
+
+        # <meta name="description"> exposes text via its `content` attribute.
+        if node.name == "meta":
+            text = str(node.get("content") or "").strip()
+        else:
+            text = node.get_text("\n", strip=True)
+        if not text:
+            return "", []
+
+        contacts: set[str] = set()
+        # Extract every <a> link from the description — BitChute renders URLs
+        # that were typed in the description as proper anchor elements.
+        for anchor in node.select("a[href]"):
+            href = str(anchor.get("href") or "").strip()
+            if not href:
+                continue
+            if href.lower().startswith("mailto:"):
+                addr = href.split(":", 1)[1].split("?", 1)[0].strip().lower()
+                if addr:
+                    contacts.add(addr)
+                continue
+            if href.startswith(("#", "javascript:", "tel:")):
+                continue
+            host = (urlsplit(href).hostname or "").lower()
+            if host == "bitchute.com" or host.endswith(".bitchute.com"):
+                continue
+            contacts.add(href)
+        # Also catch plain-text URLs and email addresses written in the description
+        # body (e.g. "Visit us at www.example.com" or "contact@example.com").
+        contacts.update(extract_emails(text))
+        contacts.update(extract_urls(text))
+        return text, self._filter_contact_info(sorted(contacts))
 
     def _extract_video_title(self, card: Tag, link: Tag) -> str:
         candidates: list[str] = []
@@ -1501,7 +1609,18 @@ class BitChuteScraper(BaseScraper):
 
     def _extract_external_links(self, soup: BeautifulSoup, base_url: str) -> list[str]:
         links: set[str] = set()
+        # Social platform icon links (Gab, Minds, Telegram, etc.) from the
+        # About-tab social section — confirmed selector: div.row.q-mt-sm a[target="_blank"]
         for anchor in soup.select(self.ABOUT_SOCIAL_LINKS_SELECTOR):
+            href = str(anchor.get("href") or "").strip()
+            if not href or href.startswith(("mailto:", "tel:", "#", "javascript:")):
+                continue
+            absolute = urljoin(base_url, href)
+            if "bitchute.com" not in absolute:
+                links.add(absolute)
+        # Inline hyperlinks embedded inside the About-tab channel description text.
+        # e.g. "Tune in at https://example.com" rendered as <a target="_blank">.
+        for anchor in soup.select('div[style*="white-space: pre-line"] a[target="_blank"]'):
             href = str(anchor.get("href") or "").strip()
             if not href or href.startswith(("mailto:", "tel:", "#", "javascript:")):
                 continue

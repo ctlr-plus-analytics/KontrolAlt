@@ -345,3 +345,13 @@ export interface Gate0StatusOption {
   status: Gate0Status;
   count: number;
 }
+
+export interface PurgeQueueRequest {
+  reason?: string | null;
+}
+
+export interface PurgeQueueResponse {
+  message: string;
+  stats: Record<string, unknown>;
+  purged_at: string;
+}

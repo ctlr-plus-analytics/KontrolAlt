@@ -13,9 +13,10 @@ import {
   triggerAdminScrapeNow,
   updateAdminCompetitors,
   updateAdminKeywordTaxonomy,
+  purgeAdminQueue,
 } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
-import type { AdminAuditRecord, AdminTaskStatusResponse, CompetitorDef, KeywordTaxonomyDef } from "@/types";
+import type { AdminAuditRecord, AdminTaskStatusResponse, CompetitorDef, KeywordTaxonomyDef, PurgeQueueResponse } from "@/types";
 import { Button } from "@/components/ui/Button";
 
 const AUDIT_PAGE_SIZE = 20;
@@ -110,6 +111,11 @@ export function AdminControlPanel() {
   const [isAddingTaxonomy, setIsAddingTaxonomy] = useState(false);
   const [newNiche, setNewNiche] = useState("");
   const [newKeywords, setNewKeywords] = useState("");
+
+  const [purgeConfirming, setPurgeConfirming] = useState(false);
+  const [purgeLoading, setPurgeLoading] = useState(false);
+  const [purgeResult, setPurgeResult] = useState<PurgeQueueResponse | null>(null);
+  const [purgeError, setPurgeError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!token) return;
@@ -401,6 +407,24 @@ export function AdminControlPanel() {
     void handleSaveTaxonomy([...keywordTaxonomy, { niche, keywords }]);
   };
 
+  const handlePurge = async () => {
+    if (!token) return;
+    setPurgeLoading(true);
+    setPurgeError(null);
+    setPurgeResult(null);
+    setPurgeConfirming(false);
+    try {
+      const result = await purgeAdminQueue({ reason: "admin-ui manual purge" }, token);
+      setPurgeResult(result);
+      const auditData = await getAdminAudit(1, AUDIT_PAGE_SIZE, token);
+      setAudit(auditData.data);
+    } catch (error) {
+      setPurgeError(error instanceof Error ? error.message : "Purge failed.");
+    } finally {
+      setPurgeLoading(false);
+    }
+  };
+
   if (loading) {
     return <p className="text-sm text-[#6B6B6B]">Loading admin controls...</p>;
   }
@@ -469,6 +493,74 @@ export function AdminControlPanel() {
                 )}
               </div>
             ))}
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-[#B22222] bg-[#FFF8F8] p-4 shadow-sm">
+        <h2 className="mb-1 text-lg font-semibold text-[#B22222]">Danger Zone — Purge All Tasks</h2>
+        <p className="mb-4 text-xs text-[#6B6B6B]">
+          Revokes all active, reserved, and scheduled Celery tasks, purges the broker queue,
+          and clears all Redis scraper state (platform slots, scrape locks, circuit breakers,
+          proxy health scores, byte budget). Use this to get a clean slate before a fresh scrape run.
+        </p>
+
+        {!purgeConfirming && !purgeLoading && (
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => { setPurgeConfirming(true); setPurgeResult(null); setPurgeError(null); }}
+          >
+            Purge All Tasks &amp; Redis State
+          </Button>
+        )}
+
+        {purgeConfirming && (
+          <div className="rounded-lg border border-[#B22222] bg-white p-3">
+            <p className="mb-3 text-sm font-medium text-[#B22222]">
+              This will immediately terminate all running scrapes and wipe all queue and Redis scraper state. Are you sure?
+            </p>
+            <div className="flex gap-2">
+              <Button variant="danger" size="sm" onClick={() => void handlePurge()}>
+                Yes, purge everything
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setPurgeConfirming(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {purgeLoading && (
+          <p className="text-sm text-[#6B6B6B]">Purging...</p>
+        )}
+
+        {purgeError && (
+          <p className="mt-3 text-xs text-[#B22222]">{purgeError}</p>
+        )}
+
+        {purgeResult && (
+          <div className="mt-3 rounded-lg border border-[#4F8A5B] bg-[#EEF7F0] p-3">
+            <p className="mb-2 text-sm font-medium text-[#2F6B3B]">{purgeResult.message}</p>
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
+              {(
+                [
+                  ["Revoked (active/reserved)", purgeResult.stats.revoked],
+                  ["Purged from broker queue", purgeResult.stats.broker_purged],
+                  ["Direct Redis keys deleted", purgeResult.stats.direct_keys_deleted],
+                  ["Scraper state keys deleted", purgeResult.stats.scraper_keys_deleted],
+                  ["Result backend keys deleted", purgeResult.stats.result_keys_deleted],
+                ] as [string, unknown][]
+              ).map(([label, value]) => (
+                <div key={label}>
+                  <dt className="text-[#6B6B6B]">{label}</dt>
+                  <dd className="font-semibold text-[#1A1A2E]">{String(value ?? "—")}</dd>
+                </div>
+              ))}
+            </dl>
+            <p className="mt-2 text-xs text-[#6B6B6B]">
+              Purged at {new Date(purgeResult.purged_at).toLocaleString()}
+            </p>
           </div>
         )}
       </section>

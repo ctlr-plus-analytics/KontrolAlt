@@ -13,6 +13,8 @@ from models.admin import (
     Gate0BatchTriggerResponse,
     KeywordTaxonomyListResponse,
     PaginatedAdminAuditResponse,
+    PurgeQueueRequest,
+    PurgeQueueResponse,
     UpdateCompetitorsRequest,
     UpdateKeywordTaxonomyRequest,
 )
@@ -67,6 +69,14 @@ async def trigger_gate0_now(
     return await admin_service.trigger_gate0_batch(
         actor=user, channel_ids=body.channel_ids, reason=body.reason
     )
+
+
+@router.post("/tasks/purge-all", response_model=PurgeQueueResponse)
+async def purge_all_tasks(
+    body: PurgeQueueRequest,
+    user: dict = Depends(require_admin_user),
+) -> PurgeQueueResponse:
+    return await admin_service.purge_queues(actor=user, reason=body.reason)
 
 
 @router.get("/tasks/{task_id}", response_model=AdminTaskStatusResponse)

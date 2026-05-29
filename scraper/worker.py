@@ -10,11 +10,7 @@ from core.config import scraper_settings
 from schedules.beat_schedule import CELERY_BEAT_SCHEDULE
 
 # Reduce noisy request logs from HTTP clients used by Supabase/PostgREST.
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-# Suppress Celery per-task trace lines like:
-# "Task ... succeeded in ...: {...}"
-logging.getLogger("celery.app.trace").setLevel(logging.WARNING)
+
 
 logger = logging.getLogger(__name__)
 
@@ -86,17 +82,4 @@ def _on_worker_init(**kwargs):
     except Exception as exc:
         logger.warning(
             "Proxy startup health check failed (worker will continue): %s", exc
-        )
-    try:
-        from tasks.scrape_helpers import clear_platform_slots
-
-        result = clear_platform_slots()
-        logger.info(
-            "Worker startup platform-slot cleanup: deleted=%s keys=%s",
-            result.get("deleted"),
-            ",".join(result.get("keys", [])),
-        )
-    except Exception as exc:
-        logger.warning(
-            "Platform-slot startup cleanup failed (worker will continue): %s", exc
         )
