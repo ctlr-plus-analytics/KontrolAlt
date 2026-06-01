@@ -8,6 +8,7 @@ from models.admin import (
     AdminTaskStatusResponse,
     AdminTaskTriggerRequest,
     AdminTaskTriggerResponse,
+    ClassifyChannelsTriggerRequest,
     CompetitorListResponse,
     Gate0BatchTriggerRequest,
     Gate0BatchTriggerResponse,
@@ -68,6 +69,16 @@ async def trigger_gate0_now(
 ) -> Gate0BatchTriggerResponse:
     return await admin_service.trigger_gate0_batch(
         actor=user, channel_ids=body.channel_ids, reason=body.reason
+    )
+
+
+@router.post("/tasks/classify-channels-now", response_model=AdminTaskTriggerResponse)
+async def trigger_classify_channels_now(
+    body: ClassifyChannelsTriggerRequest,
+    user: dict = Depends(require_admin_user),
+) -> AdminTaskTriggerResponse:
+    return await admin_service.trigger_classify_channels(
+        actor=user, reclassify=body.reclassify, reason=body.reason
     )
 
 

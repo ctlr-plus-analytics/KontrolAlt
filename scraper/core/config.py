@@ -39,6 +39,9 @@ class ScraperSettings(BaseSettings):
     # Serper search (needed for Gate 0 tasks)
     serp_api_key: str
 
+    # Groq (optional — needed for AI channel classification)
+    groq_api_key: str | None = None
+
     @field_validator("proxy_list")
     @classmethod
     def validate_proxy_list(cls, value: str) -> str:

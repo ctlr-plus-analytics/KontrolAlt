@@ -54,6 +54,46 @@ _EXCLUDED_CONTACT_DOMAINS = {
     "www.enable-javascript.com",
 }
 
+_SOCIAL_DOMAINS = frozenset({
+    "twitter.com", "x.com",
+    "instagram.com",
+    "facebook.com", "fb.com", "m.facebook.com",
+    "youtube.com", "youtu.be",
+    "tiktok.com",
+    "t.me", "telegram.me", "telegram.org",
+    "linkedin.com",
+    "odysee.com",
+    "gab.com", "gab.ai",
+    "gettr.com",
+    "truthsocial.com",
+    "parler.com",
+    "reddit.com",
+    "discord.gg", "discord.com",
+    "twitch.tv",
+    "pinterest.com",
+    "snapchat.com",
+    "rumble.com",
+    "locals.com",
+    "minds.com",
+    "mewe.com",
+    "clouthub.com",
+})
+
+
+def _is_social_or_email(value: str) -> bool:
+    """Return True for email addresses and social-media profile URLs."""
+    stripped = (value or "").strip()
+    if not stripped:
+        return False
+    if "@" in stripped and not stripped.startswith("http"):
+        return True
+    hostname = (urlsplit(stripped).hostname or "").lower()
+    if hostname.startswith("www."):
+        hostname = hostname[4:]
+    return hostname in _SOCIAL_DOMAINS or any(
+        hostname.endswith("." + d) for d in _SOCIAL_DOMAINS
+    )
+
 # Timeout for the initial page navigation.
 _NAV_TIMEOUT_MS = 15_000
 # Timeout waiting for the page body to grow past the CF challenge stub.
@@ -253,6 +293,13 @@ class SubstackScraper(BaseScraper):
                         retryable=False,
                     )
                 subscriber_count = parse_count_text(str(_raw_sub_count))
+                if subscriber_count is not None and subscriber_count < 1000:
+                    raise ScraperClassifiedError(
+                        "substack_low_subscriber_count",
+                        f"Substack channel has fewer than 1000 subscribers ({subscriber_count}): {channel_base_url}",
+                        terminal=True,
+                        retryable=False,
+                    )
 
                 # ── Step 3: latest posts API ──────────────────────────────────
                 post_data_map, posts_bytes = await self._fetch_profile_posts(
@@ -269,16 +316,18 @@ class SubstackScraper(BaseScraper):
                     retryable=False,
                 )
 
-            # Contact info from userLinks + bio text
+            # Contact info from userLinks + bio text, split by type
             user_links: list[dict] = profile.get("userLinks") or []
             link_urls = [
                 str(link.get("url") or "").strip()
                 for link in user_links
                 if link.get("url")
             ]
-            contact_info = self._filter_contact_info(
+            all_links = self._filter_contact_info(
                 sorted(set(link_urls + extract_emails(bio) + extract_urls(bio)))
             )
+            contact_info = [v for v in all_links if _is_social_or_email(v)]
+            secondary_urls = [v for v in all_links if not _is_social_or_email(v)]
 
             # Aggregate metrics
             post_titles = [
@@ -322,7 +371,7 @@ class SubstackScraper(BaseScraper):
                 posts_per_week=posts_per_week,
                 last_active_date=last_active_date,
                 contact_info=contact_info,
-                secondary_urls=contact_info,
+                secondary_urls=secondary_urls,
                 page_title=name,
                 current_url=resolved_channel_url,
                 body_text=bio,
@@ -346,7 +395,21 @@ class SubstackScraper(BaseScraper):
                 "contact_info": contact_info,
                 "niche_tags": demographic["niche_tags"],
                 "video_titles": post_titles,
-                "secondary_urls": contact_info,
+                "recent_videos": [
+                    {
+                        "title": str(item.get("title") or "Unknown Title"),
+                        "views": item.get("views"),
+                        "comments": item.get("comments"),
+                        "published_at": (
+                            item["date"].isoformat()
+                            if isinstance(item.get("date"), datetime)
+                            else None
+                        ),
+                        "url": item.get("url"),
+                    }
+                    for item in post_data_map.values()
+                ],
+                "secondary_urls": secondary_urls,
             }
 
             channel_id = await self.save_to_supabase(channel_data)

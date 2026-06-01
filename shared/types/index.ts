@@ -18,6 +18,14 @@ export type CommentTier = "active" | "sweet_spot" | "whale";
 /** Lookalike match type. */
 export type MatchType = "guest_appearance" | "niche_overlap";
 
+export interface RecentVideo {
+  title: string;
+  views: number | null;
+  comments: number | null;
+  published_at: string | null;
+  url: string | null;
+}
+
 /** A channel discovered on an alternative media platform. */
 export interface Channel {
   id: string;
@@ -35,6 +43,7 @@ export interface Channel {
   category_tags?: string[];
   niche_tags: string[];
   video_titles: string[];
+  recent_videos: RecentVideo[];
   is_active: boolean;
   gate0_status: Gate0Status;
   gate0_checked_at: string | null;

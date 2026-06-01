@@ -49,6 +49,16 @@ class DiscoveryStatus(str, Enum):
     blocked = "blocked"
 
 
+class RecentVideo(BaseModel):
+    """Structured recent video metadata for channel detail rendering."""
+
+    title: str
+    views: int | None = None
+    comments: int | None = None
+    published_at: datetime | None = None
+    url: str | None = None
+
+
 class Channel(BaseModel):
     """Full channel representation from the database."""
 
@@ -66,6 +76,7 @@ class Channel(BaseModel):
     contact_info: list[str] = Field(default_factory=list)
     niche_tags: list[str] = Field(default_factory=list)
     video_titles: list[str] = Field(default_factory=list)
+    recent_videos: list[RecentVideo] = Field(default_factory=list)
     is_active: bool = True
     gate0_status: Gate0Status = Gate0Status.unchecked
     gate0_checked_at: datetime | None = None
@@ -90,6 +101,8 @@ class Channel(BaseModel):
     gate0_result_status: str | None = None
     gate0_flagged_brand: str | None = None
     gate0_source_url: str | None = None
+
+    ai_summary: str | None = None
 
     created_at: datetime
     updated_at: datetime

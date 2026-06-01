@@ -44,6 +44,7 @@ celery_app.conf.update(
         "tasks.run_gate0",
         "tasks.find_lookalikes",
         "tasks.run_daily_scrape",
+        "tasks.classify_channels",
     ],
 )
 

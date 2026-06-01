@@ -31,6 +31,7 @@ _CHANNEL_COLUMNS = {
     "contact_info",
     "niche_tags",
     "video_titles",
+    "recent_videos",
     "is_active",
     "gate0_status",
     "gate0_checked_at",
@@ -51,6 +52,7 @@ _CHANNEL_COLUMNS = {
     "gate0_result_status",
     "gate0_flagged_brand",
     "gate0_source_url",
+    "ai_summary",
     "created_at",
     "updated_at",
 }

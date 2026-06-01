@@ -117,6 +117,11 @@ class UpdateKeywordTaxonomyRequest(BaseModel):
     taxonomy: list[KeywordTaxonomyDef]
 
 
+class ClassifyChannelsTriggerRequest(BaseModel):
+    reclassify: bool = False
+    reason: str | None = None
+
+
 class PurgeQueueRequest(BaseModel):
     reason: str | None = None
 

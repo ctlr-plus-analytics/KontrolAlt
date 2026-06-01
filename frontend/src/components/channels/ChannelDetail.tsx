@@ -12,9 +12,12 @@ import {
   History,
   RefreshCw,
   Trash2,
+  FileText,
+  Video,
 } from "lucide-react";
 import type {
   Channel,
+  RecentVideo,
   VelocityScore,
   Gate0Result,
   ScrapeLog,
@@ -141,6 +144,13 @@ export function ChannelDetail({
     rumble: "bg-[#E8712B]/10 text-[#E8712B]",
     substack: "bg-[#FF6719]/10 text-[#C04A0E]",
   };
+  const channelAbout = channel.description?.trim() ?? "";
+  const recentVideos = (channel.recent_videos ?? []).length
+    ? (channel.recent_videos ?? []).map((video, index) => mapRecentVideo(video, index))
+    : (channel.video_titles ?? [])
+        .map((raw, index) => parseVideoLine(raw, index))
+        .filter((video): video is ParsedVideoLine => Boolean(video));
+  const recentVideosTop3 = recentVideos.slice(0, 3);
 
   const handleDeleteHistory = async () => {
     if (!session?.access_token) {
@@ -253,6 +263,19 @@ export function ChannelDetail({
         </div>
       </div>
 
+      {/* ─── AI Summary ─── */}
+      {channel.ai_summary && (
+        <div className="rounded-xl border border-[#E8E4DC] bg-[#FAF8F4] px-6 py-4 shadow-sm">
+          <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-[#6B6B6B]">
+            <span className="inline-flex items-center rounded bg-[#1A1A2E] px-1.5 py-0.5 text-[9px] font-bold text-white">
+              AI
+            </span>
+            Channel Overview
+          </p>
+          <p className="text-sm leading-6 text-[#1A1A2E]">{channel.ai_summary}</p>
+        </div>
+      )}
+
       {/* ─── Velocity Section ─── */}
       <div>
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
@@ -284,6 +307,60 @@ export function ChannelDetail({
       </div>
 
       {/* ─── Contact & Links ─── */}
+      <div>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
+          <FileText size={18} className="text-[#C9A84C]" />
+          Channel About
+        </h2>
+        <div className="rounded-xl border border-[#E8E4DC] bg-white p-5 shadow-sm">
+          {channelAbout.length > 0 ? (
+            <p className="whitespace-pre-wrap text-sm leading-6 text-[#1A1A2E]">
+              {channelAbout}
+            </p>
+          ) : (
+            <p className="text-sm text-[#6B6B6B]">No about description available</p>
+          )}
+        </div>
+      </div>
+
+      <div>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
+          <Video size={18} className="text-[#C9A84C]" />
+          Recent Videos
+        </h2>
+        <div className="overflow-x-auto rounded-xl border border-[#E8E4DC] bg-white shadow-sm">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-[#1A1A2E] text-white">
+              <tr>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide">
+                  Title
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#E8E4DC]">
+              {recentVideosTop3.length === 0 ? (
+                <tr>
+                  <td colSpan={1} className="px-4 py-8 text-center text-[#6B6B6B]">
+                    No video data available
+                  </td>
+                </tr>
+              ) : (
+                recentVideosTop3.map((video, idx) => (
+                  <tr
+                    key={video.id}
+                    className={idx % 2 === 0 ? "bg-white" : "bg-[#FAF8F4]"}
+                  >
+                    <td className="max-w-[520px] px-4 py-3 text-sm text-[#1A1A2E]">
+                      <p className="line-clamp-2">{video.title}</p>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div>
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
           <LinkIcon size={18} className="text-[#C9A84C]" />
@@ -542,5 +619,66 @@ function StatPill({ label, value }: { label: string; value: string }) {
       <p className="font-mono text-sm font-medium text-[#0D0D0D]">{value}</p>
     </div>
   );
+}
+
+interface ParsedVideoLine {
+  id: string;
+  title: string;
+  views: number | null;
+  comments: number | null;
+  publishedLabel: string;
+}
+
+function mapRecentVideo(video: RecentVideo, index: number): ParsedVideoLine {
+  return {
+    id: `${index}-${video.title}`,
+    title: video.title,
+    views: video.views,
+    comments: video.comments,
+    publishedLabel: video.published_at ? timeAgo(video.published_at) : "N/A",
+  };
+}
+
+function parseVideoLine(raw: string, index: number): ParsedVideoLine | null {
+  const input = raw?.trim();
+  if (!input) return null;
+
+  const normalized = input.replace(/\s+/g, " ").trim();
+  const parts = normalized
+    .split(/\s+[|•-]\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const title = parts[0] ?? normalized;
+
+  let views: number | null = null;
+  let comments: number | null = null;
+  let publishedLabel = "N/A";
+
+  const viewsMatch = normalized.match(/(\d[\d,]*)\s*views?/i);
+  if (viewsMatch) {
+    views = Number(viewsMatch[1].replace(/,/g, ""));
+    if (Number.isNaN(views)) views = null;
+  }
+
+  const commentsMatch = normalized.match(/(\d[\d,]*)\s*comments?/i);
+  if (commentsMatch) {
+    comments = Number(commentsMatch[1].replace(/,/g, ""));
+    if (Number.isNaN(comments)) comments = null;
+  }
+
+  const dateMatch = normalized.match(
+    /(\d{4}-\d{2}-\d{2}|[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}|\d+\s+(?:minute|hour|day|week|month|year)s?\s+ago|yesterday|just now)/i
+  );
+  if (dateMatch) {
+    publishedLabel = dateMatch[1];
+  }
+
+  return {
+    id: `${index}-${title}`,
+    title,
+    views,
+    comments,
+    publishedLabel,
+  };
 }
 

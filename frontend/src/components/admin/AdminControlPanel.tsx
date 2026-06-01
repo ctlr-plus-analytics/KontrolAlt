@@ -7,6 +7,7 @@ import {
   getAdminKeywordTaxonomy,
   getAdminMe,
   getAdminTaskStatus,
+  triggerAdminClassifyChannels,
   triggerAdminDiscoveryNow,
   triggerAdminGate0Now,
   triggerAdminWeeklyVelocityNow,
@@ -24,7 +25,7 @@ const TASK_POLL_INTERVAL_MS = 2500;
 const TERMINAL_TASK_STATES = new Set(["SUCCESS", "FAILURE", "REVOKED"]);
 const ERROR_TASK_STATES = new Set(["FAILURE", "REVOKED"]);
 
-type ManualTaskKind = "scrape" | "discovery" | "weekly-velocity" | "gate0";
+type ManualTaskKind = "scrape" | "discovery" | "weekly-velocity" | "gate0" | "classify-channels" | "classify-channels-all";
 
 interface ManualTaskRun {
   id: string;
@@ -41,6 +42,8 @@ function getTaskLabel(kind: ManualTaskKind): string {
   if (kind === "scrape") return "Full Scrape";
   if (kind === "discovery") return "Discovery";
   if (kind === "weekly-velocity") return "Weekly Velocity";
+  if (kind === "classify-channels") return "AI Classify (Unclassified)";
+  if (kind === "classify-channels-all") return "AI Classify (All Channels)";
   return "Previous Gold Affiliation Batch";
 }
 
@@ -228,6 +231,22 @@ export function AdminControlPanel() {
           }, ...prev.slice(0, 4)]);
         } else if (kind === "weekly-velocity") {
           const result = await triggerAdminWeeklyVelocityNow({ reason: "admin-ui" }, token);
+          setMessage(result.message);
+          setTaskRuns((prev) => [{
+            id: `${kind}-${result.triggered_at}`,
+            kind,
+            label: getTaskLabel(kind),
+            taskIds: result.task_ids,
+            triggeredAt: result.triggered_at,
+            message: result.message,
+            statuses: {},
+            pollingError: null,
+          }, ...prev.slice(0, 4)]);
+        } else if (kind === "classify-channels" || kind === "classify-channels-all") {
+          const result = await triggerAdminClassifyChannels(
+            { reclassify: kind === "classify-channels-all", reason: "admin-ui" },
+            token,
+          );
           setMessage(result.message);
           setTaskRuns((prev) => [{
             id: `${kind}-${result.triggered_at}`,
@@ -447,6 +466,8 @@ export function AdminControlPanel() {
           <Button variant="primary" size="sm" onClick={() => void runTask("discovery")}>Trigger Discovery</Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("weekly-velocity")}>Trigger Weekly Velocity</Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("gate0")}>Trigger Previous Gold Affiliation Batch</Button>
+          <Button variant="primary" size="sm" onClick={() => void runTask("classify-channels")}>AI Classify Channels</Button>
+          <Button variant="ghost" size="sm" onClick={() => void runTask("classify-channels-all")}>AI Reclassify All</Button>
         </div>
         <textarea
           value={gate0IdsInput}

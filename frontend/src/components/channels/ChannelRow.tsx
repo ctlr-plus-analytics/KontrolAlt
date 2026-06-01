@@ -14,14 +14,6 @@ interface ChannelRowProps {
 
 export function ChannelRow({ channel, index }: ChannelRowProps) {
   const primaryCategory = channel.category_tags?.[0] ?? channel.niche_tags?.[0] ?? "Uncategorized";
-  const contactStatus = channel.contact_info.length > 0 ? "Has Contact" : "No Contact";
-  const sourceHost = (() => {
-    try {
-      return new URL(channel.channel_url).hostname.replace(/^www\./, "");
-    } catch {
-      return channel.platform;
-    }
-  })();
 
   return (
     <TableRow index={index}>
@@ -61,14 +53,6 @@ export function ChannelRow({ channel, index }: ChannelRowProps) {
 
       <TableCell>
         <Gate0Badge status={channel.gate0_status} flaggedBrand={channel.gate0_flagged_brand} />
-      </TableCell>
-
-      <TableCell className="text-xs text-[#6B6B6B]">
-        {contactStatus}
-      </TableCell>
-
-      <TableCell className="max-w-0 truncate text-xs text-[#6B6B6B]" title={sourceHost}>
-        {sourceHost}
       </TableCell>
 
       <TableCell className="max-w-0 truncate text-xs text-[#6B6B6B]">

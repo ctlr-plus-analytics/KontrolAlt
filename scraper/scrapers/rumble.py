@@ -672,6 +672,20 @@ class RumbleScraper(BaseScraper):
                     "contact_info": contact_info,
                     "niche_tags": demographic["niche_tags"],
                     "video_titles": video_titles,
+                    "recent_videos": [
+                        {
+                            "title": str(video.get("title") or "Unknown Title"),
+                            "views": video.get("views"),
+                            "comments": video.get("comments"),
+                            "published_at": (
+                                video["date"].isoformat()
+                                if isinstance(video.get("date"), datetime)
+                                else None
+                            ),
+                            "url": video.get("url"),
+                        }
+                        for video in video_data_map.values()
+                    ],
                     "secondary_urls": all_secondary,
                 }
 

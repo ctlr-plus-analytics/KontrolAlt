@@ -25,6 +25,7 @@ import type {
   AdminMeResponse,
   AdminTaskTriggerRequest,
   AdminTaskTriggerResponse,
+  ClassifyChannelsTriggerRequest,
   Gate0BatchTriggerRequest,
   Gate0BatchTriggerResponse,
   AdminTaskStatusResponse,
@@ -465,6 +466,18 @@ export async function updateAdminKeywordTaxonomy(
   return apiFetch<KeywordTaxonomyListResponse>("/api/v1/admin/keyword-taxonomy", {
     method: "PUT",
     body: { taxonomy },
+    token,
+  });
+}
+
+/** Trigger AI channel classification for unclassified or all scraped channels. */
+export async function triggerAdminClassifyChannels(
+  payload: ClassifyChannelsTriggerRequest,
+  token?: string
+): Promise<AdminTaskTriggerResponse> {
+  return apiFetch<AdminTaskTriggerResponse>("/api/v1/admin/tasks/classify-channels-now", {
+    method: "POST",
+    body: payload,
     token,
   });
 }

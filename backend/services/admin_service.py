@@ -20,7 +20,7 @@ from models.admin import (
     Gate0BatchTriggerResponse,
     PurgeQueueResponse,
 )
-from workers.tasks import TASK_DISCOVER_CHANNELS
+from workers.tasks import TASK_CLASSIFY_CHANNELS, TASK_DISCOVER_CHANNELS
 from workers.tasks import TASK_RUN_DAILY_SCRAPE, TASK_RUN_GATE0
 from workers.tasks import TASK_RUN_WEEKLY_VELOCITY_SCRAPE
 
@@ -382,6 +382,29 @@ async def purge_queues(actor: dict, reason: str | None) -> PurgeQueueResponse:
         message="All queued, reserved, and active tasks cleared; Redis scraper state reset.",
         stats=stats,
         purged_at=datetime.now(timezone.utc),
+    )
+
+
+async def trigger_classify_channels(
+    actor: dict, reclassify: bool, reason: str | None
+) -> AdminTaskTriggerResponse:
+    task = _celery.send_task(
+        TASK_CLASSIFY_CHANNELS,
+        kwargs={"reclassify": reclassify},
+    )
+    mode = "reclassify_all" if reclassify else "unclassified_only"
+    _audit(
+        actor=actor,
+        action="tasks.trigger",
+        target=f"classify_channels.{mode}",
+        metadata={"task_ids": [task.id], "reclassify": reclassify, "reason": reason},
+    )
+    label = "full reclassification" if reclassify else "unclassified channels"
+    return AdminTaskTriggerResponse(
+        message=f"Channel classification triggered ({label}): {task.id}",
+        task_id=task.id,
+        task_ids=[task.id],
+        triggered_at=datetime.now(timezone.utc),
     )
 
 

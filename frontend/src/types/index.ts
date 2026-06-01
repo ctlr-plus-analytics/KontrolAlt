@@ -18,6 +18,14 @@ export type ScrapeStatus = "success" | "blocked" | "retry" | "failed";
 /** Lookalike match type. */
 export type MatchType = "guest_appearance" | "niche_overlap";
 
+export interface RecentVideo {
+  title: string;
+  views: number | null;
+  comments: number | null;
+  published_at: string | null;
+  url: string | null;
+}
+
 /** A channel discovered on an alternative media platform. */
 export interface Channel {
   id: string;
@@ -35,6 +43,7 @@ export interface Channel {
   category_tags?: string[];
   niche_tags: string[];
   video_titles: string[];
+  recent_videos: RecentVideo[];
   is_active: boolean;
   gate0_status: Gate0Status;
   gate0_checked_at: string | null;
@@ -59,6 +68,8 @@ export interface Channel {
   gate0_result_status: string | null;
   gate0_flagged_brand: string | null;
   gate0_source_url: string | null;
+
+  ai_summary: string | null;
 
   created_at: string;
   updated_at: string;
@@ -273,6 +284,11 @@ export interface AdminMeResponse {
 }
 
 export interface AdminTaskTriggerRequest {
+  reason?: string | null;
+}
+
+export interface ClassifyChannelsTriggerRequest {
+  reclassify?: boolean;
   reason?: string | null;
 }
 

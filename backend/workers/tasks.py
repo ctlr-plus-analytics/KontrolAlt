@@ -18,3 +18,6 @@ TASK_RUN_GATE0 = "scraper.tasks.run_gate0"
 
 # Lookalike
 TASK_FIND_LOOKALIKES = "scraper.tasks.find_lookalikes"
+
+# AI classification
+TASK_CLASSIFY_CHANNELS = "scraper.tasks.classify_channels"
