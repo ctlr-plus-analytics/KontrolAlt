@@ -40,8 +40,8 @@ _NON_BREAKER_REASON_CODES = {
     "substack_handle_redirected_to_search",
     "substack_see_subscribers_stub",
     "substack_profile_not_found",
-    "substack_low_subscriber_count",
-    "substack_too_few_posts",
+    # "substack_low_subscriber_count",  # re-enable after validating breaker codes
+    # "substack_too_few_posts",         # re-enable after validating breaker codes
     # Parse errors: data was absent in the API response, not a platform outage.
     # Should not penalise the breaker or permanently strand the channel.
     "parse_missing_subscriber_count",

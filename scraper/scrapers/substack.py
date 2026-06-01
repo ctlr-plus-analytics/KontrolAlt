@@ -95,7 +95,7 @@ def _is_social_or_email(value: str) -> bool:
     )
 
 # Timeout for the initial page navigation.
-_NAV_TIMEOUT_MS = 15_000
+_NAV_TIMEOUT_MS = 25_000
 # Timeout waiting for the page body to grow past the CF challenge stub.
 _CONTENT_WAIT_TIMEOUT_S = 15.0
 

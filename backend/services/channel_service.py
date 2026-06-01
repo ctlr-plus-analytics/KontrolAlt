@@ -85,6 +85,34 @@ def _normalize_filter_niche_tags(tags: list[str]) -> list[str]:
     return sorted(normalized, key=lambda value: value.lower())
 
 
+def _fetch_all_rows(base_query, batch_size: int = 1000) -> list[dict]:
+    """Fetch every row matching base_query by paginating in batches.
+
+    Supabase/PostgREST caps unranged responses at max_rows (default 1000).
+    Use this whenever you need the full result set rather than a single page.
+    """
+    all_rows: list[dict] = []
+    offset = 0
+    while True:
+        batch: list[dict] = base_query.range(offset, offset + batch_size - 1).execute().data or []
+        all_rows.extend(batch)
+        if len(batch) < batch_size:
+            break
+        offset += batch_size
+    return all_rows
+
+
+def _computed_engagement_rate(row: dict[str, object]) -> float | None:
+    """Compute engagement rate as avg_comments / subscriber_count * 100."""
+    subscriber_count = row.get("subscriber_count")
+    avg_comments = row.get("avg_comments")
+    if not isinstance(subscriber_count, (int, float)) or subscriber_count <= 0:
+        return None
+    if not isinstance(avg_comments, (int, float)):
+        return None
+    return (float(avg_comments) / float(subscriber_count)) * 100.0
+
+
 def _channel_from_discovery_row(row: dict[str, object]) -> ChannelWithMetrics:
     """Convert a channels row into the public response model."""
     channel_data = {key: row.get(key) for key in _CHANNEL_COLUMNS if key in row}
@@ -190,17 +218,44 @@ async def get_channels(
                 "last_active_date", filters.last_active_to.isoformat()
             )
 
-        query = query.order(
-            filters.sort_by,
-            desc=(filters.sort_order == "desc"),
-            nullsfirst=False,
-        )
-
-        start = (filters.page - 1) * filters.page_size
-        end = start + filters.page_size - 1
-        result = query.range(start, end).execute()
-        total = result.count if result.count is not None else 0
-        records = result.data or []
+        if filters.sort_by == "engagement_rate":
+            # Fetch all matching rows so the in-process sort covers the full dataset,
+            # not just the first 1000 rows that Supabase would return without a range.
+            records = _fetch_all_rows(query)
+            total = len(records)
+            scored_records: list[tuple[dict[str, object], float | None]] = [
+                (row, _computed_engagement_rate(row)) for row in records
+            ]
+            if filters.sort_order == "desc":
+                scored_records = sorted(
+                    scored_records,
+                    key=lambda row: (
+                        row[1] is None,
+                        -(row[1] or 0.0),
+                    ),
+                )
+            else:
+                scored_records = sorted(
+                    scored_records,
+                    key=lambda row: (
+                        row[1] is None,
+                        row[1] or 0.0,
+                    ),
+                )
+            start = (filters.page - 1) * filters.page_size
+            end = start + filters.page_size
+            records = [row for row, _score in scored_records[start:end]]
+        else:
+            query = query.order(
+                filters.sort_by,
+                desc=(filters.sort_order == "desc"),
+                nullsfirst=False,
+            )
+            start = (filters.page - 1) * filters.page_size
+            end = start + filters.page_size - 1
+            result = query.range(start, end).execute()
+            total = result.count if result.count is not None else 0
+            records = result.data or []
 
         return [_channel_from_discovery_row(row) for row in records], total
 
@@ -209,16 +264,52 @@ async def get_channels(
         raise SupabaseError(f"Failed to fetch channels: {exc}") from exc
 
 
-async def list_niche_tags() -> tuple[list[str], list[dict[str, int | str]]]:
-    """Return sorted distinct niche tags and per-tag channel counts."""
+async def list_niche_tags(filters: ChannelFilters | None = None) -> tuple[list[str], list[dict[str, int | str]]]:
+    """Return sorted distinct niche tags and per-tag channel counts, optionally scoped to active filters."""
     try:
-        result = (
-            supabase_admin.table(_CHANNELS_TABLE)
-            .select("niche_tags")
-            .eq("dashboard_eligible", True)
-            .execute()
-        )
-        rows = result.data or []
+        query = supabase_admin.table(_CHANNELS_TABLE).select("niche_tags")
+        query = query.eq("is_active", True)
+
+        if filters and filters.incomplete_only:
+            query = query.eq("dashboard_eligible", False)
+        else:
+            query = query.eq("dashboard_eligible", True)
+
+        if filters:
+            if filters.platform is not None:
+                query = query.eq("platform", filters.platform.value)
+            if filters.comment_tier is not None:
+                query = query.eq("comment_tier", filters.comment_tier.value)
+            if filters.gate0_statuses:
+                query = query.in_("gate0_status", [s.value for s in filters.gate0_statuses])
+            if filters.search_query is not None:
+                term = filters.search_query.replace("%", "").replace(",", "").strip()
+                if term:
+                    pattern = f"%{term}%"
+                    query = query.or_(
+                        f"name.ilike.{pattern},channel_url.ilike.{pattern},description.ilike.{pattern}"
+                    )
+            if filters.min_subscriber_count is not None:
+                query = query.gte("subscriber_count", filters.min_subscriber_count)
+            if filters.max_subscriber_count is not None:
+                query = query.lte("subscriber_count", filters.max_subscriber_count)
+            if filters.min_avg_views is not None:
+                query = query.gte("avg_views", ceil(filters.min_avg_views))
+            if filters.max_avg_views is not None:
+                query = query.lte("avg_views", floor(filters.max_avg_views))
+            if filters.min_avg_comments is not None:
+                query = query.gte("avg_comments", ceil(filters.min_avg_comments))
+            if filters.max_avg_comments is not None:
+                query = query.lte("avg_comments", floor(filters.max_avg_comments))
+            if filters.inactive_filter:
+                cutoff = (date.today() - timedelta(days=90)).isoformat()
+                query = query.gte("last_active_date", cutoff)
+            if filters.last_active_from is not None:
+                query = query.gte("last_active_date", filters.last_active_from.isoformat())
+            if filters.last_active_to is not None:
+                query = query.lte("last_active_date", filters.last_active_to.isoformat())
+
+        rows = _fetch_all_rows(query)
         unique: set[str] = set()
         counts: dict[str, int] = {}
         for row in rows:
@@ -247,14 +338,12 @@ async def list_niche_tags() -> tuple[list[str], list[dict[str, int | str]]]:
 async def list_gate0_status_counts() -> list[dict[str, int | str]]:
     """Return gate0 status counts across active, dashboard-eligible channels."""
     try:
-        result = (
+        rows = _fetch_all_rows(
             supabase_admin.table(_CHANNELS_TABLE)
             .select("gate0_status")
             .eq("is_active", True)
             .eq("dashboard_eligible", True)
-            .execute()
         )
-        rows = result.data or []
         counts: dict[str, int] = {status.value: 0 for status in Gate0Status}
         for row in rows:
             raw_status = row.get("gate0_status")

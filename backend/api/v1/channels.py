@@ -115,10 +115,40 @@ async def list_niche_tags(
 
 @router.get("/category-tags", response_model=CategoryTagListResponse)
 async def list_category_tags(
+    platform: Platform | None = Query(None),
+    comment_tier: CommentTier | None = Query(None),
+    gate0_statuses: list[Gate0Status] | None = Query(None),
+    search_query: str | None = Query(None),
+    min_subscriber_count: int | None = Query(None, ge=0),
+    max_subscriber_count: int | None = Query(None, ge=0),
+    min_avg_views: float | None = Query(None, ge=0),
+    max_avg_views: float | None = Query(None, ge=0),
+    min_avg_comments: float | None = Query(None, ge=0),
+    max_avg_comments: float | None = Query(None, ge=0),
+    inactive_filter: bool = Query(False),
+    incomplete_only: bool = Query(False),
+    last_active_from: date | None = Query(None),
+    last_active_to: date | None = Query(None),
     user: dict = Depends(get_current_user),
 ) -> CategoryTagListResponse:
-    """Return distinct category tags for filter dropdowns."""
-    tags, tag_counts = await channel_service.list_niche_tags()
+    """Return distinct category tags and per-tag counts, scoped to active filters."""
+    filters = ChannelFilters(
+        platform=platform,
+        comment_tier=comment_tier,
+        gate0_statuses=gate0_statuses,
+        search_query=search_query,
+        min_subscriber_count=min_subscriber_count,
+        max_subscriber_count=max_subscriber_count,
+        min_avg_views=min_avg_views,
+        max_avg_views=max_avg_views,
+        min_avg_comments=min_avg_comments,
+        max_avg_comments=max_avg_comments,
+        inactive_filter=inactive_filter,
+        incomplete_only=incomplete_only,
+        last_active_from=last_active_from,
+        last_active_to=last_active_to,
+    )
+    tags, tag_counts = await channel_service.list_niche_tags(filters)
     return CategoryTagListResponse(tags=tags, tag_counts=tag_counts)
 
 

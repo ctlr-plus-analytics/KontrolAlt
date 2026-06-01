@@ -130,3 +130,14 @@ class PurgeQueueResponse(BaseModel):
     message: str
     stats: dict
     purged_at: datetime
+
+
+class CircuitBreakerResetRequest(BaseModel):
+    platform: str
+    reason: str | None = None
+
+
+class CircuitBreakerResetResponse(BaseModel):
+    platform: str
+    message: str
+    reset_at: datetime

@@ -48,6 +48,7 @@ export function ChannelTableView({
   const [page, setPage] = useState<number>(1);
   const [intakeOpen, setIntakeOpen] = useState<boolean>(false);
   const [categoryTagOptions, setCategoryTagOptions] = useState<CategoryTagOption[]>([]);
+  const [categoryTagsLoading, setCategoryTagsLoading] = useState<boolean>(false);
   const { session } = useAuth();
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -129,17 +130,20 @@ export function ChannelTableView({
     setIntakeOpen(false);
   }, [refetch]);
 
+  // Re-fetch category tag counts whenever filters change so counts reflect
+  // the current filtered dataset (category_tags itself is excluded server-side).
   useEffect(() => {
     let cancelled = false;
-    const loadFilterOptions = async () => {
-      const tagsResult = await getCategoryTags(session?.access_token).catch(() => null);
+    setCategoryTagsLoading(true);
+    const timer = setTimeout(async () => {
+      const tagsResult = await getCategoryTags(session?.access_token, filters).catch(() => null);
       if (!cancelled) {
         setCategoryTagOptions(tagsResult ?? []);
+        setCategoryTagsLoading(false);
       }
-    };
-    void loadFilterOptions();
-    return () => { cancelled = true; };
-  }, [session?.access_token]);
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [session?.access_token, filters]);
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -148,6 +152,7 @@ export function ChannelTableView({
         filters={filters}
         setFilters={handleSetFilters}
         categoryTagOptions={categoryTagOptions}
+        categoryTagsLoading={categoryTagsLoading}
       />
 
       {/* ── Main Content ── */}

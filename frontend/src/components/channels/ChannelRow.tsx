@@ -48,7 +48,7 @@ export function ChannelRow({ channel, index }: ChannelRowProps) {
       </TableCell>
 
       <TableCell className="text-right font-mono text-[#0D0D0D]">
-        {formatEngagementRate(channel.subscriber_count, channel.avg_views)}
+        {formatEngagementRate(channel.subscriber_count, channel.avg_comments)}
       </TableCell>
 
       <TableCell>

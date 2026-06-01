@@ -324,15 +324,15 @@ class RumbleScraper(BaseScraper):
     VIDEO_COLLECTION_LIMIT = 3
     COMMENT_VIDEO_PAGE_SAMPLE_LIMIT = 3
     DEMOGRAPHIC_TITLE_LIMIT = 20
-    CHANNEL_NAV_TIMEOUT_MS = 15000
+    CHANNEL_NAV_TIMEOUT_MS = 25000
     PRIMARY_CONTENT_TIMEOUT_S = 7.0
     RELOAD_CONTENT_TIMEOUT_S = 8.0
     SECOND_CYCLE_CONTENT_TIMEOUT_S = 10.0
     CARD_SELECTOR_TIMEOUT_MS = 500
-    ABOUT_NAV_TIMEOUT_MS = 6000
+    ABOUT_NAV_TIMEOUT_MS = 10000
     ABOUT_CONTENT_TIMEOUT_S = 5.0
     ABOUT_FETCH_ATTEMPTS = 2
-    VIDEO_PAGE_TIMEOUT_MS = 10000
+    VIDEO_PAGE_TIMEOUT_MS = 15000
     VIDEO_PAGE_CONTENT_TIMEOUT_S = 4.0
     VIDEO_PAGE_COMMENT_TIMEOUT_MS = 2000
     _EMPTY_CHANNEL_MARKERS = (
@@ -765,7 +765,13 @@ class RumbleScraper(BaseScraper):
         error_reasons: list[str] = []
         about_soup = BeautifulSoup("", "lxml")
         for attempt in range(1, self.ABOUT_FETCH_ATTEMPTS + 1):
-            about_page = await context.new_page()
+            try:
+                about_page = await context.new_page()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error_reasons.append(f"attempt={attempt}:new_page:{type(exc).__name__}")
+                break
             try:
                 response = await guarded_goto(
                     about_page,
@@ -801,10 +807,15 @@ class RumbleScraper(BaseScraper):
                     socials = attempt_socials
                 if description:
                     break
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 error_reasons.append(f"attempt={attempt}:exception:{type(exc).__name__}")
             finally:
-                await about_page.close()
+                try:
+                    await about_page.close()
+                except Exception:
+                    pass
         return description, socials, about_soup, error_reasons
 
     def _extract_name(self, soup: BeautifulSoup, channel_url: str, page_title: str) -> str:

@@ -32,6 +32,8 @@ def _open_key(platform: str) -> str:
 
 def is_open(platform: str) -> bool:
     """Return True when the breaker is open for a platform."""
+    if not get_runtime_settings().scrape_circuit_breaker_enabled:
+        return False
     try:
         return bool(_redis_conn().exists(_open_key(platform)))
     except redis.RedisError as exc:
@@ -41,6 +43,8 @@ def is_open(platform: str) -> bool:
 
 def record_failure(platform: str) -> None:
     """Record a failed scrape and open breaker when threshold is exceeded."""
+    if not get_runtime_settings().scrape_circuit_breaker_enabled:
+        return
     try:
         conn = _redis_conn()
         runtime = get_runtime_settings()
@@ -71,3 +75,13 @@ def record_success(platform: str) -> None:
         conn.delete(_fail_key(platform))
     except redis.RedisError as exc:
         logger.warning("Circuit breaker reset failed for %s: %s", platform, exc)
+
+
+def reset_circuit_breaker(platform: str) -> None:
+    """Manually clear the open breaker and failure counter for a platform."""
+    try:
+        conn = _redis_conn()
+        conn.delete(_open_key(platform), _fail_key(platform))
+        logger.info("Circuit breaker manually reset for %s", platform)
+    except redis.RedisError as exc:
+        logger.warning("Circuit breaker manual reset failed for %s: %s", platform, exc)

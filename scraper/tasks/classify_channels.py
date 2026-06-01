@@ -169,6 +169,9 @@ def _needs_classification(channel: dict[str, object]) -> bool:
         return True
     if tags == ["Unknown / Needs Review"]:
         return True
+    ai_summary = channel.get("ai_summary")
+    if not ai_summary or not str(ai_summary).strip():
+        return True
     # Re-classify if previously tagged with low context score and more data is now available.
     ctx_score = channel.get("classification_context_score")
     if isinstance(ctx_score, int) and ctx_score < 2:
@@ -282,7 +285,7 @@ def classify_channels(
             .select(
                 "id,platform,name,description,subscriber_count,"
                 "niche_tags,video_titles,secondary_urls,contact_info,"
-                "classification_context_score,discovery_category"
+                "classification_context_score,discovery_category,ai_summary"
             )
             .eq("is_active", True)
             .eq("has_been_scraped", True)

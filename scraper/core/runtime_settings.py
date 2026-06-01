@@ -41,6 +41,7 @@ class RuntimeSettings:
     scrape_global_slot_limit: int = -1
     scrape_lock_ttl_seconds: int = 600
     scrape_platform_slot_ttl_seconds: int = 600
+    scrape_circuit_breaker_enabled: bool = False  # re-enable once breaker codes are validated
     scrape_circuit_breaker_fail_threshold: int = 5
     scrape_circuit_breaker_window_seconds: int = 1800
     scrape_circuit_breaker_cooldown_seconds: int = 1800

@@ -17,6 +17,7 @@ from core.supabase import supabase_admin
 from models.admin import (
     AdminTaskStatusResponse,
     AdminTaskTriggerResponse,
+    CircuitBreakerResetResponse,
     Gate0BatchTriggerResponse,
     PurgeQueueResponse,
 )
@@ -33,6 +34,29 @@ _FEATURE_FIELDS = {
     "discovery": "discovery_enabled",
     "lookalike": "lookalike_enabled",
 }
+
+def _normalize_competitors(value: object) -> list[dict]:
+    """Return a safe competitor list matching the response schema."""
+    if not isinstance(value, list):
+        return []
+    normalized: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        brand_raw = item.get("brand")
+        domains_raw = item.get("domains")
+        brand = str(brand_raw).strip() if isinstance(brand_raw, str) else ""
+        if not brand:
+            continue
+        domains: list[str] = []
+        if isinstance(domains_raw, list):
+            for domain in domains_raw:
+                if isinstance(domain, str):
+                    cleaned = domain.strip()
+                    if cleaned:
+                        domains.append(cleaned)
+        normalized.append({"brand": brand, "domains": domains})
+    return normalized
 
 
 def is_feature_enabled(feature: str) -> bool:
@@ -210,9 +234,10 @@ async def get_gate0_competitors() -> list[dict]:
             .single()
             .execute()
         )
-        return result.data.get("gate0_competitors") or []
+        return _normalize_competitors(result.data.get("gate0_competitors"))
     except APIError as exc:
-        raise SupabaseError(f"Failed to read gate0 competitors: {exc}") from exc
+        logger.error("Failed to read gate0 competitors: %s", exc, exc_info=True)
+        return []
 
 
 async def update_gate0_competitors(actor: dict, competitors: list[dict]) -> list[dict]:
@@ -405,6 +430,32 @@ async def trigger_classify_channels(
         task_id=task.id,
         task_ids=[task.id],
         triggered_at=datetime.now(timezone.utc),
+    )
+
+
+async def reset_circuit_breaker(
+    actor: dict, platform: str, reason: str | None
+) -> CircuitBreakerResetResponse:
+    """Clear the open-breaker and failure-counter keys for a platform."""
+    client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
+    open_key = f"scrape:cb:open:{platform}"
+    fail_key = f"scrape:cb:fail:{platform}"
+    try:
+        client.delete(open_key, fail_key)
+    except redis_lib.RedisError as exc:
+        logger.warning("Circuit breaker reset failed for %s: %s", platform, exc)
+        raise
+    _audit(
+        actor=actor,
+        action="circuit_breaker.reset",
+        target=f"platform.{platform}",
+        metadata={"reason": reason},
+    )
+    logger.info("Circuit breaker manually reset for %s by %s", platform, actor.get("email"))
+    return CircuitBreakerResetResponse(
+        platform=platform,
+        message=f"Circuit breaker cleared for {platform}.",
+        reset_at=datetime.now(timezone.utc),
     )
 
 

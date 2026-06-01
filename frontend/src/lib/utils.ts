@@ -33,24 +33,24 @@ export function formatVelocity(v: number | null): string {
 }
 
 /**
- * Format engagement rate as a percent using avg views / subscribers.
+ * Format engagement rate as a percent using avg comments / subscribers.
  * Returns "N/A" when either value is missing or subscribers is <= 0.
  */
 export function formatEngagementRate(
   subscriberCount: number | null | undefined,
-  avgViews: number | null | undefined
+  avgComments: number | null | undefined
 ): string {
   if (
     subscriberCount === null ||
     subscriberCount === undefined ||
-    avgViews === null ||
-    avgViews === undefined ||
+    avgComments === null ||
+    avgComments === undefined ||
     subscriberCount <= 0
   ) {
     return "N/A";
   }
 
-  const engagementRate = (avgViews / subscriberCount) * 100;
+  const engagementRate = (avgComments / subscriberCount) * 100;
   const cappedRate = Math.min(engagementRate, 100);
   return `${cappedRate.toFixed(1)}%`;
 }

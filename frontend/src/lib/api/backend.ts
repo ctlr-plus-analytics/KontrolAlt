@@ -183,10 +183,35 @@ export async function getChannels(
   );
 }
 
-/** Fetch distinct category tags and counts for dropdown filters. */
-export async function getCategoryTags(token?: string): Promise<CategoryTagOption[]> {
+/** Fetch distinct category tags and counts for dropdown filters, scoped to active filters (excluding category_tags). */
+export async function getCategoryTags(
+  token?: string,
+  filters?: Omit<ChannelFilters, "category_tags" | "niche_tags" | "sort_by" | "sort_order">
+): Promise<CategoryTagOption[]> {
+  const params = new URLSearchParams();
+  if (filters) {
+    if (filters.platform && filters.platform !== "all") params.set("platform", filters.platform);
+    if (filters.comment_tier && filters.comment_tier !== "all") params.set("comment_tier", filters.comment_tier);
+    if (filters.gate0_statuses && filters.gate0_statuses.length > 0) {
+      filters.gate0_statuses.forEach((s) => params.append("gate0_statuses", s));
+    }
+    if (filters.search_query && filters.search_query.trim().length > 0) {
+      params.set("search_query", filters.search_query.trim());
+    }
+    if (filters.min_subscriber_count != null) params.set("min_subscriber_count", String(filters.min_subscriber_count));
+    if (filters.max_subscriber_count != null) params.set("max_subscriber_count", String(filters.max_subscriber_count));
+    if (filters.min_avg_views != null) params.set("min_avg_views", String(filters.min_avg_views));
+    if (filters.max_avg_views != null) params.set("max_avg_views", String(filters.max_avg_views));
+    if (filters.min_avg_comments != null) params.set("min_avg_comments", String(filters.min_avg_comments));
+    if (filters.max_avg_comments != null) params.set("max_avg_comments", String(filters.max_avg_comments));
+    if (filters.inactive_filter) params.set("inactive_filter", "true");
+    if (filters.incomplete_only) params.set("incomplete_only", "true");
+    if (filters.last_active_from) params.set("last_active_from", filters.last_active_from);
+    if (filters.last_active_to) params.set("last_active_to", filters.last_active_to);
+  }
+  const qs = params.toString();
   const response = await apiFetch<{ tags: string[]; tag_counts?: CategoryTagOption[] }>(
-    "/api/v1/channels/category-tags",
+    `/api/v1/channels/category-tags${qs ? `?${qs}` : ""}`,
     { token }
   );
   if (response.tag_counts && response.tag_counts.length > 0) {

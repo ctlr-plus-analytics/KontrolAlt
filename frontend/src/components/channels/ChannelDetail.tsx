@@ -230,7 +230,7 @@ export function ChannelDetail({
               <StatPill label="Avg Views" value={formatNumber(channel.avg_views)} />
               <StatPill
                 label="Engagement Rate"
-                value={formatEngagementRate(channel.subscriber_count, channel.avg_views)}
+                value={formatEngagementRate(channel.subscriber_count, channel.avg_comments)}
               />
               <StatPill label="Avg Comments" value={formatNumber(channel.avg_comments)} />
               <StatPill

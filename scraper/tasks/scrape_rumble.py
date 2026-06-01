@@ -43,8 +43,15 @@ logger = logging.getLogger(__name__)
 
 _NON_BREAKER_REASON_CODES: frozenset[str] = frozenset(
     {
-        "rumble_zero_followers",
-        "rumble_too_few_videos",
+        # Channel quality / product-criteria rejections — not infrastructure failures.
+        # "rumble_low_subscriber_count",  # re-enable after validating breaker codes
+        # "rumble_too_few_videos",        # re-enable after validating breaker codes
+        # "no_videos_found",              # re-enable once next run confirms this isn't a parse regression
+        # Channel state on Rumble's side — not a scraper or proxy problem.
+        "not_found_404",
+        "channel_deleted",
+        "channel_banned_or_suspended",
+        "channel_unavailable",
     }
 )
 

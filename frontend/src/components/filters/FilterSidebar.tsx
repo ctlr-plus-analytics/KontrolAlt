@@ -10,6 +10,7 @@ interface FilterSidebarProps {
   filters: ChannelFilters;
   setFilters: (filters: ChannelFilters) => void;
   categoryTagOptions: CategoryTagOption[];
+  categoryTagsLoading?: boolean;
 }
 
 export const DEFAULT_FILTERS: ChannelFilters = {
@@ -77,6 +78,7 @@ export function FilterSidebar({
   filters,
   setFilters,
   categoryTagOptions,
+  categoryTagsLoading = false,
 }: FilterSidebarProps) {
   const [isCategoryMenuOpen, setIsCategoryMenuOpen] = useState<boolean>(false);
   const categoryMenuRef = useRef<HTMLDivElement | null>(null);
@@ -283,10 +285,15 @@ export function FilterSidebar({
                       ? filters.category_tags[0]
                       : `${filters.category_tags.length} categories selected`}
                 </span>
-                <ChevronDown
-                  size={14}
-                  className={cn("text-[#F7F4EE]/45 transition-transform", isCategoryMenuOpen ? "rotate-180" : "")}
-                />
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {categoryTagsLoading && (
+                    <span className="h-3 w-3 animate-spin rounded-full border border-[#F7F4EE]/20 border-t-[#C9A84C]/60" />
+                  )}
+                  <ChevronDown
+                    size={14}
+                    className={cn("text-[#F7F4EE]/45 transition-transform", isCategoryMenuOpen ? "rotate-180" : "")}
+                  />
+                </div>
               </button>
 
               {isCategoryMenuOpen && (
@@ -314,10 +321,12 @@ export function FilterSidebar({
                   <div className="max-h-64 overflow-y-auto scrollbar-thin">
                     {categoryTagOptions.map((option) => {
                       const isActive = filters.category_tags.includes(option.tag);
+                      const isEmpty = option.count === 0 && !isActive;
                       return (
                         <button
                           key={option.tag}
                           type="button"
+                          disabled={isEmpty}
                           onClick={() =>
                             update({
                               category_tags: isActive
@@ -329,7 +338,9 @@ export function FilterSidebar({
                             "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
                             isActive
                               ? "bg-[#C9A84C]/14 text-[#C9A84C]"
-                              : "text-[#F7F4EE]/75 hover:bg-[#F7F4EE]/6"
+                              : isEmpty
+                                ? "cursor-not-allowed text-[#F7F4EE]/25"
+                                : "text-[#F7F4EE]/75 hover:bg-[#F7F4EE]/6"
                           )}
                         >
                           <span className="flex min-w-0 items-center gap-2">
@@ -338,7 +349,12 @@ export function FilterSidebar({
                             </span>
                             <span className="truncate">{option.tag}</span>
                           </span>
-                          <span className="ml-3 shrink-0 rounded-full border border-[#F7F4EE]/15 bg-[#F7F4EE]/5 px-2 py-0.5 text-[11px] text-[#F7F4EE]/60">
+                          <span className={cn(
+                            "ml-3 shrink-0 rounded-full border px-2 py-0.5 text-[11px]",
+                            isEmpty
+                              ? "border-[#F7F4EE]/8 bg-transparent text-[#F7F4EE]/25"
+                              : "border-[#F7F4EE]/15 bg-[#F7F4EE]/5 text-[#F7F4EE]/60"
+                          )}>
                             {option.count.toLocaleString()}
                           </span>
                         </button>

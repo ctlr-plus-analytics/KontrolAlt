@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { formatEngagementRate } from "@/lib/utils";
 
 describe("formatEngagementRate", () => {
-  it("formats valid avg views and subscribers as a percent", () => {
+  it("formats valid avg comments and subscribers as a percent", () => {
     expect(formatEngagementRate(100000, 25000)).toBe("25.0%");
   });
 
@@ -10,7 +10,7 @@ describe("formatEngagementRate", () => {
     expect(formatEngagementRate(null, 25000)).toBe("N/A");
   });
 
-  it("returns N/A when avg views is null", () => {
+  it("returns N/A when avg comments is null", () => {
     expect(formatEngagementRate(100000, null)).toBe("N/A");
   });
 
