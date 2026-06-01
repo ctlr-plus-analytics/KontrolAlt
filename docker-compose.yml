@@ -42,6 +42,42 @@ services:
     command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=celery --concurrency=2 --prefetch-multiplier=1
     restart: unless-stopped
 
+  worker-classify:
+    build:
+      context: ./scraper
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://redis:6379/0
+      - BROWSER_HEADLESS=true
+    working_dir: /app
+    depends_on:
+      - redis
+    volumes:
+      - ./scraper:/app
+    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=classify --concurrency=1 --prefetch-multiplier=1
+    restart: unless-stopped
+
+  worker-gate0:
+    build:
+      context: ./scraper
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://redis:6379/0
+      - BROWSER_HEADLESS=true
+    working_dir: /app
+    depends_on:
+      - redis
+    volumes:
+      - ./scraper:/app
+    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=gate0 --concurrency=1 --prefetch-multiplier=1
+    restart: unless-stopped
+
   worker-rumble:
     build:
       context: ./scraper

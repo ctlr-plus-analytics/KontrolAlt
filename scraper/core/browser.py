@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import AsyncGenerator
 from urllib.parse import unquote, urlsplit
 
-from playwright.async_api import async_playwright, BrowserContext
+from playwright.async_api import async_playwright, BrowserContext, Error as PlaywrightError
 
 from core.cf_bypass import (
     acquire_session_request_slot,
@@ -29,6 +29,8 @@ from core.proxy import (
     extract_proxy_country,
     record_proxy_success,
     record_proxy_failure,
+    proxy_health_tracker,
+    _rotate_proxy_session,
 )
 from core.runtime_settings import get_runtime_settings
 
@@ -305,6 +307,7 @@ async def launch_browser(
     *,
     session_key: str | None = None,
     telemetry: BrowserTelemetry | None = None,
+    use_proxy: bool = True,
 ) -> AsyncGenerator[BrowserContext, None]:
     """Launch a Playwright Chromium browser context with stealth flags.
 
@@ -319,10 +322,14 @@ async def launch_browser(
         A configured BrowserContext ready for scraping.
     """
     attempt = _parse_attempt_from_session_key(session_key)
-    proxy = get_weighted_proxy()
+    proxy = get_weighted_proxy() if use_proxy else ""
+    # Rotate the session ID so each launch gets a different residential exit node.
+    # The canonical URL (proxy) is kept for health-score tracking; only Playwright
+    # sees the per-launch variant so a single SSL-broken device doesn't recur.
+    proxy_for_playwright = _rotate_proxy_session(proxy) if proxy else ""
     headless = _resolve_headless_mode()
-    proxy_settings = _parse_proxy_settings(proxy)
-    proxy_country = extract_proxy_country(proxy)
+    proxy_settings = _parse_proxy_settings(proxy_for_playwright) if proxy_for_playwright else {}
+    proxy_country = extract_proxy_country(proxy_for_playwright) if proxy_for_playwright else None
     proxy_active = bool(proxy_settings.get("server"))
 
     logger.debug(
@@ -349,6 +356,8 @@ async def launch_browser(
 
     _cf_blocked = False
     _cf_error_code: int | None = None
+    _proxy_failed = False  # network/timeout failure — penalise proxy score
+    _ssl_error = False     # exit-node TLS failure — don't penalise the proxy endpoint
     proxy_arg = proxy_settings if proxy_active else None
 
     async def _build_context(browser) -> BrowserContext:
@@ -419,12 +428,29 @@ async def launch_browser(
             _cf_blocked = True
             _cf_error_code = exc.error_code
             raise
+        except PlaywrightError as exc:
+            err = str(exc)
+            if "ERR_SSL" in err or "ERR_CERT_" in err:
+                # TLS handshake failure from a faulty exit node, not the proxy
+                # endpoint itself. Don't penalise — rotating the session on the
+                # next launch will assign a different device.
+                _ssl_error = True
+            else:
+                _proxy_failed = True
+            raise
         finally:
             await _save_browser_state(context, pdir)
-            if _cf_blocked:
-                record_proxy_failure(proxy, _cf_error_code)
-            else:
-                record_proxy_success(proxy)
+            if proxy:
+                if _cf_blocked:
+                    record_proxy_failure(proxy, _cf_error_code)
+                elif _proxy_failed:
+                    # Don't re-penalize an already-quarantined proxy — that would
+                    # reset its 30-minute TTL and prevent natural recovery.
+                    if not proxy_health_tracker.is_quarantined(proxy):
+                        record_proxy_failure(proxy, None)
+                elif not _ssl_error:
+                    # SSL exit-node errors: no score change (neither success nor failure).
+                    record_proxy_success(proxy)
             await context.close()
     else:
         # Fallback: fresh Playwright + Chromium launch (tests / pool unavailable).
@@ -433,7 +459,11 @@ async def launch_browser(
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(
                 headless=headless,
-                args=["--disable-blink-features=AutomationControlled", "--no-first-run"],
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-first-run",
+                    "--ignore-certificate-errors",
+                ],
             )
             try:
                 context = await _build_context(browser)
@@ -443,10 +473,15 @@ async def launch_browser(
                     _cf_blocked = True
                     _cf_error_code = exc.error_code
                     raise
+                except PlaywrightError:
+                    _proxy_failed = True
+                    raise
                 finally:
                     await _save_browser_state(context, pdir)
                     if _cf_blocked:
                         record_proxy_failure(proxy, _cf_error_code)
+                    elif _proxy_failed:
+                        record_proxy_failure(proxy, None)
                     else:
                         record_proxy_success(proxy)
                     await context.close()

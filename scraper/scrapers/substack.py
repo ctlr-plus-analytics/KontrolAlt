@@ -39,6 +39,7 @@ from core.browser import (
     wait_for_content,
 )
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
+from core.runtime_settings import get_runtime_settings
 from scrapers.base import BaseScraper
 from utils.contact_extractor import extract_emails, extract_urls
 from utils.keyword_matcher import compute_channel_demographic, compute_comment_tier
@@ -94,8 +95,6 @@ def _is_social_or_email(value: str) -> bool:
         hostname.endswith("." + d) for d in _SOCIAL_DOMAINS
     )
 
-# Timeout for the initial page navigation.
-_NAV_TIMEOUT_MS = 25_000
 # Timeout waiting for the page body to grow past the CF challenge stub.
 _CONTENT_WAIT_TIMEOUT_S = 15.0
 
@@ -211,7 +210,9 @@ class SubstackScraper(BaseScraper):
 
             telemetry = BrowserTelemetry()
             async with launch_browser(
-                session_key=session_key, telemetry=telemetry
+                session_key=session_key,
+                telemetry=telemetry,
+                use_proxy=get_runtime_settings().scraper_substack_use_proxy,
             ) as context:
                 page = await context.new_page()
 
@@ -224,7 +225,7 @@ class SubstackScraper(BaseScraper):
                     f"{_SUBSTACK_BASE_URL}/@{handle}",
                     session_key=session_key,
                     wait_until="commit",
-                    timeout=_NAV_TIMEOUT_MS,
+                    timeout=get_runtime_settings().scraper_nav_timeout_ms,
                 )
                 content_ok = await wait_for_content(
                     page, timeout_s=_CONTENT_WAIT_TIMEOUT_S

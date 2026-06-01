@@ -18,6 +18,7 @@ TASK_DISCOVER_KEYWORD_EXPANSION = "scraper.tasks.discover_keyword_expansion"
 
 # Gate 0
 TASK_RUN_GATE0 = "scraper.tasks.run_gate0"
+TASK_RUN_GATE0_ALL = "scraper.tasks.run_gate0_all"
 
 # Lookalike
 TASK_FIND_LOOKALIKES = "scraper.tasks.find_lookalikes"

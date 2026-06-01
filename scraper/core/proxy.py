@@ -76,6 +76,19 @@ def _canonicalize_proxy_url(proxy: str) -> str:
     return f"{scheme}://{username}:{password}@{host}:{port}"
 
 
+def _rotate_proxy_session(proxy_url: str) -> str:
+    """Replace the _session-XXXXX suffix with a fresh random ID.
+
+    Residential proxies use sticky sessions to pin traffic to one exit node.
+    If that node has SSL inspection software the whole 5-minute window fails.
+    Randomising the session ID on every launch forces Evomi to assign a fresh
+    device each time, so a broken node affects at most one scrape.
+    Has no effect if the URL contains no _session- parameter.
+    """
+    new_id = "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=10))
+    return re.sub(r"(_session-)[A-Za-z0-9]+", rf"\g<1>{new_id}", proxy_url)
+
+
 def _normalize_proxy(proxy: str) -> str:
     """Ensure a proxy string has an http:// scheme so urlsplit can parse it.
 
@@ -133,13 +146,15 @@ def extract_proxy_country(proxy_url: str) -> str | None:
     except Exception:
         username = proxy_url
 
-    for pattern in _COUNTRY_PATTERNS:
-        match = pattern.search(username)
-        if match:
-            code = match.group(1).upper()
-            # Sanity check: only accept plausible ISO-3166-1 alpha-2 codes
-            if len(code) == 2 and code.isalpha():
-                return code
+    password = parsed.password or ""
+    # Some providers (e.g. Evomi) encode the country in the password, not the username.
+    for field in (username, password):
+        for pattern in _COUNTRY_PATTERNS:
+            match = pattern.search(field)
+            if match:
+                code = match.group(1).upper()
+                if len(code) == 2 and code.isalpha():
+                    return code
     return None
 
 
@@ -444,6 +459,10 @@ async def _check_single_proxy_health(proxy_url: str, timeout: float = 12.0) -> t
         return False, f"exception:{type(exc).__name__}"
 
 
+_STARTUP_LOCK_KEY = "proxy:startup_check_lock"
+_STARTUP_LOCK_TTL = 120  # seconds — one check per 2-minute window across all workers
+
+
 async def validate_proxy_pool_on_startup(
     rotator: "ProxyRotator",
     health_tracker: "ProxyHealthTracker",
@@ -453,15 +472,23 @@ async def validate_proxy_pool_on_startup(
 ) -> None:
     """Check every proxy in the pool at worker startup.
 
-    Runs reachability checks concurrently (up to ``concurrency`` at a time)
-    and applies an initial health penalty to any proxy that fails.  Dead
-    proxies are *not* removed from the pool — they remain as a last-resort
-    fallback — but their degraded score means healthy proxies receive the
-    overwhelming majority of traffic from the very first task.
+    Only the first worker process to acquire the Redis lock actually runs the
+    check; all others skip.  This prevents the N-worker cascade where each of
+    the N forked processes independently applies a -0.25 penalty, driving a
+    single proxy from score 1.0 to 0.0 in one startup cycle.
 
-    Logs a clear WARNING for every unreachable proxy so operators can act
-    without digging through task logs.
+    The lock TTL is 120 s so each fresh container startup gets one real check.
     """
+    # Deduplicate across forked worker processes.
+    try:
+        acquired = bool(_proxy_redis().set(_STARTUP_LOCK_KEY, "1", nx=True, ex=_STARTUP_LOCK_TTL))
+    except Exception:
+        acquired = True  # Redis unavailable — proceed so startup never stalls
+
+    if not acquired:
+        logger.info("validate_proxy_pool_on_startup: skipped (another worker process is running this check)")
+        return
+
     proxies = rotator.proxies
     if not proxies:
         logger.warning("validate_proxy_pool_on_startup: proxy pool is empty")
@@ -485,9 +512,19 @@ async def validate_proxy_pool_on_startup(
                 "validate_proxy_pool_on_startup: proxy %s — REACHABLE",
                 hash_hint,
             )
+        elif reason in ("connect_timeout", "read_timeout"):
+            # Residential proxies route through real devices and can have 10–20 s
+            # initial latency.  A timeout here does not mean the proxy is dead —
+            # it may just be slow to respond to the httpx check.  Log a warning
+            # but don't penalize the health score so actual scrapes get a fair try.
+            logger.warning(
+                "validate_proxy_pool_on_startup: proxy %s — TIMEOUT (%s) "
+                "— score unchanged; proxy will be evaluated during real scrapes",
+                hash_hint,
+                reason,
+            )
         else:
-            # Apply a soft penalty so the proxy starts at a disadvantage but
-            # can still recover after successful scrapes.
+            # Genuine proxy error (bad credentials, server rejection, etc.).
             health_tracker.record_failure(proxy, error_code=None)
             logger.warning(
                 "validate_proxy_pool_on_startup: proxy %s — UNREACHABLE (%s) "

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef, useLayoutEffect } from "react";
+import { useState, useCallback, useEffect, useRef, useLayoutEffect, useMemo } from "react";
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
 import type { CategoryTagOption, Channel, ChannelFilters, VelocityScore } from "@/types";
 import { ChannelTable } from "@/components/channels/ChannelTable";
@@ -42,31 +42,71 @@ export function ChannelTableView({
   initialChannels,
   initialTotal,
 }: ChannelTableViewProps) {
-  // Always start with defaults so SSR and initial client render match.
-  // sessionStorage is read in a useEffect below (client-only, post-hydration).
+  // Keep initial render SSR-stable; restore session state after mount.
   const [filters, setFilters] = useState<ChannelFilters>(DEFAULT_FILTERS);
   const [page, setPage] = useState<number>(1);
   const [intakeOpen, setIntakeOpen] = useState<boolean>(false);
   const [categoryTagOptions, setCategoryTagOptions] = useState<CategoryTagOption[]>([]);
   const [categoryTagsLoading, setCategoryTagsLoading] = useState<boolean>(false);
   const { session } = useAuth();
+  const categoryTagsScopeFilters = useMemo(
+    () => ({
+      platform: filters.platform,
+      comment_tier: filters.comment_tier,
+      gate0_statuses: filters.gate0_statuses,
+      search_query: filters.search_query,
+      min_subscriber_count: filters.min_subscriber_count,
+      max_subscriber_count: filters.max_subscriber_count,
+      min_avg_views: filters.min_avg_views,
+      max_avg_views: filters.max_avg_views,
+      min_avg_comments: filters.min_avg_comments,
+      max_avg_comments: filters.max_avg_comments,
+      last_active_from: filters.last_active_from,
+      last_active_to: filters.last_active_to,
+      inactive_filter: filters.inactive_filter,
+      incomplete_only: filters.incomplete_only,
+    }),
+    [
+      filters.platform,
+      filters.comment_tier,
+      filters.gate0_statuses,
+      filters.search_query,
+      filters.min_subscriber_count,
+      filters.max_subscriber_count,
+      filters.min_avg_views,
+      filters.max_avg_views,
+      filters.min_avg_comments,
+      filters.max_avg_comments,
+      filters.last_active_from,
+      filters.last_active_to,
+      filters.inactive_filter,
+      filters.incomplete_only,
+    ]
+  );
+  const categoryTagsScopeKey = useMemo(
+    () => JSON.stringify(categoryTagsScopeFilters),
+    [categoryTagsScopeFilters]
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasRestoredScroll = useRef(false);
 
-  // Restore filters + page from sessionStorage after hydration (client-only).
-  // Must run after the initial render so SSR and client HTML match exactly.
   useEffect(() => {
-    const saved = readStorage();
-    if (saved.filters) {
-      const normalizedFilters: ChannelFilters = {
-        ...saved.filters,
-        category_tags: saved.filters.category_tags ?? saved.filters.niche_tags ?? [],
-      };
-      setFilters(normalizedFilters);
-    }
-    if (saved.page) setPage(saved.page);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const timer = setTimeout(() => {
+      const saved = readStorage();
+      if (saved.filters) {
+        const normalizedFilters: ChannelFilters = {
+          ...saved.filters,
+          category_tags: saved.filters.category_tags ?? saved.filters.niche_tags ?? [],
+        };
+        setFilters(normalizedFilters);
+      }
+      if (saved.page) {
+        setPage(saved.page);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
 
   const { channels, total, loading, refreshing, refetch } = useChannels(
     filters,
@@ -88,9 +128,10 @@ export function ChannelTableView({
 
   // Save scroll position when navigating away (component unmounts).
   useEffect(() => {
+    const node = scrollRef.current;
     return () => {
-      if (scrollRef.current) {
-        writeStorage({ scrollTop: scrollRef.current.scrollTop });
+      if (node) {
+        writeStorage({ scrollTop: node.scrollTop });
       }
     };
   }, []);
@@ -134,16 +175,18 @@ export function ChannelTableView({
   // the current filtered dataset (category_tags itself is excluded server-side).
   useEffect(() => {
     let cancelled = false;
-    setCategoryTagsLoading(true);
     const timer = setTimeout(async () => {
-      const tagsResult = await getCategoryTags(session?.access_token, filters).catch(() => null);
+      if (!cancelled) {
+        setCategoryTagsLoading(true);
+      }
+      const tagsResult = await getCategoryTags(session?.access_token, categoryTagsScopeFilters).catch(() => null);
       if (!cancelled) {
         setCategoryTagOptions(tagsResult ?? []);
         setCategoryTagsLoading(false);
       }
     }, 300);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [session?.access_token, filters]);
+  }, [session?.access_token, categoryTagsScopeKey, categoryTagsScopeFilters]);
 
   return (
     <div className="flex h-full overflow-hidden">

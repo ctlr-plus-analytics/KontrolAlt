@@ -37,6 +37,9 @@ celery_app.conf.update(
     task_routes={
         "scraper.tasks.scrape_rumble_channel": {"queue": "rumble"},
         "scraper.tasks.scrape_substack_channel": {"queue": "substack"},
+        "scraper.tasks.classify_channels": {"queue": "classify"},
+        "scraper.tasks.run_gate0": {"queue": "gate0"},
+        "scraper.tasks.run_gate0_all": {"queue": "gate0"},
     },
     imports=[
         "tasks.scrape_rumble",

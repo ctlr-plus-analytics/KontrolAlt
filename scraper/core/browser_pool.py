@@ -118,7 +118,14 @@ class WorkerBrowserPool:
             headless=headless,
             # Proxy intentionally omitted at browser level — set per-context
             # so each task can use a different proxy endpoint.
-            args=["--disable-blink-features=AutomationControlled", "--no-first-run"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                # Residential exit nodes sometimes run SSL inspection software.
+                # Without this flag, their MITM certificate causes ERR_SSL_PROTOCOL_ERROR
+                # and the scrape fails entirely. Acceptable for a read-only scraping context.
+                "--ignore-certificate-errors",
+            ],
         )
         logger.info("BrowserPool: Chromium launched (headless=%s)", headless)
 

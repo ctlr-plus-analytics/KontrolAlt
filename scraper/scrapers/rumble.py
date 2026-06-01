@@ -324,7 +324,6 @@ class RumbleScraper(BaseScraper):
     VIDEO_COLLECTION_LIMIT = 3
     COMMENT_VIDEO_PAGE_SAMPLE_LIMIT = 3
     DEMOGRAPHIC_TITLE_LIMIT = 20
-    CHANNEL_NAV_TIMEOUT_MS = 25000
     PRIMARY_CONTENT_TIMEOUT_S = 7.0
     RELOAD_CONTENT_TIMEOUT_S = 8.0
     SECOND_CYCLE_CONTENT_TIMEOUT_S = 10.0
@@ -379,7 +378,7 @@ class RumbleScraper(BaseScraper):
                     videos_url,
                     session_key=session_key,
                     wait_until="commit",
-                    timeout=self.CHANNEL_NAV_TIMEOUT_MS,
+                    timeout=get_runtime_settings().scraper_rumble_nav_timeout_ms,
                 )
                 stage_marks.append(("goto_domcontentloaded", perf_counter() - stage_t0))
                 content_ok = await wait_for_content(
@@ -388,7 +387,7 @@ class RumbleScraper(BaseScraper):
                 if not content_ok:
                     logger.warning("Rumble: content not ready, reloading %s", channel_url)
                     await page.reload(
-                        wait_until="commit", timeout=self.CHANNEL_NAV_TIMEOUT_MS
+                        wait_until="commit", timeout=get_runtime_settings().scraper_rumble_nav_timeout_ms
                     )
                     await human_delay(0.15, 0.35)
                     content_ok = await wait_for_content(
@@ -411,7 +410,7 @@ class RumbleScraper(BaseScraper):
                     )
                     await human_delay(second_pre * 0.7, second_pre * 1.4)
                     await page.reload(
-                        wait_until="commit", timeout=self.CHANNEL_NAV_TIMEOUT_MS
+                        wait_until="commit", timeout=get_runtime_settings().scraper_rumble_nav_timeout_ms
                     )
                     await human_delay(second_post * 0.7, second_post * 1.4)
                     content_ok = await wait_for_content(

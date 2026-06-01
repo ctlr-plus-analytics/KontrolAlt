@@ -11,7 +11,11 @@ os.environ.setdefault("SERP_API_KEY", "serper-key")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("FRONTEND_ORIGIN", "http://localhost:3000")
 
-from services.channel_service import _channel_from_discovery_row
+from services.channel_service import (
+    _canonical_niche_tags_for_row,
+    _channel_from_discovery_row,
+    _row_matches_category_tags,
+)
 
 
 def test_discovery_row_maps_velocity_and_gate0_models() -> None:
@@ -56,3 +60,16 @@ def test_discovery_row_maps_velocity_and_gate0_models() -> None:
     assert channel.velocity.view_velocity_90d == 12.5
     assert channel.gate0 is not None
     assert channel.gate0.result_status.value == "clean"
+
+
+def test_canonical_niche_tags_maps_unknown_bucket() -> None:
+    assert _canonical_niche_tags_for_row({"niche_tags": []}) == {"Unknown / Needs Review"}
+    assert _canonical_niche_tags_for_row({"niche_tags": ["Non Canonical Tag"]}) == {
+        "Unknown / Needs Review"
+    }
+
+
+def test_row_matches_category_tags_uses_canonical_mapping() -> None:
+    row = {"niche_tags": ["Non Canonical Tag"]}
+    assert _row_matches_category_tags(row, ["Unknown / Needs Review"]) is True
+    assert _row_matches_category_tags(row, ["Financial / Macro"]) is False

@@ -469,6 +469,50 @@ def _run_gate0_sync(
     ).model_dump(mode="json")
 
 
+@celery_app.task(name="scraper.tasks.run_gate0_all")
+def run_gate0_all(recheck_clean: bool = False) -> dict[str, object]:
+    """Fetch all eligible channels and dispatch individual run_gate0 tasks.
+
+    Args:
+        recheck_clean: When True, re-queue channels already marked clean.
+                       By default only unchecked/pending channels are queued.
+    """
+    client = get_supabase_client()
+    try:
+        query = (
+            client.table("channels")
+            .select("id,gate0_status")
+            .eq("is_active", True)
+            .eq("has_been_scraped", True)
+        )
+        if not recheck_clean:
+            query = query.in_("gate0_status", ["unchecked", "pending"])
+        result = query.execute()
+        channels = result.data or []
+    except APIError as exc:
+        logger.error("run_gate0_all: failed to fetch channels: %s", exc)
+        return {"error": str(exc), "queued": 0}
+
+    queued = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for ch in channels:
+        channel_id = str(ch.get("id") or "")
+        if not channel_id:
+            continue
+        try:
+            client.table("channels").update(
+                {"gate0_status": "pending", "updated_at": now_iso}
+            ).eq("id", channel_id).execute()
+            celery_app.send_task("scraper.tasks.run_gate0", args=[channel_id, False])
+            queued += 1
+        except Exception as exc:
+            logger.warning("run_gate0_all: failed to queue %s: %s", channel_id, exc)
+
+    logger.info("run_gate0_all: queued=%d total_fetched=%d recheck_clean=%s",
+                queued, len(channels), recheck_clean)
+    return {"queued": queued, "total_fetched": len(channels)}
+
+
 @celery_app.task(
     bind=True,
     max_retries=2,

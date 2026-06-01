@@ -367,25 +367,37 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
 
 
 @celery_app.task(name="scraper.tasks.scrape_rumble_all")
-def scrape_rumble_all() -> dict[str, object]:
+def scrape_rumble_all(never_scraped_only: bool = True) -> dict[str, object]:
     """Fetch all Rumble channel URLs and dispatch individual scrape tasks.
 
     Returns:
         Dict with count of queued tasks.
     """
-    logger.info("Starting batch Rumble scrape")
+    logger.info("Starting batch Rumble scrape (never_scraped_only=%s)", never_scraped_only)
     if get_runtime_settings().scrape_platform_slot_limit_rumble == 0:
         logger.info("Skipping batch Rumble scrape: platform disabled (slot limit=0)")
         return {"queued": 0, "skipped": "platform_disabled"}
     try:
         client = get_supabase_client()
-        result = (
+        query = (
             client.table("channels")
             .select("channel_url")
             .eq("platform", "rumble")
             .eq("is_active", True)
-            .execute()
         )
+        if never_scraped_only:
+            query = (
+                query
+                .is_("subscriber_count", "null")
+                .is_("avg_views", "null")
+                .is_("avg_comments", "null")
+                .eq("has_been_scraped", False)
+                .in_("discovery_status", ["new", "queued"])
+                .eq("dashboard_metrics_complete", False)
+                .eq("dashboard_url_valid", True)
+                .eq("dashboard_eligible", False)
+            )
+        result = query.execute()
         urls = [row["channel_url"] for row in (result.data or [])]
     except APIError as exc:
         logger.error("Failed to fetch Rumble channel URLs: %s", exc)

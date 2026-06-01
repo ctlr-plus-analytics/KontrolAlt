@@ -30,7 +30,7 @@ class RuntimeSettings:
     scrape_dispatch_pause_seconds: float = 2.0
     scrape_run_max_channels: int = 0
     scrape_daily_byte_budget_mb: int = 0
-    scrape_run_max_retries_per_channel: int = 1
+    scrape_run_max_retries_per_channel: int = 3
     scrape_retry_base_delay_seconds: int = 60
     scrape_retry_jitter_min: float = 0.5
     scrape_retry_jitter_max: float = 1.2
@@ -47,6 +47,8 @@ class RuntimeSettings:
     scrape_circuit_breaker_cooldown_seconds: int = 1800
     gate0_daily_queue_limit: int = 200
     gate0_clean_recheck_days: int = 7
+    scraper_nav_timeout_ms: int = 25_000
+    scraper_rumble_nav_timeout_ms: int = 45_000
     scraper_human_delay_min_seconds: float = 2.0
     scraper_human_delay_max_seconds: float = 8.0
     scraper_content_wait_min_bytes: int = 5000
@@ -87,6 +89,7 @@ class RuntimeSettings:
     cf_bypass_origin_check_enabled: bool = False
     cf_bypass_fingerprint_strict_mode: bool = False
     cf_bypass_captcha_skip_enabled: bool = True
+    scraper_substack_use_proxy: bool = False
 
 
 _RUNTIME_SETTINGS = RuntimeSettings()

@@ -85,6 +85,36 @@ def _normalize_filter_niche_tags(tags: list[str]) -> list[str]:
     return sorted(normalized, key=lambda value: value.lower())
 
 
+def _canonical_niche_tags_for_row(row: dict[str, object]) -> set[str]:
+    tags = row.get("niche_tags")
+    if not isinstance(tags, list) or len(tags) == 0:
+        return {"Unknown / Needs Review"}
+    return {
+        _canonicalize_niche_tag(raw_tag if isinstance(raw_tag, str) else None)
+        for raw_tag in tags
+    }
+
+
+def _row_matches_category_tags(row: dict[str, object], category_tags: list[str]) -> bool:
+    filter_tags = set(_normalize_filter_niche_tags(category_tags))
+    row_tags = _canonical_niche_tags_for_row(row)
+    return len(filter_tags.intersection(row_tags)) > 0
+
+
+def _fetch_channels_by_ids_ordered(channel_ids: list[str]) -> list[dict[str, object]]:
+    if not channel_ids:
+        return []
+    result = (
+        supabase_admin.table(_CHANNELS_TABLE)
+        .select("*")
+        .in_("id", channel_ids)
+        .execute()
+    )
+    rows = result.data or []
+    row_by_id = {str(row.get("id")): row for row in rows}
+    return [row_by_id[channel_id] for channel_id in channel_ids if channel_id in row_by_id]
+
+
 def _fetch_all_rows(base_query, batch_size: int = 1000) -> list[dict]:
     """Fetch every row matching base_query by paginating in batches.
 
@@ -175,9 +205,6 @@ async def get_channels(
                 [status.value for status in filters.gate0_statuses],
             )
 
-        if filters.category_tags:
-            query = query.overlaps("niche_tags", _normalize_filter_niche_tags(filters.category_tags))
-
         if filters.search_query is not None:
             term = filters.search_query.replace("%", "").replace(",", "").strip()
             if term:
@@ -218,7 +245,112 @@ async def get_channels(
                 "last_active_date", filters.last_active_to.isoformat()
             )
 
-        if filters.sort_by == "engagement_rate":
+        if filters.category_tags:
+            normalized_category_tags = _normalize_filter_niche_tags(filters.category_tags)
+            requires_canonical_fallback = "Unknown / Needs Review" in normalized_category_tags
+        else:
+            normalized_category_tags = []
+            requires_canonical_fallback = False
+
+        if filters.category_tags and not requires_canonical_fallback:
+            query = query.overlaps("niche_tags", normalized_category_tags)
+
+        if filters.category_tags and requires_canonical_fallback:
+            candidate_query = supabase_admin.table(_CHANNELS_TABLE).select(
+                "id,niche_tags,subscriber_count,avg_comments,"
+                "avg_views,last_active_date,view_velocity_30d,view_velocity_90d"
+            )
+            candidate_query = candidate_query.eq("is_active", True)
+            if filters.incomplete_only:
+                candidate_query = candidate_query.eq("dashboard_eligible", False)
+            else:
+                candidate_query = candidate_query.eq("dashboard_eligible", True)
+
+            if filters.platform is not None:
+                candidate_query = candidate_query.eq("platform", filters.platform.value)
+
+            if filters.comment_tier is not None:
+                candidate_query = candidate_query.eq("comment_tier", filters.comment_tier.value)
+
+            if filters.gate0_statuses:
+                candidate_query = candidate_query.in_(
+                    "gate0_status",
+                    [status.value for status in filters.gate0_statuses],
+                )
+
+            if filters.search_query is not None:
+                term = filters.search_query.replace("%", "").replace(",", "").strip()
+                if term:
+                    pattern = f"%{term}%"
+                    candidate_query = candidate_query.or_(
+                        f"name.ilike.{pattern},channel_url.ilike.{pattern},description.ilike.{pattern}"
+                    )
+
+            if filters.min_subscriber_count is not None:
+                candidate_query = candidate_query.gte(
+                    "subscriber_count", filters.min_subscriber_count
+                )
+            if filters.max_subscriber_count is not None:
+                candidate_query = candidate_query.lte(
+                    "subscriber_count", filters.max_subscriber_count
+                )
+            if filters.min_avg_views is not None:
+                candidate_query = candidate_query.gte("avg_views", ceil(filters.min_avg_views))
+            if filters.max_avg_views is not None:
+                candidate_query = candidate_query.lte("avg_views", floor(filters.max_avg_views))
+            if filters.min_avg_comments is not None:
+                candidate_query = candidate_query.gte("avg_comments", ceil(filters.min_avg_comments))
+            if filters.max_avg_comments is not None:
+                candidate_query = candidate_query.lte("avg_comments", floor(filters.max_avg_comments))
+            if filters.inactive_filter:
+                cutoff = (date.today() - timedelta(days=90)).isoformat()
+                candidate_query = candidate_query.gte("last_active_date", cutoff)
+            if filters.last_active_from is not None:
+                candidate_query = candidate_query.gte(
+                    "last_active_date", filters.last_active_from.isoformat()
+                )
+            if filters.last_active_to is not None:
+                candidate_query = candidate_query.lte(
+                    "last_active_date", filters.last_active_to.isoformat()
+                )
+
+            if filters.sort_by != "engagement_rate":
+                candidate_query = candidate_query.order(
+                    filters.sort_by,
+                    desc=(filters.sort_order == "desc"),
+                    nullsfirst=False,
+                )
+            candidate_rows = _fetch_all_rows(candidate_query)
+            filtered_rows = [
+                row for row in candidate_rows if _row_matches_category_tags(row, filters.category_tags or [])
+            ]
+            total = len(filtered_rows)
+            if filters.sort_by == "engagement_rate":
+                scored_records: list[tuple[dict[str, object], float | None]] = [
+                    (row, _computed_engagement_rate(row)) for row in filtered_rows
+                ]
+                if filters.sort_order == "desc":
+                    scored_records = sorted(
+                        scored_records,
+                        key=lambda row: (
+                            row[1] is None,
+                            -(row[1] or 0.0),
+                        ),
+                    )
+                else:
+                    scored_records = sorted(
+                        scored_records,
+                        key=lambda row: (
+                            row[1] is None,
+                            row[1] or 0.0,
+                        ),
+                    )
+                filtered_rows = [row for row, _score in scored_records]
+            start = (filters.page - 1) * filters.page_size
+            end = start + filters.page_size
+            page_ids = [str(row.get("id")) for row in filtered_rows[start:end] if row.get("id") is not None]
+            records = _fetch_channels_by_ids_ordered(page_ids)
+        elif filters.sort_by == "engagement_rate":
             # Fetch all matching rows so the in-process sort covers the full dataset,
             # not just the first 1000 rows that Supabase would return without a range.
             records = _fetch_all_rows(query)
