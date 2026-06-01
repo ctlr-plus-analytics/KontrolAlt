@@ -32,9 +32,9 @@ def test_classify_terminal_page_state_banned_marker() -> None:
     scraper = _DummyScraper.__new__(_DummyScraper)
     with pytest.raises(ScraperClassifiedError) as exc_info:
         scraper.classify_terminal_page_state(
-            channel_url="https://www.bitchute.com/channel/test",
+            channel_url="https://rumble.com/c/test",
             page_title="Channel Suspended",
-            current_url="https://www.bitchute.com/channel/test",
+            current_url="https://rumble.com/c/test",
             body_text="This account suspended for policy violations",
             response_status=200,
         )
@@ -80,7 +80,7 @@ def test_require_scrape_quality_rejects_missing_views() -> None:
     scraper = _DummyScraper.__new__(_DummyScraper)
     with pytest.raises(ScraperClassifiedError) as exc_info:
         scraper.require_scrape_quality(
-            channel_url="https://www.bitchute.com/channel/example",
+            channel_url="https://rumble.com/c/example",
             video_titles=["Example Video"],
             subscriber_count=0,
             avg_views=None,
@@ -90,7 +90,7 @@ def test_require_scrape_quality_rejects_missing_views() -> None:
             contact_info=["https://example.com"],
             secondary_urls=["https://example.com"],
             page_title="Example Channel",
-            current_url="https://www.bitchute.com/channel/example",
+            current_url="https://rumble.com/c/example",
             body_text="example video 2 days ago",
             response_status=200,
         )
@@ -101,7 +101,7 @@ def test_require_scrape_quality_rejects_missing_views() -> None:
 def test_require_scrape_quality_allows_explicit_empty_channel_with_zero_metrics() -> None:
     scraper = _DummyScraper.__new__(_DummyScraper)
     scraper.require_scrape_quality(
-        channel_url="https://www.bitchute.com/channel/empty-example",
+        channel_url="https://rumble.com/c/empty-example",
         video_titles=[],
         subscriber_count=0,
         avg_views=0,
@@ -111,7 +111,7 @@ def test_require_scrape_quality_allows_explicit_empty_channel_with_zero_metrics(
         contact_info=["https://example.com"],
         secondary_urls=["https://example.com"],
         page_title="Empty Channel",
-        current_url="https://www.bitchute.com/channel/empty-example",
+        current_url="https://rumble.com/c/empty-example",
         body_text="0 videos no videos yet",
         response_status=200,
         allow_empty_channel=True,
@@ -123,7 +123,7 @@ def test_require_scrape_quality_allows_empty_contact_info_and_secondary_urls() -
     pass the quality gate — many legitimate channels have no outbound links."""
     scraper = _DummyScraper.__new__(_DummyScraper)
     scraper.require_scrape_quality(
-        channel_url="https://www.bitchute.com/channel/example",
+        channel_url="https://rumble.com/c/example",
         video_titles=["Example Video"],
         subscriber_count=100,
         avg_views=500,
@@ -133,7 +133,8 @@ def test_require_scrape_quality_allows_empty_contact_info_and_secondary_urls() -
         contact_info=[],
         secondary_urls=[],
         page_title="Example Channel",
-        current_url="https://www.bitchute.com/channel/example",
+        current_url="https://rumble.com/c/example",
         body_text="example video 2 days ago",
         response_status=200,
     )
+

@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import random
 import re
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -22,7 +21,7 @@ from core.browser import (
     pre_warm_homepage,
     wait_for_content,
 )
-from core.cf_bypass import human_scroll, inter_request_jitter
+from core.cf_bypass import human_scroll
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
 from core.runtime_settings import get_runtime_settings
 from scrapers.base import BaseScraper
@@ -32,6 +31,51 @@ from utils.keyword_matcher import compute_channel_demographic, compute_comment_t
 logger = logging.getLogger(__name__)
 
 RUMBLE_BASE_URL = "https://rumble.com"
+
+# Domains treated as social-media / direct-contact links.
+# URLs on these domains go to contact_info; everything else goes to secondary_urls.
+_SOCIAL_DOMAINS = frozenset({
+    "twitter.com", "x.com",
+    "instagram.com",
+    "facebook.com", "fb.com", "m.facebook.com",
+    "youtube.com", "youtu.be",
+    "tiktok.com",
+    "t.me", "telegram.me", "telegram.org",
+    "linkedin.com",
+    "odysee.com",
+    "gab.com", "gab.ai",
+    "gettr.com",
+    "truthsocial.com",
+    "parler.com",
+    "reddit.com",
+    "discord.gg", "discord.com",
+    "twitch.tv",
+    "pinterest.com",
+    "snapchat.com",
+    "rumble.com",
+    "locals.com",
+    "minds.com",
+    "mewe.com",
+    "clouthub.com",
+})
+
+
+def _is_social_or_email(value: str) -> bool:
+    """Return True for email addresses and social-media profile URLs."""
+    stripped = (value or "").strip()
+    if not stripped:
+        return False
+    # Plain email address (no scheme)
+    if "@" in stripped and not stripped.startswith("http"):
+        return True
+    hostname = (urlsplit(stripped).hostname or "").lower()
+    if hostname.startswith("www."):
+        hostname = hostname[4:]
+    return hostname in _SOCIAL_DOMAINS or any(
+        hostname.endswith("." + d) for d in _SOCIAL_DOMAINS
+    )
+
+
 _DESCRIPTION_BOILERPLATE_RE = re.compile(
     r'^browse the most recent videos from channel ".*?" uploaded to rumble\.com$',
     re.I,
@@ -281,17 +325,17 @@ class RumbleScraper(BaseScraper):
     VIDEO_COLLECTION_LIMIT = 3
     COMMENT_VIDEO_PAGE_SAMPLE_LIMIT = 3
     DEMOGRAPHIC_TITLE_LIMIT = 20
-    CHANNEL_NAV_TIMEOUT_MS = 45000
-    PRIMARY_CONTENT_TIMEOUT_S = 14.0
-    RELOAD_CONTENT_TIMEOUT_S = 12.0
-    SECOND_CYCLE_CONTENT_TIMEOUT_S = 16.0
-    CARD_SELECTOR_TIMEOUT_MS = 9000
-    ABOUT_NAV_TIMEOUT_MS = 22000
-    ABOUT_CONTENT_TIMEOUT_S = 7.0
+    CHANNEL_NAV_TIMEOUT_MS = 15000
+    PRIMARY_CONTENT_TIMEOUT_S = 7.0
+    RELOAD_CONTENT_TIMEOUT_S = 8.0
+    SECOND_CYCLE_CONTENT_TIMEOUT_S = 10.0
+    CARD_SELECTOR_TIMEOUT_MS = 500
+    ABOUT_NAV_TIMEOUT_MS = 6000
+    ABOUT_CONTENT_TIMEOUT_S = 5.0
     ABOUT_FETCH_ATTEMPTS = 2
-    VIDEO_PAGE_TIMEOUT_MS = 30000
-    VIDEO_PAGE_CONTENT_TIMEOUT_S = 10.0
-    VIDEO_PAGE_COMMENT_TIMEOUT_MS = 8000
+    VIDEO_PAGE_TIMEOUT_MS = 10000
+    VIDEO_PAGE_CONTENT_TIMEOUT_S = 4.0
+    VIDEO_PAGE_COMMENT_TIMEOUT_MS = 2000
     _EMPTY_CHANNEL_MARKERS = (
         "0 videos",
         "no videos",
@@ -326,21 +370,15 @@ class RumbleScraper(BaseScraper):
             session_key = self._session_key or channel_base_url
             async with launch_browser(session_key=session_key, telemetry=telemetry) as context:
                 page = await context.new_page()
-                # Warm-up: visit the homepage first on cold sessions (no cf_clearance).
-                # Real users arrive at channel URLs via navigation history, not cold direct access.
-                # Sessions restored from persistent storage already have cookies; skip warm-up.
                 if await is_cold_session(context):
                     await pre_warm_homepage(
                         page, RUMBLE_BASE_URL + "/", session_key=session_key
                     )
-                # Go directly to the videos tab. The channel header (name + subscriber
-                # count) is present on every tab, so the separate home page visit is
-                # unnecessary and saves one full navigation + content-wait cycle.
                 response = await guarded_goto(
                     page,
                     videos_url,
                     session_key=session_key,
-                    wait_until="domcontentloaded",
+                    wait_until="commit",
                     timeout=self.CHANNEL_NAV_TIMEOUT_MS,
                 )
                 stage_marks.append(("goto_domcontentloaded", perf_counter() - stage_t0))
@@ -350,7 +388,7 @@ class RumbleScraper(BaseScraper):
                 if not content_ok:
                     logger.warning("Rumble: content not ready, reloading %s", channel_url)
                     await page.reload(
-                        wait_until="domcontentloaded", timeout=self.CHANNEL_NAV_TIMEOUT_MS
+                        wait_until="commit", timeout=self.CHANNEL_NAV_TIMEOUT_MS
                     )
                     await human_delay(0.15, 0.35)
                     content_ok = await wait_for_content(
@@ -373,7 +411,7 @@ class RumbleScraper(BaseScraper):
                     )
                     await human_delay(second_pre * 0.7, second_pre * 1.4)
                     await page.reload(
-                        wait_until="domcontentloaded", timeout=self.CHANNEL_NAV_TIMEOUT_MS
+                        wait_until="commit", timeout=self.CHANNEL_NAV_TIMEOUT_MS
                     )
                     await human_delay(second_post * 0.7, second_post * 1.4)
                     content_ok = await wait_for_content(
@@ -429,16 +467,18 @@ class RumbleScraper(BaseScraper):
                     )
                 # Quality gates: terminate channels that will never meet scoring
                 # thresholds, without tripping the circuit breaker.
-                if subscriber_count == 0:
+                if subscriber_count is not None and subscriber_count < 1000:
                     about_task.cancel()
+                    await asyncio.gather(about_task, return_exceptions=True)
                     raise ScraperClassifiedError(
-                        "rumble_zero_followers",
-                        f"Rumble channel has zero followers: {channel_base_url}",
+                        "rumble_low_subscriber_count",
+                        f"Rumble channel has fewer than 1000 followers ({subscriber_count}): {channel_base_url}",
                         terminal=True,
                         retryable=False,
                     )
                 if len(video_data_map) < 3:
                     about_task.cancel()
+                    await asyncio.gather(about_task, return_exceptions=True)
                     raise ScraperClassifiedError(
                         "rumble_too_few_videos",
                         f"Rumble channel has fewer than 3 videos ({len(video_data_map)}): {channel_base_url}",
@@ -487,19 +527,26 @@ class RumbleScraper(BaseScraper):
                     comment_pages_blocked,
                     comment_pages_parsed_success,
                     comment_selectors_hit,
-                    video_desc_contacts,
+                    video_desc_social,
+                    video_desc_secondary,
                 ) = await self._enrich_latest_video_page_comments(context, video_data_map)
-                # Merge video description links/emails into channel contact_info.
-                if video_desc_contacts:
-                    new_from_desc = set(video_desc_contacts) - set(contact_info)
+                # Social media URLs and emails → contact_info
+                if video_desc_social:
+                    new_social = set(video_desc_social) - set(contact_info)
                     contact_info = self._filter_contact_info(
-                        sorted(set(contact_info) | set(video_desc_contacts))
+                        sorted(set(contact_info) | set(video_desc_social))
                     )
                     logger.info(
-                        "Rumble video desc contacts for %s: %d new items merged (total contact_info=%d)",
-                        channel_base_url,
-                        len(new_from_desc),
-                        len(contact_info),
+                        "Rumble video desc social contacts for %s: %d new (total contact_info=%d)",
+                        channel_base_url, len(new_social), len(contact_info),
+                    )
+                # Affiliate/general URLs → secondary_urls
+                if video_desc_secondary:
+                    new_secondary = set(video_desc_secondary) - set(all_secondary)
+                    all_secondary = sorted(set(all_secondary) | set(video_desc_secondary))
+                    logger.info(
+                        "Rumble video desc secondary links for %s: %d new (total secondary_urls=%d)",
+                        channel_base_url, len(new_secondary), len(all_secondary),
                     )
                 stage_marks.append(("video_page_comments", perf_counter() - stage_t0))
 
@@ -710,7 +757,7 @@ class RumbleScraper(BaseScraper):
                     about_page,
                     about_url,
                     session_key=self._session_key or about_url,
-                    wait_until="domcontentloaded",
+                    wait_until="commit",
                     timeout=self.ABOUT_NAV_TIMEOUT_MS,
                 )
                 if response is None:
@@ -738,7 +785,7 @@ class RumbleScraper(BaseScraper):
                     description = attempt_description
                 if attempt_socials:
                     socials = attempt_socials
-                if description and socials:
+                if description:
                     break
             except Exception as exc:
                 error_reasons.append(f"attempt={attempt}:exception:{type(exc).__name__}")
@@ -856,12 +903,12 @@ class RumbleScraper(BaseScraper):
         ]
         work = [(item, url) for item, url in work if url]
         if not work:
-            return 0, 0, 0, set(), []
+            return 0, 0, 0, set(), [], []
 
         results = await asyncio.gather(
             *[
                 self._extract_video_page_signals(
-                    context, url, stagger_s=i * random.uniform(5, 12)
+                    context, url, stagger_s=i * 0.1
                 )
                 for i, (_, url) in enumerate(work)
             ],
@@ -872,18 +919,20 @@ class RumbleScraper(BaseScraper):
         blocked = 0
         parsed_success = 0
         selectors_hit: set[str] = set()
-        all_desc_contacts: set[str] = set()
+        all_desc_social: set[str] = set()
+        all_desc_secondary: set[str] = set()
         for (item, _), result in zip(work, results):
             if isinstance(result, Exception):
                 continue
-            views, comments, publish_date, title, comment_hit_selector, desc_contacts, blocked_stub = result
+            views, comments, publish_date, title, comment_hit_selector, desc_social, desc_secondary, blocked_stub = result
             if blocked_stub:
                 blocked += 1
             if comment_hit_selector:
                 selectors_hit.add(comment_hit_selector)
             if comments is not None:
                 parsed_success += 1
-            all_desc_contacts.update(desc_contacts)
+            all_desc_social.update(desc_social)
+            all_desc_secondary.update(desc_secondary)
             self._merge_video_page_signals(
                 item=item,
                 needs_title=not item.get("title") or item.get("title") == "Unknown Title",
@@ -895,7 +944,7 @@ class RumbleScraper(BaseScraper):
                 comments=comments,
                 publish_date=publish_date,
             )
-        return attempted, blocked, parsed_success, selectors_hit, sorted(all_desc_contacts)
+        return attempted, blocked, parsed_success, selectors_hit, sorted(all_desc_social), sorted(all_desc_secondary)
 
     def _is_generic_description(self, description: str) -> bool:
         text = (description or "").strip()
@@ -917,29 +966,24 @@ class RumbleScraper(BaseScraper):
 
     async def _extract_video_page_signals(
         self, context, video_url: str, *, stagger_s: float = 0.0
-    ) -> tuple[int | None, int | None, datetime | None, str | None, str | None, list[str], bool]:
-        """Open a Rumble video page and extract views, comments, date, title, and description contacts.
-
-        Args:
-            stagger_s: Seconds to sleep before opening the tab.  Use non-zero
-                values when launching multiple tasks via asyncio.gather so they
-                don't all hit Cloudflare simultaneously.
+    ) -> tuple[int | None, int | None, datetime | None, str | None, str | None, list[str], list[str], bool]:
+        """Open a Rumble video page and extract views, comments, date, title, and description links.
 
         Returns:
-            (views, comments, publish_date, title, comment_hit_selector, desc_contacts, blocked_stub)
-            desc_contacts is a filtered list of URLs and email addresses found
-            in the video description (empty list if description is absent or blank).
+            (views, comments, publish_date, title, comment_hit_selector,
+             desc_social, desc_secondary, blocked_stub)
+            desc_social   — emails and social-media URLs from description (→ contact_info)
+            desc_secondary — affiliate and general website URLs (→ secondary_urls)
         """
         if stagger_s > 0:
             await asyncio.sleep(stagger_s)
         page = await context.new_page()
         try:
-            await inter_request_jitter()
             await guarded_goto(
                 page,
                 video_url,
                 session_key=self._session_key or video_url,
-                wait_until="domcontentloaded",
+                wait_until="commit",
                 timeout=self.VIDEO_PAGE_TIMEOUT_MS,
             )
             content_ok = await wait_for_content(
@@ -965,14 +1009,14 @@ class RumbleScraper(BaseScraper):
             comments, comment_hit_selector = self._extract_video_page_comments(soup)
             publish_date = self._extract_video_page_upload_date(soup)
             title = self._extract_video_page_title(soup)
-            _, desc_contacts = self._extract_video_page_description(soup)
+            _, desc_social, desc_secondary = self._extract_video_page_description(soup)
 
-            return views, comments, publish_date, title, comment_hit_selector, desc_contacts, False
+            return views, comments, publish_date, title, comment_hit_selector, desc_social, desc_secondary, False
         except ScraperBlockedError:
-            return None, None, None, None, None, [], True
+            return None, None, None, None, None, [], [], True
         except Exception as exc:
             logger.debug("Rumble: Could not extract video signals from %s: %s", video_url, exc)
-            return None, None, None, None, None, [], False
+            return None, None, None, None, None, [], [], False
         finally:
             await page.close()
 
@@ -1055,26 +1099,23 @@ class RumbleScraper(BaseScraper):
 
     def _extract_video_page_description(
         self, soup: BeautifulSoup
-    ) -> tuple[str, list[str]]:
-        """Extract video page description text and all embedded contact links/emails.
+    ) -> tuple[str, list[str], list[str]]:
+        """Extract video page description text and split links by type.
 
         Rumble splits long descriptions into a visible first paragraph
         (``p.media-description--first``) and hidden paragraphs
         (``p.media-description--more``) toggled by a "Show more" button.
-        All paragraphs are present in the static HTML, so no Playwright
-        interaction is needed — BeautifulSoup sees the full content.
+        All paragraphs are present in the static HTML.
 
         Returns:
-            (description_text, contact_items) where contact_items is a
-            deduplicated, filtered list of URLs and email addresses extracted
-            from embedded ``<a href>`` tags and plain description text.
-            Returns ("", []) when no description container is found.
+            (description_text, social_contacts, secondary_links)
+            social_contacts — emails and social-media profile URLs (→ contact_info)
+            secondary_links — affiliate links and general website URLs (→ secondary_urls)
         """
         container = soup.select_one(self.VIDEO_PAGE_DESC_SELECTOR)
         if container is None:
-            return "", []
+            return "", [], []
 
-        # Collect text from all <p> children (visible + hidden --more ones).
         paragraphs = container.select("p.media-description")
         text = (
             " ".join(p.get_text(" ", strip=True) for p in paragraphs)
@@ -1082,12 +1123,12 @@ class RumbleScraper(BaseScraper):
             else container.get_text(" ", strip=True)
         )
         if not text:
-            return "", []
+            return "", [], []
 
-        contacts: set[str] = set()
+        raw: set[str] = set()
 
-        # 1. Direct <a href> extraction — catches affiliated/shortened URLs whose
-        #    link text differs from the href (e.g. "Click here" → bit.ly/xyz).
+        # 1. Direct <a href> — catches shortened/affiliate URLs whose link text
+        #    differs from the href (e.g. "Click here" → bit.ly/xyz).
         for anchor in container.select("a[href]"):
             href = str(anchor.get("href") or "").strip()
             if not href:
@@ -1095,22 +1136,28 @@ class RumbleScraper(BaseScraper):
             if href.lower().startswith("mailto:"):
                 addr = href.split(":", 1)[1].split("?", 1)[0].strip().lower()
                 if addr:
-                    contacts.add(addr)
+                    raw.add(addr)
                 continue
             if href.startswith(("#", "javascript:", "tel:")):
                 continue
             host = (urlsplit(href).hostname or "").lower()
-            # Skip Rumble-internal links (premium pages, channel links, etc.)
             if host == "rumble.com" or host.endswith(".rumble.com"):
                 continue
-            contacts.add(href)
+            raw.add(href)
 
-        # 2. Regex over plain text — catches bare domains and emails not wrapped
-        #    in <a> tags (e.g. "Email us at contact@example.com").
-        contacts.update(extract_emails(text))
-        contacts.update(extract_urls(text))
+        # 2. Regex over plain text — catches bare domains and emails not in <a>.
+        raw.update(extract_emails(text))
+        raw.update(extract_urls(text))
 
-        return text, self._filter_contact_info(sorted(contacts))
+        filtered = self._filter_contact_info(sorted(raw))
+        social: list[str] = []
+        secondary: list[str] = []
+        for item in filtered:
+            if _is_social_or_email(item):
+                social.append(item)
+            else:
+                secondary.append(item)
+        return text, social, secondary
 
     def _extract_video_title(self, card: Tag, link: Tag) -> str:
         node = card.select_one(self.VIDEO_TITLE_SELECTOR)

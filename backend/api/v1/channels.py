@@ -9,10 +9,10 @@ from core.exceptions import NotFoundError, SupabaseError
 from core.logging import get_logger
 from core.security import get_current_user
 from models.channel import (
+    CategoryTagListResponse,
     ChannelFilters,
     ChannelDeleteResponse,
     Gate0StatusListResponse,
-    NicheTagListResponse,
     ChannelWithMetrics,
     CommentTier,
     Gate0Status,
@@ -41,6 +41,8 @@ async def list_channels(
     comment_tier: CommentTier | None = Query(None),
     gate0_status: Gate0Status | None = Query(None),
     gate0_statuses: list[Gate0Status] | None = Query(None),
+    category_tag: str | None = Query(None),
+    category_tags: list[str] | None = Query(None),
     niche_tag: str | None = Query(None),
     niche_tags: list[str] | None = Query(None),
     search_query: str | None = Query(None),
@@ -65,7 +67,18 @@ async def list_channels(
         platform=platform,
         comment_tier=comment_tier,
         gate0_statuses=(gate0_statuses or ([gate0_status] if gate0_status else None)),
-        niche_tags=(niche_tags or ([niche_tag] if niche_tag else None)),
+        category_tags=(
+            category_tags
+            or ([category_tag] if category_tag else None)
+            or niche_tags
+            or ([niche_tag] if niche_tag else None)
+        ),
+        niche_tags=(
+            category_tags
+            or ([category_tag] if category_tag else None)
+            or niche_tags
+            or ([niche_tag] if niche_tag else None)
+        ),
         search_query=search_query,
         min_subscriber_count=min_subscriber_count,
         max_subscriber_count=max_subscriber_count,
@@ -91,13 +104,22 @@ async def list_channels(
     )
 
 
-@router.get("/niche-tags", response_model=NicheTagListResponse)
+@router.get("/niche-tags", response_model=CategoryTagListResponse)
 async def list_niche_tags(
     user: dict = Depends(get_current_user),
-) -> NicheTagListResponse:
-    """Return distinct niche tags for filter dropdowns."""
+) -> CategoryTagListResponse:
+    """Legacy alias: return distinct category tags for filter dropdowns."""
     tags, tag_counts = await channel_service.list_niche_tags()
-    return NicheTagListResponse(tags=tags, tag_counts=tag_counts)
+    return CategoryTagListResponse(tags=tags, tag_counts=tag_counts)
+
+
+@router.get("/category-tags", response_model=CategoryTagListResponse)
+async def list_category_tags(
+    user: dict = Depends(get_current_user),
+) -> CategoryTagListResponse:
+    """Return distinct category tags for filter dropdowns."""
+    tags, tag_counts = await channel_service.list_niche_tags()
+    return CategoryTagListResponse(tags=tags, tag_counts=tag_counts)
 
 
 @router.get("/gate0-statuses", response_model=Gate0StatusListResponse)

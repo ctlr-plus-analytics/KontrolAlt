@@ -5,8 +5,6 @@ from __future__ import annotations
 import time
 from copy import deepcopy
 
-from utils.taxonomy import KEYWORD_TAXONOMY
-
 _CACHE_TTL_SECONDS = 60
 _taxonomy_cache: dict[str, object] = {
     "loaded_at": 0.0,
@@ -42,10 +40,6 @@ def _normalize_taxonomy(raw: object) -> dict[str, list[str]]:
     return normalized
 
 
-def _fallback_taxonomy() -> dict[str, list[str]]:
-    return {niche: [keyword.lower() for keyword in keywords] for niche, keywords in KEYWORD_TAXONOMY.items()}
-
-
 def get_runtime_keyword_taxonomy(force_refresh: bool = False) -> dict[str, list[str]]:
     now = time.time()
     cached = _taxonomy_cache.get("taxonomy")
@@ -66,10 +60,8 @@ def get_runtime_keyword_taxonomy(force_refresh: bool = False) -> dict[str, list[
         )
         raw = (result.data or {}).get("keyword_taxonomy")
         normalized = _normalize_taxonomy(raw)
-        if not normalized:
-            normalized = _fallback_taxonomy()
     except Exception:
-        normalized = _fallback_taxonomy()
+        normalized = {}
 
     _taxonomy_cache["loaded_at"] = now
     _taxonomy_cache["taxonomy"] = normalized

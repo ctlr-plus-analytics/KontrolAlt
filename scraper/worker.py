@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from celery import Celery
-from celery.signals import worker_init
+from celery.signals import worker_process_init, worker_process_shutdown
 
 from core.config import scraper_settings
 from schedules.beat_schedule import CELERY_BEAT_SCHEDULE
@@ -35,7 +35,6 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     imports=[
         "tasks.scrape_rumble",
-        "tasks.scrape_bitchute",
         "tasks.scrape_substack",
         "tasks.maintenance",
         "tasks.compute_velocity",
@@ -53,17 +52,16 @@ celery_app.conf.update(
 # Startup proxy health validation
 # ---------------------------------------------------------------------------
 
-@worker_init.connect
-def _on_worker_init(**kwargs):
-    """Validate proxy reachability once per worker process at startup.
+@worker_process_init.connect
+def _on_worker_process_init(**kwargs):
+    """Validate proxies and pre-warm the browser pool inside each forked worker.
 
-    Runs asynchronously via asyncio.run() since Celery's worker_init signal
-    fires in a synchronous context before any event loop is present.
+    worker_process_init fires in the child process after Celery's fork, so
+    there are no inherited broken event-loop or browser-websocket handles.
+    reset() discards anything that leaked across the fork boundary before
+    any async work starts.
 
-    The check is non-fatal: any exception is caught so a Redis outage,
-    network hiccup, or misconfigured proxy never prevents the worker from
-    starting. Unreachable proxies receive an initial health score penalty so
-    healthy proxies get priority from the very first scrape task.
+    Non-fatal: any failure is caught so the worker always starts.
     """
     try:
         from core.proxy import (
@@ -71,15 +69,32 @@ def _on_worker_init(**kwargs):
             proxy_health_tracker,
             validate_proxy_pool_on_startup,
         )
-        asyncio.run(
-            validate_proxy_pool_on_startup(
+        from core.browser_pool import worker_pool
+
+        worker_pool.reset()
+
+        async def _startup():
+            await validate_proxy_pool_on_startup(
                 proxy_rotator,
                 proxy_health_tracker,
                 timeout=12.0,
                 concurrency=4,
             )
-        )
+            await worker_pool.ensure_browser()
+
+        worker_pool.run(_startup())
+        logger.info("Worker process startup complete: proxies checked, browser pre-warmed")
     except Exception as exc:
         logger.warning(
-            "Proxy startup health check failed (worker will continue): %s", exc
+            "Worker startup tasks failed (worker will continue): %s", exc
         )
+
+
+@worker_process_shutdown.connect
+def _on_worker_process_shutdown(**kwargs):
+    """Cleanly close the browser pool on worker process exit."""
+    try:
+        from core.browser_pool import worker_pool
+        worker_pool.shutdown()
+    except Exception:
+        pass

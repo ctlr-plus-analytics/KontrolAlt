@@ -34,7 +34,7 @@ import type {
   Gate0StatusOption,
   KeywordTaxonomyDef,
   KeywordTaxonomyListResponse,
-  NicheTagOption,
+  CategoryTagOption,
   PurgeQueueRequest,
   PurgeQueueResponse,
 } from "@/types";
@@ -132,8 +132,9 @@ export async function getChannels(
   if (filters.gate0_statuses && filters.gate0_statuses.length > 0) {
     filters.gate0_statuses.forEach((status) => params.append("gate0_statuses", status));
   }
-  if (filters.niche_tags && filters.niche_tags.length > 0) {
-    filters.niche_tags.forEach((tag) => params.append("niche_tags", tag));
+  const categoryTags = filters.category_tags ?? filters.niche_tags;
+  if (categoryTags && categoryTags.length > 0) {
+    categoryTags.forEach((tag) => params.append("category_tags", tag));
   }
   if (filters.search_query && filters.search_query.trim().length > 0) {
     params.set("search_query", filters.search_query.trim());
@@ -181,10 +182,10 @@ export async function getChannels(
   );
 }
 
-/** Fetch distinct niche tags and counts for dropdown filters. */
-export async function getNicheTags(token?: string): Promise<NicheTagOption[]> {
-  const response = await apiFetch<{ tags: string[]; tag_counts?: NicheTagOption[] }>(
-    "/api/v1/channels/niche-tags",
+/** Fetch distinct category tags and counts for dropdown filters. */
+export async function getCategoryTags(token?: string): Promise<CategoryTagOption[]> {
+  const response = await apiFetch<{ tags: string[]; tag_counts?: CategoryTagOption[] }>(
+    "/api/v1/channels/category-tags",
     { token }
   );
   if (response.tag_counts && response.tag_counts.length > 0) {
@@ -192,6 +193,9 @@ export async function getNicheTags(token?: string): Promise<NicheTagOption[]> {
   }
   return response.tags.map((tag) => ({ tag, count: 0 }));
 }
+
+/** @deprecated Use getCategoryTags */
+export const getNicheTags = getCategoryTags;
 
 /** Fetch Gate 0 statuses and counts for dropdown filters. */
 export async function getGate0Statuses(token?: string): Promise<Gate0StatusOption[]> {

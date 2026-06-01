@@ -212,7 +212,6 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
             onChange={(event) => setManualPlatform(event.target.value as Platform)}
           >
             <option value="rumble">Rumble</option>
-            <option value="bitchute">BitChute</option>
             <option value="substack">Substack</option>
           </select>
         </div>
@@ -226,8 +225,8 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
         />
         <Input
           id="manual-tags"
-          label="Tags (Optional)"
-          placeholder="gold, retirement"
+          label="Category Tags (Optional)"
+          placeholder="financial / macro, prepper / survival"
           value={manualTags}
           onChange={(event) => setManualTags(event.target.value)}
           className="mb-3"
@@ -274,7 +273,7 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
           id="bulk-urls"
           className="mb-3 h-40 w-full rounded-lg border border-[#E8E4DC] px-3 py-2 text-sm text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
           placeholder={
-            "https://rumble.com/c/one\nhttps://bitchute.com/channel/two\nhttps://substack.com/@three"
+            "https://rumble.com/c/one\nhttps://substack.com/@two\nhttps://substack.com/@three"
           }
           value={bulkUrls}
           onChange={(event) => setBulkUrls(event.target.value)}

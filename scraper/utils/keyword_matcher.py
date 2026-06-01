@@ -20,7 +20,7 @@ def match_keywords(text: str) -> list[str]:
             if keyword in text_lower:
                 matched.append(category)
                 break
-    return matched
+    return matched if matched else ["Unknown / Needs Review"]
 
 
 def compute_channel_demographic(

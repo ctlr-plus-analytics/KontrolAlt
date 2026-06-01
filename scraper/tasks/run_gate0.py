@@ -94,7 +94,10 @@ def _iter_scan_values(channel: dict[str, object]) -> list[str]:
     """Return stored fields that Gate 0 local scan should inspect."""
     contact_info = channel.get("contact_info", []) or []
     secondary_urls = channel.get("secondary_urls", []) or []
+    video_titles = channel.get("video_titles", []) or []
     description = str(channel.get("description") or "")
+    name = str(channel.get("name") or "")
+    channel_url = str(channel.get("channel_url") or "")
 
     if isinstance(contact_info, str):
         contact_values = [contact_info]
@@ -106,9 +109,33 @@ def _iter_scan_values(channel: dict[str, object]) -> list[str]:
     else:
         secondary_values = [str(value) for value in secondary_urls]
 
+    if isinstance(video_titles, str):
+        title_values = [video_titles]
+    else:
+        title_values = [str(t) for t in video_titles if t]
+
     values = [*contact_values, *secondary_values]
     values.append(description)
+    if name:
+        values.append(name)
+    if channel_url:
+        values.append(channel_url)
+    values.extend(title_values)
     return values
+
+
+def _extract_channel_handle(channel_url: str) -> str | None:
+    """Extract a short searchable handle from a channel URL."""
+    m = re.search(r"rumble\.com/(?:c|user)/([^/?#]+)", channel_url, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"substack\.com/@([^/?#]+)", channel_url, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"\b([a-z0-9-]+)\.substack\.com", channel_url, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return None
 
 
 def _scan_channel_text_for_competitors(
@@ -195,7 +222,7 @@ def _scan_serper_results(
     if not isinstance(organic_results, list):
         return None, None
 
-    for item in organic_results[:10]:
+    for item in organic_results[:20]:
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "")
@@ -226,7 +253,7 @@ def _run_serper_search(
             },
             json={
                 "q": search_query,
-                "num": 10,
+                "num": 20,
             },
         )
         if response.status_code in _SERPER_QUOTA_STATUS_CODES:
@@ -236,6 +263,62 @@ def _run_serper_search(
         data = response.json()
         organic_results = data.get("organic", []) if isinstance(data, dict) else []
         return _scan_serper_results(organic_results, competitors)
+
+
+def _build_search_queries(
+    channel_name: str,
+    channel_handle: str | None,
+    competitors: tuple[Gate0CompetitorSetting, ...],
+) -> list[str]:
+    """Return ordered Serper queries for Gate 0, most general first.
+
+    Queries are tried with early-exit on the first hit, so per-competitor and
+    affiliate queries only fire when the broad search finds nothing.
+    """
+    handle_differs = bool(
+        channel_handle and channel_handle.lower() != channel_name.lower()
+    )
+    queries: list[str] = []
+
+    queries.append(f'"{channel_name}" "gold IRA"')
+    if handle_differs:
+        queries.append(f'"{channel_handle}" "gold IRA"')
+
+    for competitor in competitors:
+        queries.append(f'"{channel_name}" "{competitor.brand}"')
+        if handle_differs:
+            queries.append(f'"{channel_handle}" "{competitor.brand}"')
+
+    for competitor in competitors:
+        for domain in competitor.domains[:2]:
+            queries.append(f'site:{domain} "{channel_name}"')
+            if handle_differs:
+                queries.append(f'site:{domain} "{channel_handle}"')
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for q in queries:
+        if q not in seen:
+            seen.add(q)
+            unique.append(q)
+    return unique
+
+
+def _run_serper_search_multi(
+    queries: list[str],
+    competitors: tuple[Gate0CompetitorSetting, ...],
+) -> tuple[str | None, str | None, str]:
+    """Run Serper queries in order, stopping at the first competitor hit.
+
+    Returns (flagged_brand, source_url, winning_query). winning_query is the
+    first query when no hit is found.
+    """
+    first_query = queries[0] if queries else ""
+    for query in queries:
+        brand, url = _run_serper_search(query, competitors)
+        if brand is not None:
+            return brand, url, query
+    return None, None, first_query
 
 
 def _persist_gate0_result(
@@ -345,7 +428,8 @@ def _run_gate0_sync(
         ).model_dump(mode="json")
 
     channel_name = str(channel.get("name") or "")
-    search_query = f'"{channel_name}" "gold IRA"'
+    channel_url_str = str(channel.get("channel_url") or "")
+    channel_handle = _extract_channel_handle(channel_url_str)
     competitors = _load_competitors()
     if not competitors:
         _mark_gate0_unchecked(channel_id, "no gate0 competitors configured")
@@ -359,8 +443,15 @@ def _run_gate0_sync(
         channel,
         competitors,
     )
+    search_queries = _build_search_queries(channel_name, channel_handle, competitors)
+    primary_query = search_queries[0] if search_queries else f'"{channel_name}" "gold IRA"'
     if flagged_brand is None:
-        flagged_brand, source_url = _run_serper_search(search_query, competitors)
+        flagged_brand, source_url, search_query = _run_serper_search_multi(
+            search_queries,
+            competitors,
+        )
+    else:
+        search_query = primary_query
 
     gate0_record = _persist_gate0_result(
         channel,

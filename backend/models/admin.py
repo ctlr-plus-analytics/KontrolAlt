@@ -5,6 +5,18 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
+BROAD_TAXONOMY_CATEGORIES = {
+    "Prepper / Survival",
+    "Financial / Macro",
+    "Conservative Politics",
+    "Health / Wellness",
+    "Homesteading",
+    "Crypto / Alternative Assets",
+    "Religious / Values-Based",
+    "News / Commentary",
+    "Unknown / Needs Review",
+}
+
 
 class AdminMeResponse(BaseModel):
     user_id: str
@@ -83,7 +95,9 @@ class KeywordTaxonomyDef(BaseModel):
     def validate_niche(cls, value: str) -> str:
         normalized = value.strip()
         if not normalized:
-            raise ValueError("Niche must not be empty.")
+            raise ValueError("Category must not be empty.")
+        if normalized not in BROAD_TAXONOMY_CATEGORIES:
+            raise ValueError("Category must be one of the supported broad categories.")
         return normalized
 
     @field_validator("keywords")

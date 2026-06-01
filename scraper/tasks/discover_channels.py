@@ -16,7 +16,6 @@ from core.config import scraper_settings
 from core.circuit_breaker import is_open
 from core.supabase import get_supabase_client
 from core.runtime_settings import get_runtime_settings
-from tasks.scrape_bitchute import scrape_bitchute_channel
 from tasks.scrape_rumble import scrape_rumble_channel
 from tasks.scrape_substack import scrape_substack_channel
 from utils.channel_urls import (
@@ -72,15 +71,11 @@ _RELATIVE_RUMBLE_CHANNEL_PATH_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])/(c|user)/([A-Za-z0-9][A-Za-z0-9_-]{1,127})\b",
     re.IGNORECASE,
 )
-_RELATIVE_BITCHUTE_CHANNEL_PATH_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])/channel/([A-Za-z0-9][A-Za-z0-9_-]{1,127})\b",
-    re.IGNORECASE,
-)
 _SUBSTACK_HANDLE_PATTERN = re.compile(
     r"\b([A-Za-z0-9][A-Za-z0-9_-]{1,127})\.substack\.com\b",
     re.IGNORECASE,
 )
-_SUPPORTED_DISCOVERY_PLATFORMS = {"rumble", "bitchute", "substack"}
+_SUPPORTED_DISCOVERY_PLATFORMS = {"rumble", "substack"}
 
 
 def _utc_now_iso() -> str:
@@ -255,13 +250,6 @@ def _extract_relative_channel_urls(
             )
             if candidate is not None:
                 candidates[candidate.channel_url] = candidate
-    elif source_platform == "bitchute":
-        for match in _RELATIVE_BITCHUTE_CHANNEL_PATH_PATTERN.finditer(text):
-            candidate = canonicalize_channel_url(
-                f"https://bitchute.com/channel/{match.group(1)}"
-            )
-            if candidate is not None:
-                candidates[candidate.channel_url] = candidate
     elif source_platform == "substack":
         for match in _SUBSTACK_HANDLE_PATTERN.finditer(text):
             handle = match.group(1)
@@ -301,7 +289,7 @@ def _query_for_keyword(keyword: str, platform: str) -> str:
         return f'site:rumble.com "{keyword}" (inurl:/c/ OR inurl:/user/) -inurl:/v -inurl:/embed/'
     if platform == "substack":
         return f'site:substack.com "{keyword}" (inurl:/@ OR inurl:.substack.com) -inurl:/p/'
-    return f'site:bitchute.com "{keyword}" inurl:/channel/ -inurl:/video/ -inurl:/embed/'
+    raise ValueError(f"Unsupported platform for keyword query: {platform}")
 
 
 def _category_phrase(category: str) -> str:
@@ -327,17 +315,6 @@ def _keyword_templates(
                 f'"{keyword}" "rumble.com/c/" -inurl:/v -inurl:/embed/',
                 f'"{keyword}" "rumble.com/user/" -inurl:/v -inurl:/embed/',
                 f'"{keyword}" "Rumble channel"',
-            ]
-        )
-    if "bitchute" in platforms:
-        templates.extend(
-            [
-                _query_for_keyword(keyword, "bitchute"),
-                f'site:bitchute.com/channel/ "{keyword}" -inurl:/video/ -inurl:/embed/',
-                f'site:bitchute.com "{keyword}" "{category_phrase}" inurl:/channel/ -inurl:/video/ -inurl:/embed/',
-                f'site:bitchute.com intitle:"{keyword}" inurl:/channel/ -inurl:/video/ -inurl:/embed/',
-                f'"{keyword}" "bitchute.com/channel/" -inurl:/video/ -inurl:/embed/',
-                f'"{keyword}" "BitChute channel"',
             ]
         )
     if "substack" in platforms:
@@ -535,11 +512,9 @@ def _keyword_discovery_confidence(
 
     if query_kind == "feedback":
         confidence = 0.67
-    if '"rumble channel"' in query_lower or '"bitchute channel"' in query_lower:
+    if '"rumble channel"' in query_lower:
         confidence = min(confidence, 0.58)
     if "rumble.com/c/" in query_lower or "rumble.com/user/" in query_lower:
-        confidence = max(confidence, 0.78)
-    if "bitchute.com/channel/" in query_lower or "inurl:/channel/" in query_lower:
         confidence = max(confidence, 0.78)
     if _candidate_was_direct_serp_link(item, candidate):
         confidence = max(confidence, 0.82)
@@ -552,7 +527,6 @@ def _extract_feedback_terms(item: dict[str, object]) -> list[str]:
     tokens = re.findall(r"[a-z][a-z0-9_]{3,20}", blob)
     ignore = {
         "about",
-        "bitchute",
         "channel",
         "home",
         "official",
@@ -584,9 +558,7 @@ def _feedback_queries(
                 f'site:substack.com "{keyword}" "{category}" "{term}" (inurl:/@ OR inurl:.substack.com) -inurl:/p/'
             )
         else:
-            queries.append(
-                f'site:bitchute.com inurl:/channel/ "{keyword}" "{category}" "{term}" -inurl:/video/ -inurl:/embed/'
-            )
+            continue
     return queries
 
 
@@ -616,8 +588,8 @@ def _discover_from_known_channels(client, *, platform: str | None = None) -> dic
         "description": 0,
         "channel_url": 0,
     }
-    platform_metrics = {"rumble": 0, "bitchute": 0, "substack": 0}
-    inserted_platform_metrics = {"rumble": 0, "bitchute": 0, "substack": 0}
+    platform_metrics = {"rumble": 0, "substack": 0}
+    inserted_platform_metrics = {"rumble": 0, "substack": 0}
 
     source_channels = 0
     for channel in _iter_channel_rows(client, columns):
@@ -711,7 +683,6 @@ def _discover_from_keywords(
             "duplicates": 0,
             "invalid": 0,
             "inserted_rumble": 0,
-            "inserted_bitchute": 0,
             "inserted_substack": 0,
             "category_metrics": {},
             "feedback_terms": [],
@@ -746,7 +717,7 @@ def _discover_from_keywords(
     pages_fetched = 0
     raw_links = 0
     no_new_global = 0
-    inserted_by_platform = {"rumble": 0, "bitchute": 0, "substack": 0}
+    inserted_by_platform = {"rumble": 0, "substack": 0}
     category_metrics: dict[str, dict[str, int]] = {
         category: {
             "searched_queries": 0,
@@ -909,7 +880,7 @@ def _discover_from_keywords(
         elif "site:substack.com" in query:
             platform = "substack"
         else:
-            platform = "bitchute"
+            platform = "substack"
         feedback_queries = _feedback_queries(
             platform=platform,
             category=category,
@@ -949,7 +920,6 @@ def _discover_from_keywords(
         "duplicates": duplicates,
         "invalid": invalid,
         "inserted_rumble": inserted_by_platform["rumble"],
-        "inserted_bitchute": inserted_by_platform["bitchute"],
         "inserted_substack": inserted_by_platform["substack"],
         "category_metrics": category_metrics,
         "feedback_terms": [term for term, _ in feedback_terms_counter.most_common(10)],
@@ -978,7 +948,7 @@ def queue_discovered_channel_scrapes(new_urls: list[dict[str, object]]) -> int:
         if not channel_url or channel_url in seen:
             continue
         seen.add(channel_url)
-        if platform in {"rumble", "bitchute", "substack"} and is_open(platform):
+        if platform in {"rumble", "substack"} and is_open(platform):
             logger.warning(
                 "Skipping discovered %s scrape due to open circuit breaker: %s",
                 platform,
@@ -987,9 +957,6 @@ def queue_discovered_channel_scrapes(new_urls: list[dict[str, object]]) -> int:
             continue
         if platform == "rumble":
             scrape_rumble_channel.delay(channel_url)
-            queued += 1
-        elif platform == "bitchute":
-            scrape_bitchute_channel.delay(channel_url)
             queued += 1
         elif platform == "substack":
             scrape_substack_channel.delay(channel_url)
@@ -1079,7 +1046,6 @@ def discover_channels_now(
                 "duplicates": 0,
                 "invalid": 1,
                 "inserted_rumble": 0,
-                "inserted_bitchute": 0,
                 "inserted_substack": 0,
                 "category_metrics": {},
                 "feedback_terms": [],
@@ -1097,7 +1063,6 @@ def discover_channels_now(
             "duplicates": 0,
             "invalid": 0,
             "inserted_rumble": 0,
-            "inserted_bitchute": 0,
             "inserted_substack": 0,
             "category_metrics": {},
             "feedback_terms": [],

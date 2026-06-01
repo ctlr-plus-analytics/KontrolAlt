@@ -4,7 +4,7 @@
  */
 
 /** Supported scraping platforms. */
-export type Platform = "rumble" | "bitchute";
+export type Platform = "rumble" | "substack";
 
 /** Gate 0 compliance check status. */
 export type Gate0Status = "clean" | "dirty" | "pending" | "unchecked";
@@ -32,6 +32,7 @@ export interface Channel {
   posts_per_week: number | null;
   last_active_date: string | null;
   contact_info: string[];
+  category_tags?: string[];
   niche_tags: string[];
   video_titles: string[];
   is_active: boolean;

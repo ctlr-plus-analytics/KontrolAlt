@@ -2,21 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search, X, ArrowUp, ArrowDown, Check, ChevronDown } from "lucide-react";
-import type { ChannelFilters, NicheTagOption } from "@/types";
+import type { CategoryTagOption, ChannelFilters } from "@/types";
 import { NumericRangeFilter } from "@/components/filters/NumericRangeFilter";
 import { cn } from "@/lib/utils";
 
 interface FilterSidebarProps {
   filters: ChannelFilters;
   setFilters: (filters: ChannelFilters) => void;
-  nicheTagOptions: NicheTagOption[];
+  categoryTagOptions: CategoryTagOption[];
 }
 
 export const DEFAULT_FILTERS: ChannelFilters = {
   platform: "all",
   comment_tier: "all",
   gate0_statuses: [],
-  niche_tags: [],
+  category_tags: [],
   search_query: null,
   min_subscriber_count: null,
   max_subscriber_count: null,
@@ -35,7 +35,6 @@ export const DEFAULT_FILTERS: ChannelFilters = {
 const PLATFORMS = [
   { value: "all", label: "All" },
   { value: "rumble", label: "Rumble" },
-  { value: "bitchute", label: "BitChute" },
   { value: "substack", label: "Substack" },
 ] as const;
 
@@ -77,16 +76,16 @@ function FilterLabel({ children }: { children: React.ReactNode }) {
 export function FilterSidebar({
   filters,
   setFilters,
-  nicheTagOptions,
+  categoryTagOptions,
 }: FilterSidebarProps) {
-  const [isNicheMenuOpen, setIsNicheMenuOpen] = useState<boolean>(false);
-  const nicheMenuRef = useRef<HTMLDivElement | null>(null);
+  const [isCategoryMenuOpen, setIsCategoryMenuOpen] = useState<boolean>(false);
+  const categoryMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const onDocumentClick = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (!nicheMenuRef.current?.contains(target)) {
-        setIsNicheMenuOpen(false);
+      if (!categoryMenuRef.current?.contains(target)) {
+        setIsCategoryMenuOpen(false);
       }
     };
     document.addEventListener("mousedown", onDocumentClick);
@@ -107,7 +106,7 @@ export function FilterSidebar({
     if (filters.search_query) count++;
     if (filters.platform !== "all") count++;
     if (filters.comment_tier !== "all") count++;
-    if (filters.niche_tags.length > 0) count++;
+    if (filters.category_tags.length > 0) count++;
     if (filters.min_subscriber_count != null || filters.max_subscriber_count != null) count++;
     if (filters.min_avg_views != null || filters.max_avg_views != null) count++;
     if (filters.min_avg_comments != null || filters.max_avg_comments != null) count++;
@@ -265,62 +264,65 @@ export function FilterSidebar({
 
       <SectionLabel>Advanced</SectionLabel>
       <div className="flex flex-col gap-4 px-4 pb-6">
-        {nicheTagOptions.length > 0 && (
+        {categoryTagOptions.length > 0 && (
           <div className="flex flex-col gap-1">
-            <FilterLabel>Niche Tag</FilterLabel>
-            <div className="relative" ref={nicheMenuRef}>
+            <FilterLabel>Topic Category</FilterLabel>
+            <p className="text-[11px] text-[#F7F4EE]/35">
+              Broad, approximate tags. Channels may span multiple categories.
+            </p>
+            <div className="relative" ref={categoryMenuRef}>
               <button
                 type="button"
-                onClick={() => setIsNicheMenuOpen((prev) => !prev)}
+                onClick={() => setIsCategoryMenuOpen((prev) => !prev)}
                 className="flex w-full items-center justify-between rounded-lg border border-[#F7F4EE]/10 bg-[#F7F4EE]/6 px-3 py-2 text-sm text-[#F7F4EE] transition-shadow hover:border-[#F7F4EE]/20 focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/60"
               >
                 <span className="truncate">
-                  {filters.niche_tags.length === 0
-                    ? "Any / All Niches"
-                    : filters.niche_tags.length === 1
-                      ? filters.niche_tags[0]
-                      : `${filters.niche_tags.length} niches selected`}
+                  {filters.category_tags.length === 0
+                    ? "Any / All Categories"
+                    : filters.category_tags.length === 1
+                      ? filters.category_tags[0]
+                      : `${filters.category_tags.length} categories selected`}
                 </span>
                 <ChevronDown
                   size={14}
-                  className={cn("text-[#F7F4EE]/45 transition-transform", isNicheMenuOpen ? "rotate-180" : "")}
+                  className={cn("text-[#F7F4EE]/45 transition-transform", isCategoryMenuOpen ? "rotate-180" : "")}
                 />
               </button>
 
-              {isNicheMenuOpen && (
+              {isCategoryMenuOpen && (
                 <div className="absolute z-20 mt-1 w-full rounded-xl border border-[#F7F4EE]/15 bg-[#131323] p-1 shadow-2xl">
                   <button
                     type="button"
-                    onClick={() => update({ niche_tags: [] })}
+                    onClick={() => update({ category_tags: [] })}
                     className={cn(
                       "flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
-                      filters.niche_tags.length === 0
+                      filters.category_tags.length === 0
                         ? "bg-[#C9A84C]/14 text-[#C9A84C]"
                         : "text-[#F7F4EE]/75 hover:bg-[#F7F4EE]/6"
                     )}
                   >
                     <span className="flex items-center gap-2">
                       <span className="flex h-4 w-4 items-center justify-center rounded border border-current/35">
-                        {filters.niche_tags.length === 0 && <Check size={12} />}
+                        {filters.category_tags.length === 0 && <Check size={12} />}
                       </span>
-                      Any / All Niches
+                      Any / All Categories
                     </span>
                   </button>
 
                   <div className="my-1 h-px bg-[#F7F4EE]/10" />
 
                   <div className="max-h-64 overflow-y-auto scrollbar-thin">
-                    {nicheTagOptions.map((option) => {
-                      const isActive = filters.niche_tags.includes(option.tag);
+                    {categoryTagOptions.map((option) => {
+                      const isActive = filters.category_tags.includes(option.tag);
                       return (
                         <button
                           key={option.tag}
                           type="button"
                           onClick={() =>
                             update({
-                              niche_tags: isActive
-                                ? filters.niche_tags.filter((tag) => tag !== option.tag)
-                                : [...filters.niche_tags, option.tag],
+                              category_tags: isActive
+                                ? filters.category_tags.filter((tag) => tag !== option.tag)
+                                : [...filters.category_tags, option.tag],
                             })
                           }
                           className={cn(

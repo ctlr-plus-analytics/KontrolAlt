@@ -1,8 +1,8 @@
-"""Substack scraper — Camoufox browser for CF clearance, then two in-browser
+"""Substack scraper — Playwright Chromium for CF clearance, then two in-browser
 API calls via page.evaluate() fetch.
 
 Flow per channel:
-  1. launch_browser() (Camoufox) → navigate to /@handle/posts
+  1. launch_browser() (Playwright Chromium) → navigate to /@handle/posts
        Establishes cf_clearance and session cookies.  Storage-state is
        persisted to disk so repeat scrapes of the same channel skip the
        Cloudflare challenge entirely.
@@ -35,9 +35,7 @@ from playwright.async_api import Error as PlaywrightError
 from core.browser import (
     BrowserTelemetry,
     guarded_goto,
-    is_cold_session,
     launch_browser,
-    pre_warm_homepage,
     wait_for_content,
 )
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
@@ -57,9 +55,9 @@ _EXCLUDED_CONTACT_DOMAINS = {
 }
 
 # Timeout for the initial page navigation.
-_NAV_TIMEOUT_MS = 45_000
+_NAV_TIMEOUT_MS = 15_000
 # Timeout waiting for the page body to grow past the CF challenge stub.
-_CONTENT_WAIT_TIMEOUT_S = 30.0
+_CONTENT_WAIT_TIMEOUT_S = 15.0
 
 
 def parse_count_text(text: str) -> int | None:
@@ -153,7 +151,7 @@ def parse_substack_datetime(text: str) -> datetime | None:
 class SubstackScraper(BaseScraper):
     """Scraper for Substack publications.
 
-    Uses a single Camoufox browser navigation to establish Cloudflare
+    Uses a single Playwright Chromium navigation to establish Cloudflare
     clearance, then calls Substack's public JSON APIs via in-page fetch()
     to retrieve profile metadata and post metrics.
     """
@@ -177,14 +175,6 @@ class SubstackScraper(BaseScraper):
             ) as context:
                 page = await context.new_page()
 
-                # Cold sessions (no cf_clearance) get a brief homepage warm-up
-                # so the browser builds a plausible cookie history before hitting
-                # the deep channel URL directly.
-                if await is_cold_session(context):
-                    await pre_warm_homepage(
-                        page, _SUBSTACK_BASE_URL + "/", session_key=session_key
-                    )
-
                 # ── Step 1: navigate to /@handle ─────────────────────────────
                 # The bare /@handle URL triggers Substack's client-side JS redirect,
                 # resolving any username→@handle mismatches in one shot.
@@ -193,7 +183,7 @@ class SubstackScraper(BaseScraper):
                     page,
                     f"{_SUBSTACK_BASE_URL}/@{handle}",
                     session_key=session_key,
-                    wait_until="domcontentloaded",
+                    wait_until="commit",
                     timeout=_NAV_TIMEOUT_MS,
                 )
                 content_ok = await wait_for_content(
@@ -207,8 +197,17 @@ class SubstackScraper(BaseScraper):
                         retryable=True,
                     )
 
-                # Wait for JS redirect then read the resolved handle from page.url
-                await asyncio.sleep(2)
+                # Wait for JS redirect to resolve; exit early once URL stabilises.
+                # Substack's React app may redirect /@handle to /@canonical-handle.
+                # Using wait_for_url avoids the full 2 s sleep when no redirect fires.
+                _pre_redirect_url = page.url
+                try:
+                    await page.wait_for_url(
+                        lambda url: url.rstrip("/") != _pre_redirect_url.rstrip("/"),
+                        timeout=1500,
+                    )
+                except Exception:
+                    pass  # URL already stable — no client-side redirect occurred
                 current_url = page.url
 
                 if "/search" in urlsplit(current_url).path:
@@ -244,9 +243,16 @@ class SubstackScraper(BaseScraper):
 
                 name = str(profile.get("name") or "").strip() or handle
                 bio = str(profile.get("bio") or "").strip()
-                subscriber_count = parse_count_text(
-                    str(profile.get("subscriberCount") or "")
-                )
+
+                _raw_sub_count = profile.get("subscriberCount")
+                if _raw_sub_count is None:
+                    raise ScraperClassifiedError(
+                        "substack_see_subscribers_stub",
+                        f"Substack profile has hidden subscriber count for: {channel_base_url}",
+                        terminal=True,
+                        retryable=False,
+                    )
+                subscriber_count = parse_count_text(str(_raw_sub_count))
 
                 # ── Step 3: latest posts API ──────────────────────────────────
                 post_data_map, posts_bytes = await self._fetch_profile_posts(
@@ -335,7 +341,7 @@ class SubstackScraper(BaseScraper):
                 "comment_tier": comment_tier,
                 "posts_per_week": posts_per_week,
                 "last_active_date": (
-                    last_active_date.isoformat() if last_active_date else None
+                    last_active_date.date().isoformat() if last_active_date else None
                 ),
                 "contact_info": contact_info,
                 "niche_tags": demographic["niche_tags"],

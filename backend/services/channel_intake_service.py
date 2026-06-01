@@ -26,7 +26,6 @@ from models.channel_intake import (
     ResolverSeedResult,
 )
 from workers.tasks import (
-    TASK_SCRAPE_BITCHUTE_CHANNEL,
     TASK_SCRAPE_RUMBLE_CHANNEL,
     TASK_SCRAPE_SUBSTACK_CHANNEL,
 )
@@ -74,9 +73,6 @@ def _canonicalize_supported_url(
     if _matches_domain(host, "rumble.com"):
         platform = Platform.rumble
         canonical = urlunsplit(("https", "rumble.com", path, "", ""))
-    elif _matches_domain(host, "bitchute.com"):
-        platform = Platform.bitchute
-        canonical = urlunsplit(("https", "bitchute.com", path, "", ""))
     elif _matches_domain(host, "substack.com"):
         platform = Platform.substack
         subdomain_handle: str | None = None
@@ -106,7 +102,6 @@ def _canonicalize_supported_url(
 def _dispatch_scrape_task(channel_url: str, platform: Platform) -> str:
     task_map = {
         Platform.rumble: TASK_SCRAPE_RUMBLE_CHANNEL,
-        Platform.bitchute: TASK_SCRAPE_BITCHUTE_CHANNEL,
         Platform.substack: TASK_SCRAPE_SUBSTACK_CHANNEL,
     }
     task_name = task_map[platform]
@@ -348,13 +343,6 @@ def _guess_urls_for_seed(seed_name: str) -> list[ResolvedChannelCandidate]:
             source="guessed",
         ),
         ResolvedChannelCandidate(
-            platform=Platform.bitchute,
-            channel_url=f"https://bitchute.com/channel/{slug}",
-            channel_name=seed_name,
-            confidence=0.35,
-            source="guessed",
-        ),
-        ResolvedChannelCandidate(
             platform=Platform.substack,
             channel_url=f"https://substack.com/@{slug}",
             channel_name=seed_name,
@@ -392,7 +380,7 @@ async def resolve_seed_creators(
                 continue
 
             raw_platform = str(row.get("platform") or "").lower()
-            if raw_platform not in {"rumble", "bitchute", "substack"}:
+            if raw_platform not in {"rumble", "substack"}:
                 continue
             candidates.append(
                 ResolvedChannelCandidate(

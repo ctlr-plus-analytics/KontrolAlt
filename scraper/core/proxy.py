@@ -13,14 +13,25 @@ import redis
 from core.config import scraper_settings
 
 logger = logging.getLogger(__name__)
+
+# Singleton Redis client so every ProxyHealthTracker / ProxySessionManager call
+# reuses the same client rather than opening a new TCP connection each time.
+_proxy_redis_client: redis.Redis | None = None
+
+
+def _proxy_redis() -> redis.Redis:
+    global _proxy_redis_client
+    if _proxy_redis_client is None:
+        _proxy_redis_client = redis.Redis.from_url(
+            scraper_settings.redis_url,
+            decode_responses=True,
+            socket_connect_timeout=0.1,
+            socket_timeout=1.0,
+        )
+    return _proxy_redis_client
+
+
 PLATFORM_PROXY_REQUIREMENTS = {
-    "bitchute": {
-        "type": "residential",
-        "preferred_countries": ("US",),
-        # Sticky behavior is provided by upstream proxy credentials (.env),
-        # not rewritten in scraper code.
-        "sticky_session": "provider_configured",
-    },
     "rumble": {
         "type": "residential",
         "preferred_countries": ("US",),
@@ -167,7 +178,7 @@ class ProxyHealthTracker:
         return self._QUARANTINE_PREFIX + self._hash(proxy)
 
     def _redis(self) -> redis.Redis:
-        return redis.Redis.from_url(scraper_settings.redis_url, decode_responses=True)
+        return _proxy_redis()
 
     def get_score(self, proxy: str) -> float:
         """Return the current health score for a proxy (default 1.0)."""
@@ -363,27 +374,23 @@ class ProxySessionManager:
         """Record session as blocked in Redis (with TTL) and local fallback."""
         self._blocked_sessions_local[session_id] = time.time()
         try:
-            import redis as _redis
-            from core.config import scraper_settings as _settings
-            r = _redis.from_url(_settings.redis_url, decode_responses=True)
-            r.setex(self._redis_key(session_id), self.cooldown_seconds, "1")
+            _proxy_redis().setex(self._redis_key(session_id), self.cooldown_seconds, "1")
         except Exception as exc:
             logger.debug("ProxySessionManager: Redis mark_blocked failed (local fallback): %s", exc)
 
     def is_blocked(self, session_id: str) -> bool:
-        """Check Redis first; fall back to in-memory dict on Redis unavailability."""
+        """Check Redis first; also check in-memory dict as a safety net.
+
+        The in-memory dict is always checked so that a transient Redis write
+        failure in mark_blocked does not cause a blocked session to appear
+        unblocked on the very next is_blocked call.
+        """
         try:
-            import redis as _redis
-            from core.config import scraper_settings as _settings
-            r = _redis.from_url(_settings.redis_url, decode_responses=True)
-            if r.exists(self._redis_key(session_id)):
+            if _proxy_redis().exists(self._redis_key(session_id)):
                 return True
-            # Clean up stale local entry if Redis says it's clear.
-            self._blocked_sessions_local.pop(session_id, None)
-            return False
         except Exception as exc:
             logger.debug("ProxySessionManager: Redis is_blocked failed (local fallback): %s", exc)
-        # Local in-memory fallback.
+        # Local dict acts as fallback and safety net.
         blocked_at = self._blocked_sessions_local.get(session_id)
         if blocked_at is None:
             return False

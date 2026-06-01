@@ -70,8 +70,6 @@ def _infer_platform(channel_url: str) -> str | None:
     hostname = (urlsplit(channel_url).hostname or "").lower()
     if "rumble.com" in hostname:
         return "rumble"
-    if "bitchute.com" in hostname:
-        return "bitchute"
     if "substack.com" in hostname:
         return "substack"
     return None
@@ -279,10 +277,19 @@ def _daily_usage_key() -> str:
     return f"{_USAGE_KEY_PREFIX}{datetime.now(timezone.utc).date().isoformat()}"
 
 
-def _redis_client():
-    from redis import Redis
+_helpers_redis_singleton: "object | None" = None
 
-    return Redis.from_url(scraper_settings.redis_url)
+
+def _redis_client():
+    global _helpers_redis_singleton
+    if _helpers_redis_singleton is None:
+        from redis import Redis
+        _helpers_redis_singleton = Redis.from_url(
+            scraper_settings.redis_url,
+            socket_connect_timeout=0.1,
+            socket_timeout=1.0,
+        )
+    return _helpers_redis_singleton
 
 
 def _scrape_lock_key(channel_url: str) -> str:
@@ -398,7 +405,7 @@ def clear_platform_slots(platforms: list[str] | tuple[str, ...] | None = None) -
     deployments, coordinate usage because deleting shared counters can
     temporarily undercount active slots.
     """
-    targets = tuple(platforms or ("rumble", "bitchute", "substack"))
+    targets = tuple(platforms or ("rumble", "substack"))
     keys = [f"{_PLATFORM_SLOT_KEY_PREFIX}{platform}" for platform in targets]
     keys.append(_GLOBAL_SLOT_KEY)
     try:

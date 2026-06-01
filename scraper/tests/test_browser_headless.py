@@ -13,23 +13,29 @@ os.environ.setdefault("SERP_API_KEY", "serper-key")
 from core import browser
 
 
-def test_headless_defaults_to_virtual_on_linux_even_with_display(monkeypatch) -> None:
+def test_headless_defaults_to_true_on_linux(monkeypatch) -> None:
     monkeypatch.delenv("BROWSER_HEADLESS", raising=False)
-    monkeypatch.setenv("DISPLAY", ":99")
     monkeypatch.setattr(browser.sys, "platform", "linux")
-
-    assert browser._resolve_headless_mode() == "virtual"
-
-
-def test_headless_virtual_is_explicit_on_linux(monkeypatch) -> None:
-    monkeypatch.setenv("BROWSER_HEADLESS", "virtual")
-    monkeypatch.setenv("DISPLAY", ":99")
-    monkeypatch.setattr(browser.sys, "platform", "linux")
-
-    assert browser._resolve_headless_mode() == "virtual"
-
-
-def test_headless_true_remains_available_for_local_override(monkeypatch) -> None:
-    monkeypatch.setenv("BROWSER_HEADLESS", "true")
 
     assert browser._resolve_headless_mode() is True
+
+
+def test_headless_defaults_to_false_on_non_linux(monkeypatch) -> None:
+    monkeypatch.delenv("BROWSER_HEADLESS", raising=False)
+    monkeypatch.setattr(browser.sys, "platform", "win32")
+
+    assert browser._resolve_headless_mode() is False
+
+
+def test_headless_true_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("BROWSER_HEADLESS", "true")
+    monkeypatch.setattr(browser.sys, "platform", "win32")
+
+    assert browser._resolve_headless_mode() is True
+
+
+def test_headless_false_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("BROWSER_HEADLESS", "false")
+    monkeypatch.setattr(browser.sys, "platform", "linux")
+
+    assert browser._resolve_headless_mode() is False

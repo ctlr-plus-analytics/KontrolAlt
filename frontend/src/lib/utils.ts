@@ -94,8 +94,6 @@ export function getPlatformColor(platform: Platform): string {
   switch (platform) {
     case "rumble":
       return "bg-[#E8712B]/10 text-[#E8712B]";
-    case "bitchute":
-      return "bg-[#7B3FA0]/10 text-[#7B3FA0]";
     case "substack":
       return "bg-[#FF6719]/10 text-[#C04A0E]";
   }

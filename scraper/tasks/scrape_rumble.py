@@ -199,7 +199,8 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
             f"{channel_url}|attempt:{int(self.request.retries or 0)}|"
             f"task:{self.request.id}"
         )
-        result = asyncio.run(scraper.scrape(channel_url))
+        from core.browser_pool import worker_pool
+        result = worker_pool.run(scraper.scrape(channel_url))
         _emit_kpi_alerts(channel_url, result)
         metrics = result.get("_scrape_metrics", {}) if isinstance(result, dict) else {}
         bytes_est = int(metrics.get("bytes_est", 0) or 0)
@@ -391,7 +392,7 @@ def scrape_rumble_all() -> dict[str, object]:
 
     for i, url in enumerate(urls):
         # Stagger each task by 4-10 s per position. Rumble is less aggressive
-        # than BitChute but still sensitive to simultaneous request spikes.
+        # still sensitive to simultaneous request spikes.
         stagger_s = int(i * random.uniform(4, 10))
         scrape_rumble_channel.apply_async(args=[url], countdown=stagger_s)
 

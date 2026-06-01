@@ -87,7 +87,9 @@ class BaseScraper(ABC):
         Returns:
             The saved channel ID, or None if Supabase returned no row.
         """
-        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
+        data["updated_at"] = now
+        data["last_scraped_at"] = now
         data["has_been_scraped"] = True
         data["discovery_status"] = "scraped"
         result = (
@@ -100,6 +102,9 @@ class BaseScraper(ABC):
 
         channel_id = UUID(str(result.data[0]["id"]))
         await self._save_snapshot(channel_id, data)
+        self.supabase.table("channels").update(
+            {"gate0_status": "unchecked", "updated_at": now}
+        ).eq("id", str(channel_id)).eq("gate0_status", "clean").execute()
         return channel_id
 
     async def _save_snapshot(

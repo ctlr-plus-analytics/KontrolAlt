@@ -18,7 +18,6 @@ class Platform(str, Enum):
     """Supported scraping platforms."""
 
     rumble = "rumble"
-    bitchute = "bitchute"
     substack = "substack"
 
 
@@ -112,6 +111,7 @@ class ChannelFilters(BaseModel):
     platform: Platform | None = None
     comment_tier: CommentTier | None = None
     gate0_statuses: list[Gate0Status] | None = None
+    category_tags: list[str] | None = None
     niche_tags: list[str] | None = None
     search_query: str | None = None
     min_subscriber_count: int | None = None
@@ -176,9 +176,9 @@ class ChannelFilters(BaseModel):
         cleaned = v.strip()
         return cleaned or None
 
-    @field_validator("niche_tags", mode="before")
+    @field_validator("category_tags", "niche_tags", mode="before")
     @classmethod
-    def validate_niche_tags(cls, v: list[str] | str | None) -> list[str] | None:
+    def validate_category_tags(cls, v: list[str] | str | None) -> list[str] | None:
         if v is None:
             return None
         values = v if isinstance(v, list) else [v]
@@ -188,6 +188,14 @@ class ChannelFilters(BaseModel):
             if tag and tag not in cleaned:
                 cleaned.append(tag)
         return cleaned or None
+
+    @model_validator(mode="after")
+    def normalize_legacy_niche_tags(self) -> "ChannelFilters":
+        if self.category_tags is None and self.niche_tags is not None:
+            self.category_tags = self.niche_tags
+        if self.niche_tags is None and self.category_tags is not None:
+            self.niche_tags = self.category_tags
+        return self
 
     @field_validator("gate0_statuses", mode="before")
     @classmethod
@@ -274,18 +282,23 @@ class PaginatedChannels(BaseModel):
     page_size: int
 
 
-class NicheTagCount(BaseModel):
-    """Niche tag with total channel count."""
+class CategoryTagCount(BaseModel):
+    """Category tag with total channel count."""
 
     tag: str
     count: int
 
 
-class NicheTagListResponse(BaseModel):
-    """Distinct niche tag values used for filter options."""
+class CategoryTagListResponse(BaseModel):
+    """Distinct category tag values used for filter options."""
 
     tags: list[str]
-    tag_counts: list[NicheTagCount] = Field(default_factory=list)
+    tag_counts: list[CategoryTagCount] = Field(default_factory=list)
+
+
+# Backward-compat aliases
+NicheTagCount = CategoryTagCount
+NicheTagListResponse = CategoryTagListResponse
 
 
 class Gate0StatusCount(BaseModel):

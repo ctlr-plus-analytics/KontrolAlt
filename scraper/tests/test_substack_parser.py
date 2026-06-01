@@ -196,6 +196,13 @@ async def test_fetch_profile_posts_parses_metrics() -> None:
 
 # ── scrape() source sanity ────────────────────────────────────────────────────
 
+def test_scrape_raises_see_subscribers_stub_for_null_count() -> None:
+    """Null subscriberCount means the profile hides its count; must be terminal."""
+    source = inspect.getsource(SubstackScraper.scrape)
+    assert "substack_see_subscribers_stub" in source
+    assert "_raw_sub_count is None" in source
+
+
 def test_scrape_does_not_open_post_enrichment_pages() -> None:
     """Verify scrape() never opens separate post-enrichment tabs."""
     source = inspect.getsource(SubstackScraper.scrape)
@@ -206,8 +213,8 @@ def test_scrape_does_not_open_post_enrichment_pages() -> None:
     assert "post_enrichment" not in source
 
 
-def test_scrape_uses_camoufox_browser() -> None:
-    """Substack uses launch_browser (Camoufox) for CF clearance, not raw httpx."""
+def test_scrape_uses_browser_launch() -> None:
+    """Substack uses launch_browser (Playwright Chromium) for CF clearance, not raw httpx."""
     source = inspect.getsource(SubstackScraper.scrape)
     assert "launch_browser" in source
     assert "httpx" not in source

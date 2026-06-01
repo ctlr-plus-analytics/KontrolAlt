@@ -114,7 +114,8 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
             f"{channel_url}|attempt:{int(self.request.retries or 0)}|"
             f"task:{self.request.id}"
         )
-        result = asyncio.run(scraper.scrape(channel_url))
+        from core.browser_pool import worker_pool
+        result = worker_pool.run(scraper.scrape(channel_url))
         metrics = result.get("_scrape_metrics", {}) if isinstance(result, dict) else {}
         bytes_est = int(metrics.get("bytes_est", 0) or 0)
 

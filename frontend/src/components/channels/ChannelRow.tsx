@@ -5,7 +5,6 @@ import Link from "next/link";
 import type { Channel, VelocityScore } from "@/types";
 import { TableRow, TableCell } from "@/components/ui/Table";
 import { Gate0Badge } from "@/components/channels/Gate0Badge";
-import { CommentTierBadge } from "@/components/channels/CommentTierBadge";
 import { formatEngagementRate, formatNumber, timeAgo } from "@/lib/utils";
 
 interface ChannelRowProps {
@@ -14,6 +13,16 @@ interface ChannelRowProps {
 }
 
 export function ChannelRow({ channel, index }: ChannelRowProps) {
+  const primaryCategory = channel.category_tags?.[0] ?? channel.niche_tags?.[0] ?? "Uncategorized";
+  const contactStatus = channel.contact_info.length > 0 ? "Has Contact" : "No Contact";
+  const sourceHost = (() => {
+    try {
+      return new URL(channel.channel_url).hostname.replace(/^www\./, "");
+    } catch {
+      return channel.platform;
+    }
+  })();
+
   return (
     <TableRow index={index}>
       <TableCell>
@@ -31,19 +40,11 @@ export function ChannelRow({ channel, index }: ChannelRowProps) {
       </TableCell>
 
       <TableCell className="text-right font-mono text-[#0D0D0D]">
-        {formatNumber(channel.avg_comments)}
-      </TableCell>
-
-      <TableCell>
-        <CommentTierBadge tier={channel.comment_tier} />
-      </TableCell>
-
-      <TableCell>
-        <Gate0Badge status={channel.gate0_status} />
-      </TableCell>
-
-      <TableCell className="text-right font-mono text-[#0D0D0D]">
         {formatNumber(channel.subscriber_count)}
+      </TableCell>
+
+      <TableCell className="max-w-0 truncate text-[#2E2E2E]" title={primaryCategory}>
+        {primaryCategory}
       </TableCell>
 
       <TableCell className="text-right font-mono text-[#0D0D0D]">
@@ -51,11 +52,27 @@ export function ChannelRow({ channel, index }: ChannelRowProps) {
       </TableCell>
 
       <TableCell className="text-right font-mono text-[#0D0D0D]">
+        {formatNumber(channel.avg_comments)}
+      </TableCell>
+
+      <TableCell className="text-right font-mono text-[#0D0D0D]">
         {formatEngagementRate(channel.subscriber_count, channel.avg_views)}
       </TableCell>
 
+      <TableCell>
+        <Gate0Badge status={channel.gate0_status} flaggedBrand={channel.gate0_flagged_brand} />
+      </TableCell>
+
+      <TableCell className="text-xs text-[#6B6B6B]">
+        {contactStatus}
+      </TableCell>
+
+      <TableCell className="max-w-0 truncate text-xs text-[#6B6B6B]" title={sourceHost}>
+        {sourceHost}
+      </TableCell>
+
       <TableCell className="max-w-0 truncate text-xs text-[#6B6B6B]">
-        {timeAgo(channel.last_active_date)}
+        {timeAgo(channel.updated_at)}
       </TableCell>
     </TableRow>
   );

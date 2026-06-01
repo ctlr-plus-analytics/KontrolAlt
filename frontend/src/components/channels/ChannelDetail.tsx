@@ -52,8 +52,6 @@ export function ChannelDetail({
   const router = useRouter();
   const { session } = useAuth();
   const [lookalikes, setLookalikes] = useState<ChannelLookalikeMatch[]>([]);
-  const [lookalikeLoading, setLookalikeLoading] = useState(false);
-  const [lookalikeError, setLookalikeError] = useState<string | null>(null);
   const [deletingHistory, setDeletingHistory] = useState(false);
   const [deletingCompletely, setDeletingCompletely] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -62,6 +60,7 @@ export function ChannelDetail({
   const velocity = initialVelocity;
   const gate0Result = initialGate0;
   const gate0Status = channel.gate0_status;
+  const categoryTags = channel.category_tags ?? channel.niche_tags;
   const realtimeTables = useMemo(
     () => [
       { table: "channels", filter: `id=eq.${channel.id}` },
@@ -81,8 +80,6 @@ export function ChannelDetail({
   useEffect(() => {
     let cancelled = false;
     const loadLookalikes = async () => {
-      setLookalikeLoading(true);
-      setLookalikeError(null);
       try {
         const response = await getChannelLookalikes(
           channel.id,
@@ -99,15 +96,9 @@ export function ChannelDetail({
             )
           );
         }
-      } catch (err) {
+      } catch {
         if (!cancelled) {
-          setLookalikeError(
-            err instanceof Error ? err.message : "Failed to fetch lookalikes"
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setLookalikeLoading(false);
+          setLookalikes([]);
         }
       }
     };
@@ -144,12 +135,10 @@ export function ChannelDetail({
   };
   const platformLabelMap: Record<Channel["platform"], string> = {
     rumble: "Rumble",
-    bitchute: "BitChute",
     substack: "Substack",
   };
   const platformClassMap: Record<Channel["platform"], string> = {
     rumble: "bg-[#E8712B]/10 text-[#E8712B]",
-    bitchute: "bg-[#7B3FA0]/10 text-[#7B3FA0]",
     substack: "bg-[#FF6719]/10 text-[#C04A0E]",
   };
 
@@ -247,7 +236,7 @@ export function ChannelDetail({
           </div>
 
           <div className="flex flex-col items-end gap-3">
-            <Gate0Badge status={gate0Status} />
+            <Gate0Badge status={gate0Status} flaggedBrand={channel.gate0_flagged_brand} />
             <div className="flex gap-2">
               <a
                 href={channel.channel_url}
@@ -337,15 +326,15 @@ export function ChannelDetail({
         </div>
       </div>
 
-      {/* ─── Niche Tags ─── */}
-      {channel.niche_tags.length > 0 && (
+      {/* ─── Topic Categories ─── */}
+      {categoryTags.length > 0 && (
         <div>
           <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
             <Tag size={18} className="text-[#C9A84C]" />
-            Niche Tags
+            Topic Categories
           </h2>
           <div className="flex flex-wrap gap-2">
-            {channel.niche_tags.map((tag) => (
+            {categoryTags.map((tag) => (
               <Badge key={tag} variant="navy">
                 {tag}
               </Badge>
@@ -354,20 +343,11 @@ export function ChannelDetail({
         </div>
       )}
 
-      <div>
-        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">
-          Lookalike Channels
-        </h2>
-        {lookalikeError && (
-          <div className="mb-4 rounded-lg bg-[#B22222]/10 px-4 py-3 text-sm text-[#B22222]">
-            {lookalikeError}
-          </div>
-        )}
-        {lookalikeLoading ? (
-          <p className="text-sm text-[#6B6B6B]">Loading lookalikes...</p>
-        ) : lookalikes.length === 0 ? (
-          <p className="text-sm text-[#6B6B6B]">No lookalike channels found.</p>
-        ) : (
+      {lookalikes.length > 0 && (
+        <div>
+          <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">
+            Lookalike Channels
+          </h2>
           <div className="space-y-3">
             {lookalikes.map((match) => {
               const adapted: LookalikeMatch = {
@@ -383,8 +363,8 @@ export function ChannelDetail({
               return <LookalikeMatchCard key={adapted.id} match={adapted} />;
             })}
           </div>
-        )}
-      </div>
+        </div>
+      )}
       {/* ─── Scrape History ─── */}
       <div>
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
@@ -443,12 +423,12 @@ export function ChannelDetail({
         </div>
       </div>
 
-      {/* ─── Gate 0 History ─── */}
+      {/* ─── Previous Gold Affiliation History ─── */}
       {gate0Result && (
         <div>
           <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
             <Shield size={18} className="text-[#C9A84C]" />
-            Gate 0 Result
+            Previous Gold Affiliation
           </h2>
           <div className="rounded-xl border border-[#E8E4DC] bg-white p-5 shadow-sm">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -465,15 +445,10 @@ export function ChannelDetail({
                   Status
                 </p>
                 <div className="mt-1">
-                  <Badge
-                    variant={
-                      gate0Result.result_status === "clean"
-                        ? "success"
-                        : "danger"
-                    }
-                  >
-                    {gate0Result.result_status}
-                  </Badge>
+                  <Gate0Badge
+                    status={gate0Result.result_status}
+                    flaggedBrand={gate0Result.flagged_brand}
+                  />
                 </div>
               </div>
               <div>

@@ -4,7 +4,7 @@
  */
 
 /** Supported scraping platforms. */
-export type Platform = "rumble" | "bitchute" | "substack";
+export type Platform = "rumble" | "substack";
 
 /** Comment engagement tier. */
 export type CommentTier = "active" | "sweet_spot" | "whale";
@@ -32,6 +32,7 @@ export interface Channel {
   posts_per_week: number | null;
   last_active_date: string | null;
   contact_info: string[];
+  category_tags?: string[];
   niche_tags: string[];
   video_titles: string[];
   is_active: boolean;
@@ -232,7 +233,8 @@ export interface ChannelFilters {
   platform: "all" | Platform;
   comment_tier: "all" | CommentTier;
   gate0_statuses: Gate0Status[];
-  niche_tags: string[];
+  category_tags: string[];
+  niche_tags?: string[];
   search_query?: string | null;
   min_subscriber_count?: number | null;
   max_subscriber_count?: number | null;
@@ -336,10 +338,12 @@ export interface KeywordTaxonomyListResponse {
   taxonomy: KeywordTaxonomyDef[];
 }
 
-export interface NicheTagOption {
+export interface CategoryTagOption {
   tag: string;
   count: number;
 }
+
+export type NicheTagOption = CategoryTagOption;
 
 export interface Gate0StatusOption {
   status: Gate0Status;

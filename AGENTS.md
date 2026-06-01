@@ -40,3 +40,5 @@
 - Store secrets in `.env`; never commit credentials.
 - Treat Supabase service-role keys as server-only (`backend`/`scraper`), never expose them in frontend code.
 - Validate migration order and run migrations consistently across both migration directories before release.
+
+@RTK.md

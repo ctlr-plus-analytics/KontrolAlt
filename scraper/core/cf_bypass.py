@@ -40,22 +40,23 @@ _CF_RANGES = (
     "131.0.72.0/22",
 )
 
-# Keep this pool in sync with current Firefox stable/ESR releases.
-# Cloudflare cross-checks the UA version against the TLS JA3/JA4 fingerprint;
-# a stale version (>6 months old) is a reliable bot detection signal.
-FIREFOX_UA_POOL = (
-    # Firefox 138 — May 2026 stable
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
-    # Weighted 3x: Windows 10 is the dominant residential desktop OS
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:138.0) Gecko/20100101 Firefox/138.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:138.0) Gecko/20100101 Firefox/138.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13.7; rv:138.0) Gecko/20100101 Firefox/138.0",
-    # Firefox 137 — April 2026 stable
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.6; rv:137.0) Gecko/20100101 Firefox/137.0",
+# Keep in sync with the Playwright-bundled Chromium version (playwright==1.58 → Chromium 136).
+# The UA must match the actual engine version — a mismatch between the JS UA string
+# and the TLS/HTTP2 fingerprint is a primary Cloudflare bot-detection signal.
+# Windows 10 (NT 10.0) is weighted heavily: ~72% of global desktop traffic.
+CHROME_UA_POOL = (
+    # Chrome 136 — May 2026 stable, Windows 10 (3× weighted)
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    # Chrome 136, macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    # Chrome 135 — April 2026 stable, Windows 10 (2× weighted)
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    # Chrome 135, macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
 )
 
 
@@ -84,11 +85,21 @@ async def inter_request_jitter() -> None:
 # Redis-backed cross-worker session rate limiter
 # ---------------------------------------------------------------------------
 
-def _max_rpm_for_session(session_key: str, default_rpm: int, bitchute_rpm: int) -> int:
-    key = session_key.lower()
-    if "bitchute.com" in key or "bitchute|" in key:
-        return max(1, bitchute_rpm)
-    return max(1, default_rpm)
+# Module-level async Redis client — created once per event loop so every
+# guarded_goto() reuses the same connection pool instead of opening a new
+# TCP connection on every call.
+_aioredis_slot_client = None
+
+
+async def _get_slot_redis():
+    global _aioredis_slot_client
+    if _aioredis_slot_client is None:
+        import redis.asyncio as aioredis
+        from core.config import scraper_settings
+        _aioredis_slot_client = aioredis.from_url(
+            scraper_settings.redis_url, decode_responses=True
+        )
+    return _aioredis_slot_client
 
 
 async def acquire_session_request_slot(session_key: str | None) -> None:
@@ -100,55 +111,39 @@ async def acquire_session_request_slot(session_key: str | None) -> None:
     if not session_key:
         return
     runtime = get_runtime_settings()
-    max_rpm = _max_rpm_for_session(
-        session_key,
-        runtime.cf_bypass_max_rpm_residential,
-        runtime.cf_bypass_max_rpm_bitchute,
-    )
-    # Use a short stable key derived from the session to avoid key-space bloat.
+    max_rpm = max(1, runtime.cf_bypass_max_rpm_residential)
     slot_key = "ratelimit:session:" + hashlib.sha1(session_key.encode()).hexdigest()[:20]
     window_s = 60.0
     now = time.time()
     deadline = now + window_s
 
     try:
-        # Lazy import to avoid hard dependency when Redis is unavailable.
-        import redis.asyncio as aioredis
-        from core.config import scraper_settings
-
-        r = aioredis.from_url(scraper_settings.redis_url, decode_responses=True)
-        async with r:
-            while True:
-                pipe = r.pipeline()
-                # Remove timestamps outside the 60-second window.
-                pipe.zremrangebyscore(slot_key, 0, now - window_s)
-                # Count remaining timestamps in the window.
-                pipe.zcard(slot_key)
-                results = await pipe.execute()
-                count = results[1]
-                if count < max_rpm:
-                    # Slot available — record this request and proceed.
-                    score = now
-                    member = f"{now:.6f}-{random.getrandbits(32)}"
-                    await r.zadd(slot_key, {member: score})
-                    await r.expire(slot_key, 120)
-                    return
-                # Slot full — sleep for minimum time until oldest entry expires.
-                oldest_raw = await r.zrange(slot_key, 0, 0, withscores=True)
-                if oldest_raw:
-                    oldest_ts = oldest_raw[0][1]
-                    sleep_s = max(0.1, (oldest_ts + window_s) - time.time())
-                else:
-                    sleep_s = window_s / max_rpm
-                sleep_s += random.uniform(0.05, 0.3)  # jitter to avoid thundering herd
-                await asyncio.sleep(min(sleep_s, 5.0))
-                now = time.time()
-                if now > deadline:
-                    # Safety valve — never block indefinitely.
-                    return
+        r = await _get_slot_redis()
+        while True:
+            pipe = r.pipeline()
+            pipe.zremrangebyscore(slot_key, 0, now - window_s)
+            pipe.zcard(slot_key)
+            results = await pipe.execute()
+            count = results[1]
+            if count < max_rpm:
+                score = now
+                member = f"{now:.6f}-{random.getrandbits(32)}"
+                await r.zadd(slot_key, {member: score})
+                await r.expire(slot_key, 120)
+                return
+            oldest_raw = await r.zrange(slot_key, 0, 0, withscores=True)
+            if oldest_raw:
+                oldest_ts = oldest_raw[0][1]
+                sleep_s = max(0.1, (oldest_ts + window_s) - time.time())
+            else:
+                sleep_s = window_s / max_rpm
+            sleep_s += random.uniform(0.05, 0.3)
+            await asyncio.sleep(min(sleep_s, 5.0))
+            now = time.time()
+            if now > deadline:
+                return
     except Exception:
-        # If Redis is unavailable fall back to a simple in-process sleep so
-        # scraping continues rather than crashing.
+        # Redis unavailable — fall back to a proportional in-process sleep.
         await asyncio.sleep(window_s / max(1, max_rpm) + random.uniform(0.1, 0.5))
 
 
@@ -294,12 +289,11 @@ def get_consistent_browser_profile(
     else:
         rng = random.Random()
 
-    # NOTE: User-agent is intentionally NOT selected here.
-    # Camoufox manages the UA from its bundled Firefox binary at the C++ engine
-    # level, ensuring the UA, TLS fingerprint, and internal browser signals are
-    # consistent. Overriding the UA via new_context(user_agent=...) would risk
-    # a version mismatch between the UA string and the TLS JA3/JA4 fingerprint
-    # that Camoufox presents — a reliable Cloudflare detection signal.
+    # Select a UA from the Chrome pool. With Playwright Chromium the UA string
+    # and TLS fingerprint are both Chrome-based, so setting user_agent via
+    # new_context() is safe and required to mask the "HeadlessChrome" token
+    # that Playwright injects in headless mode.
+    user_agent = rng.choice(CHROME_UA_POOL)
 
     # Comprehensive country → (locale, timezone) map.
     # Covers the most common residential proxy geographies.
@@ -346,11 +340,8 @@ def get_consistent_browser_profile(
         "locale": locale,
         "timezone_id": timezone,
         "viewport": viewport,
+        "user_agent": user_agent,
         "extra_http_headers": {
-            # Accept-Language: primary locale with realistic q-value fallback.
-            # DNT removed — deprecated and removed from Firefox 135+ UI; sending
-            # it with a modern UA is a bot fingerprint signal.
-            # Accept-Encoding omitted — Camoufox manages this at the engine level.
             "Accept-Language": f"{locale},en;q=0.9",
         },
     }
@@ -363,7 +354,7 @@ async def verify_fingerprint(page) -> dict[str, bool]:
     looks like a real browser (pass) and ``False`` means it looks like
     an automation artifact (fail).
 
-    Designed for Firefox/Camoufox — chrome_absent is expected True.
+    Designed for Playwright Chromium — window.chrome is expected present.
     Call this after ``wait_for_content`` and log any failures.
     """
     return await page.evaluate(
@@ -371,11 +362,12 @@ async def verify_fingerprint(page) -> dict[str, bool]:
             webdriver_hidden: navigator.webdriver === undefined || navigator.webdriver === false,
             plugins_present: navigator.plugins.length > 0,
             languages_present: !!(navigator.languages && navigator.languages.length > 0),
-            no_chrome_leak: typeof window.chrome === 'undefined',
+            chrome_present: typeof window.chrome !== 'undefined',
             no_webdriver_attr: !document.documentElement.getAttribute('webdriver'),
             canvas_functional: (() => { try { const c = document.createElement('canvas'); c.getContext('2d'); return true; } catch(e) { return false; } })(),
             screen_realistic: screen.width >= 1024 && screen.height >= 768,
             has_history: typeof window.history !== 'undefined' && window.history.length >= 1,
+            no_cdc_leak: typeof window.cdc_adoQpoasnfa76pfcZLmcfl_Array === 'undefined',
         })"""
     )
 

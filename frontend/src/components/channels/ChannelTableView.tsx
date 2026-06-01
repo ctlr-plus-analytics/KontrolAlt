@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef, useLayoutEffect } from "react";
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
-import type { Channel, ChannelFilters, NicheTagOption, VelocityScore } from "@/types";
+import type { CategoryTagOption, Channel, ChannelFilters, VelocityScore } from "@/types";
 import { ChannelTable } from "@/components/channels/ChannelTable";
 import { ChannelIntakePanel } from "@/components/channels/ChannelIntakePanel";
 import { FilterSidebar, DEFAULT_FILTERS } from "@/components/filters/FilterSidebar";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { useChannels } from "@/hooks/useChannels";
 import { useAuth } from "@/hooks/useAuth";
-import { getNicheTags } from "@/lib/api/backend";
+import { getCategoryTags } from "@/lib/api/backend";
 
 interface ChannelTableViewProps {
   initialChannels: (Channel & { velocity?: VelocityScore | null })[];
@@ -47,7 +47,7 @@ export function ChannelTableView({
   const [filters, setFilters] = useState<ChannelFilters>(DEFAULT_FILTERS);
   const [page, setPage] = useState<number>(1);
   const [intakeOpen, setIntakeOpen] = useState<boolean>(false);
-  const [nicheTagOptions, setNicheTagOptions] = useState<NicheTagOption[]>([]);
+  const [categoryTagOptions, setCategoryTagOptions] = useState<CategoryTagOption[]>([]);
   const { session } = useAuth();
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -57,7 +57,13 @@ export function ChannelTableView({
   // Must run after the initial render so SSR and client HTML match exactly.
   useEffect(() => {
     const saved = readStorage();
-    if (saved.filters) setFilters(saved.filters);
+    if (saved.filters) {
+      const normalizedFilters: ChannelFilters = {
+        ...saved.filters,
+        category_tags: saved.filters.category_tags ?? saved.filters.niche_tags ?? [],
+      };
+      setFilters(normalizedFilters);
+    }
     if (saved.page) setPage(saved.page);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -126,9 +132,9 @@ export function ChannelTableView({
   useEffect(() => {
     let cancelled = false;
     const loadFilterOptions = async () => {
-      const tagsResult = await getNicheTags(session?.access_token).catch(() => null);
+      const tagsResult = await getCategoryTags(session?.access_token).catch(() => null);
       if (!cancelled) {
-        setNicheTagOptions(tagsResult ?? []);
+        setCategoryTagOptions(tagsResult ?? []);
       }
     };
     void loadFilterOptions();
@@ -141,7 +147,7 @@ export function ChannelTableView({
       <FilterSidebar
         filters={filters}
         setFilters={handleSetFilters}
-        nicheTagOptions={nicheTagOptions}
+        categoryTagOptions={categoryTagOptions}
       />
 
       {/* ── Main Content ── */}

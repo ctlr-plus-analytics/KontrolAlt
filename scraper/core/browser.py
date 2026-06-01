@@ -1,11 +1,9 @@
-"""Camoufox browser launch with stealth config and proxy support."""
+"""Playwright Chromium browser launch with stealth config and proxy support."""
 
 import asyncio
 import json
 import logging
-import math
 import os
-import random
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -13,8 +11,7 @@ from pathlib import Path
 from typing import AsyncGenerator
 from urllib.parse import unquote, urlsplit
 
-from playwright.async_api import BrowserContext
-from camoufox.async_api import AsyncCamoufox
+from playwright.async_api import async_playwright, BrowserContext
 
 from core.cf_bypass import (
     acquire_session_request_slot,
@@ -29,7 +26,6 @@ from core.config import scraper_settings
 from core.exceptions import CloudflareBlockError
 from core.proxy import (
     get_weighted_proxy,
-    get_random_proxy,
     extract_proxy_country,
     record_proxy_success,
     record_proxy_failure,
@@ -96,7 +92,11 @@ def _profile_dir(session_key: str | None) -> Path | None:
     if not session_key:
         return None
     import hashlib
-    key_hash = hashlib.sha256(session_key.encode()).hexdigest()[:24]
+    # Strip the per-run task ID so the same channel always maps to the same
+    # profile directory. Without this, cf_clearance is never reused because
+    # session_key includes "|task:{UUID}" which changes every Celery run.
+    stable_key = session_key.split("|task:")[0] if "|task:" in session_key else session_key
+    key_hash = hashlib.sha256(stable_key.encode()).hexdigest()[:24]
     return _PROFILE_BASE_DIR / key_hash
 
 
@@ -169,57 +169,20 @@ def _blocked_resource_types() -> set[str]:
 # Runtime config
 # ---------------------------------------------------------------------------
 
-def _resolve_headless_mode() -> bool | str:
-    """Resolve effective headless mode from env and display availability.
+def _resolve_headless_mode() -> bool:
+    """Resolve effective headless mode.
 
-    Production default is ``virtual`` (Xvfb on Linux servers), which provides
-    the headed-mode rendering profile required to minimise Cloudflare detection
-    while remaining compatible with headless server deployments.
+    Production default on Linux is True (headless Chromium; no Xvfb required).
+    Dev machines (Windows/macOS) run headed by default for observability.
 
-    Environment values:
-      ``virtual`` (default) — headed inside Xvfb on Linux; headed on Windows.
-      ``false``             — fully headed (requires a display server / desktop).
-      ``true``              — standard headless (highest detection risk; avoid).
+    Set ``BROWSER_HEADLESS=true`` to force headless, ``false`` to force headed.
     """
-    raw = os.environ.get("BROWSER_HEADLESS", "virtual").strip().lower()
-
+    raw = os.environ.get("BROWSER_HEADLESS", "").strip().lower()
     if raw == "true":
-        logger.warning(
-            "BROWSER_HEADLESS=true: running in full headless mode — highest CF detection risk. "
-            "Set BROWSER_HEADLESS=virtual (default) for production deployments."
-        )
         return True
-
     if raw == "false":
         return False
-
-    # Default: "virtual" — Xvfb on Linux, headed on Windows/macOS.
-    if raw not in {"", "virtual"}:
-        logger.warning(
-            "Unknown BROWSER_HEADLESS=%r; using virtual browser mode by default.",
-            raw,
-        )
-
-    # Default: "virtual" uses Xvfb on Linux; headed fallback elsewhere.
-    if sys.platform != "linux":
-        # Windows/macOS have no Xvfb; fall back to headed mode for dev machines.
-        return False
-
-    return "virtual"
-
-
-def _resolve_camoufox_geoip_enabled(*, has_proxy: bool) -> bool:
-    """Resolve whether Camoufox GeoIP should be enabled.
-
-    With proxies, Camoufox recommends GeoIP enabled for fingerprint coherence.
-    Allow explicit env override; otherwise default to enabled when proxying.
-    """
-    if has_proxy:
-        # Always enable GeoIP for proxied sessions to avoid Camoufox proxy leak warnings
-        # and keep locale/timezone behavior coherent with residential proxy routing.
-        return True
-    raw = os.environ.get("CAMOUFOX_GEOIP", "false").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    return sys.platform == "linux"
 
 
 def _parse_attempt_from_session_key(session_key: str | None) -> int:
@@ -258,21 +221,22 @@ async def _post_navigation_check(page, *, context_label: str = "") -> None:
         logger.debug("Fingerprint check error for %s: %s", context_label, exc)
 
 
-async def human_delay(min_s: float = 2.0, max_s: float = 8.0) -> None:
-    """Sleep for a random duration to mimic human behaviour.
+async def human_delay(min_s: float | None = None, max_s: float | None = None) -> None:
+    """Sleep for a random lognormal duration to mimic human behaviour.
 
-    Args:
-        min_s: Minimum delay in seconds.
-        max_s: Maximum delay in seconds.
+    When called with no arguments, uses scraper_human_delay_min/max_seconds
+    from RuntimeSettings.  Explicit arguments are used as-is so callers can
+    request shorter delays (e.g. pre-warm scrolls) without being overridden.
     """
     runtime = get_runtime_settings()
-    resolved_min = max(0.0, max(min_s, runtime.scraper_human_delay_min_seconds))
-    resolved_max = max(resolved_min, max(max_s, runtime.scraper_human_delay_max_seconds))
+    effective_min = min_s if min_s is not None else runtime.scraper_human_delay_min_seconds
+    effective_max = max_s if max_s is not None else runtime.scraper_human_delay_max_seconds
+    effective_max = max(effective_min, effective_max)
     value = human_delay_value()
-    if value < resolved_min:
-        value = resolved_min
-    if value > resolved_max:
-        value = resolved_max
+    if value < effective_min:
+        value = effective_min
+    if value > effective_max:
+        value = effective_max
     await asyncio.sleep(value)
 
 
@@ -317,101 +281,90 @@ async def wait_for_content(
     return False
 
 
+# Injected into every new page at the context level.
+# Masks the primary automation signal; plugins and chrome.runtime are patched
+# so headless Chromium looks identical to a standard desktop install.
+_STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+if (navigator.plugins.length === 0) {
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin' },
+        ]
+    });
+}
+if (!window.chrome) { window.chrome = {}; }
+if (!window.chrome.runtime) { window.chrome.runtime = {}; }
+"""
+
+
 @asynccontextmanager
 async def launch_browser(
     *,
     session_key: str | None = None,
     telemetry: BrowserTelemetry | None = None,
 ) -> AsyncGenerator[BrowserContext, None]:
-    """Launch a Camoufox browser context with stealth flags.
+    """Launch a Playwright Chromium browser context with stealth flags.
 
-    Production default is ``BROWSER_HEADLESS=virtual`` (Xvfb on Linux), which
-    provides the headed-mode rendering profile required to minimise Cloudflare
-    detection while remaining compatible with headless server deployments.
+    Uses the per-worker browser pool when available (avoids 2–5 s Chromium
+    cold-start per task).  Falls back to a fresh browser launch during tests
+    or when the pool is unavailable.
 
-    Improvements over naive launch:
-    * Health-weighted proxy selection — burned proxies receive proportionally
-      less traffic; quarantined proxies are skipped entirely.
-    * Storage-state persistence — cookies (incl. ``cf_clearance``) and
-      localStorage are saved to disk keyed by session and restored on the
-      next run, eliminating the cold-start Cloudflare challenge on repeat
-      visits to the same channel.
-    * ``extra_http_headers`` (Accept-Language) wired into the context so it
-      always matches the proxy IP's geographic locale.
-    * Proxy health feedback — CloudflareBlockError automatically penalises
-      the selected proxy; clean exits recover its score.
+    Proxy is always set at context level so pool and fallback paths behave
+    identically and different tasks can use different proxy endpoints.
 
     Yields:
         A configured BrowserContext ready for scraping.
     """
     attempt = _parse_attempt_from_session_key(session_key)
     proxy = get_weighted_proxy()
-
     headless = _resolve_headless_mode()
     proxy_settings = _parse_proxy_settings(proxy)
-
-    # Extract country from proxy URL for fingerprint coherence.
-    # Many residential providers encode country in the username (e.g. user-country-us).
     proxy_country = extract_proxy_country(proxy)
+    proxy_active = bool(proxy_settings.get("server"))
 
     logger.debug(
-        "Launching browser: headless=%s display=%s attempt=%d proxy_server=%s proxy_country=%s",
+        "Launching browser: headless=%s attempt=%d proxy_server=%s proxy_country=%s",
         headless,
-        os.environ.get("DISPLAY", ""),
         attempt,
         proxy_settings.get("server"),
         proxy_country or "unknown",
     )
 
-    geoip_enabled = _resolve_camoufox_geoip_enabled(has_proxy=bool(proxy_settings.get("server")))
     if telemetry is not None:
-        telemetry.geoip_enabled = geoip_enabled
+        telemetry.geoip_enabled = proxy_active
         telemetry.selected_proxy = proxy
 
-    # Build a deterministic fingerprint profile seeded from the session key so
-    # the same session always presents the same viewport/locale across retries.
-    # Proxy country is wired in so locale/timezone match the IP's geographic origin.
     profile = get_consistent_browser_profile(
         session_key=session_key,
         proxy_country=proxy_country,
     )
 
-    # Load persisted storage state (cookies + localStorage) for this session.
-    # If a valid cf_clearance cookie is present it will be restored, avoiding
-    # a fresh Cloudflare challenge on every scrape run.
     pdir = _profile_dir(session_key)
     saved_state = _load_browser_state(pdir)
-    has_clearance = _state_has_cf_clearance(saved_state)
-    if has_clearance:
+    if _state_has_cf_clearance(saved_state):
         logger.debug("launch_browser: restoring session with cf_clearance cookie")
 
-    # Always spoof Windows — it accounts for ~72% of global desktop traffic.
-    # Linux residential is <3% and is statistically unusual for a real user.
-    # Running on a Linux Docker host but spoofing Windows is correct because
-    # Camoufox patches the OS signals at the C++ engine level.
     _cf_blocked = False
     _cf_error_code: int | None = None
-    async with AsyncCamoufox(
-        headless=headless,
-        proxy=proxy_settings,
-        geoip=geoip_enabled,
-        os="windows",
-    ) as browser:
+    proxy_arg = proxy_settings if proxy_active else None
+
+    async def _build_context(browser) -> BrowserContext:
+        """Create and configure a BrowserContext from *browser*."""
         context: BrowserContext = await browser.new_context(
             viewport=profile["viewport"],
-            # service_workers omitted: real browsers use service workers.
-            # Blocking them is both a bot-tell and can break CF's invisible
-            # proof-of-work challenges that rely on service worker execution.
             permissions=["geolocation"],
             locale=str(profile["locale"]),
             timezone_id=str(profile["timezone_id"]),
-            # Wire in Accept-Language so it matches the proxy country locale.
-            # Previously this was computed but never passed — now correctly applied.
             extra_http_headers=dict(profile["extra_http_headers"]),
-            # Restore prior session state (cookies + localStorage) if available.
-            # Playwright merges this with any cookies set during the session.
             storage_state=saved_state,
+            user_agent=str(profile["user_agent"]),
+            proxy=proxy_arg,  # proxy at context level; supports pool + per-task rotation
         )
+        await context.add_init_script(_STEALTH_JS)
+
         blocked_types = _blocked_resource_types()
         if blocked_types:
             async def _route_guard(route) -> None:
@@ -424,12 +377,10 @@ async def launch_browser(
                     await route.abort()
                     return
                 await route.continue_()
-
             await context.route("**/*", _route_guard)
 
         async def _abort_route(route) -> None:
             await route.abort()
-
         for pattern in _BLOCKED_URL_PATTERNS:
             await context.route(pattern, _abort_route)
 
@@ -445,18 +396,23 @@ async def launch_browser(
                     telemetry.response_count += 1
                 except Exception:
                     return
-
             def _on_response(response) -> None:
                 asyncio.create_task(_accumulate_response(response))
-
             context.on("response", _on_response)
 
-        # NOTE: No custom headers injected here.
-        # Previously, X-KA-Session was set via set_extra_http_headers().
-        # That header is a non-standard bot fingerprint signal (real Firefox
-        # never sends it) and has been removed. Session tracking remains
-        # internal via Redis keys only.
+        return context
 
+    # Try to reuse the shared browser from the worker pool (no cold start).
+    _pool_browser = None
+    try:
+        from core.browser_pool import worker_pool
+        _pool_browser = await worker_pool.ensure_browser()
+    except Exception:
+        pass
+
+    if _pool_browser is not None:
+        # Fast path: new context from shared browser process.
+        context = await _build_context(_pool_browser)
         try:
             yield context
         except CloudflareBlockError as exc:
@@ -464,16 +420,38 @@ async def launch_browser(
             _cf_error_code = exc.error_code
             raise
         finally:
-            # Persist storage state so cf_clearance and session cookies survive
-            # across Celery task runs for the same session key.
             await _save_browser_state(context, pdir)
-            # Record proxy health feedback so the weighted rotator learns which
-            # proxies are healthy and which should be sidelined.
             if _cf_blocked:
                 record_proxy_failure(proxy, _cf_error_code)
             else:
                 record_proxy_success(proxy)
             await context.close()
+    else:
+        # Fallback: fresh Playwright + Chromium launch (tests / pool unavailable).
+        # Proxy is not set at browser level — _build_context() sets it at context
+        # level so the pool and fallback paths behave identically.
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=headless,
+                args=["--disable-blink-features=AutomationControlled", "--no-first-run"],
+            )
+            try:
+                context = await _build_context(browser)
+                try:
+                    yield context
+                except CloudflareBlockError as exc:
+                    _cf_blocked = True
+                    _cf_error_code = exc.error_code
+                    raise
+                finally:
+                    await _save_browser_state(context, pdir)
+                    if _cf_blocked:
+                        record_proxy_failure(proxy, _cf_error_code)
+                    else:
+                        record_proxy_success(proxy)
+                    await context.close()
+            finally:
+                await browser.close()
 
 
 async def is_cold_session(context: BrowserContext) -> bool:
@@ -508,10 +486,10 @@ async def pre_warm_homepage(page, base_url: str, session_key: str | None = None)
         logger.debug("pre_warm_homepage: visiting %s", base_url)
         await acquire_session_request_slot(session_key)
         await page.goto(base_url, wait_until="domcontentloaded", timeout=20_000)
-        await human_delay(1.5, 4.0)
+        await human_delay(0.5, 1.5)
         await initialize_mouse_position(page)
         await human_scroll(page, direction="down", steps=2)
-        await human_delay(0.8, 2.5)
+        await human_delay(0.3, 0.8)
         logger.debug("pre_warm_homepage: completed for %s", base_url)
     except Exception as exc:
         logger.debug("pre_warm_homepage: skipped for %s: %s", base_url, exc)

@@ -55,6 +55,33 @@ _CHANNEL_COLUMNS = {
     "updated_at",
 }
 
+_BROAD_CATEGORIES = {
+    "Prepper / Survival",
+    "Financial / Macro",
+    "Conservative Politics",
+    "Health / Wellness",
+    "Homesteading",
+    "Crypto / Alternative Assets",
+    "Religious / Values-Based",
+    "News / Commentary",
+    "Unknown / Needs Review",
+}
+_NORMALIZED_BROAD_CATEGORY_LOOKUP: dict[str, str] = {
+    value.lower(): value for value in _BROAD_CATEGORIES
+}
+
+
+def _canonicalize_niche_tag(tag: str | None) -> str:
+    if not tag or not tag.strip():
+        return "Unknown / Needs Review"
+    normalized = tag.strip().lower()
+    return _NORMALIZED_BROAD_CATEGORY_LOOKUP.get(normalized, "Unknown / Needs Review")
+
+
+def _normalize_filter_niche_tags(tags: list[str]) -> list[str]:
+    normalized = {_canonicalize_niche_tag(raw_tag) for raw_tag in tags}
+    return sorted(normalized, key=lambda value: value.lower())
+
 
 def _channel_from_discovery_row(row: dict[str, object]) -> ChannelWithMetrics:
     """Convert a channels row into the public response model."""
@@ -111,7 +138,6 @@ async def get_channels(
 
         if filters.comment_tier is not None:
             query = query.eq("comment_tier", filters.comment_tier.value)
-        # Removed default 'not null' filter to allow BitChute channels to show
 
         if filters.gate0_statuses:
             query = query.in_(
@@ -119,8 +145,8 @@ async def get_channels(
                 [status.value for status in filters.gate0_statuses],
             )
 
-        if filters.niche_tags:
-            query = query.overlaps("niche_tags", filters.niche_tags)
+        if filters.category_tags:
+            query = query.overlaps("niche_tags", _normalize_filter_niche_tags(filters.category_tags))
 
         if filters.search_query is not None:
             term = filters.search_query.replace("%", "").replace(",", "").strip()
@@ -188,7 +214,6 @@ async def list_niche_tags() -> tuple[list[str], list[dict[str, int | str]]]:
             supabase_admin.table(_CHANNELS_TABLE)
             .select("niche_tags")
             .eq("dashboard_eligible", True)
-            .not_.is_("niche_tags", "null")
             .execute()
         )
         rows = result.data or []
@@ -196,14 +221,14 @@ async def list_niche_tags() -> tuple[list[str], list[dict[str, int | str]]]:
         counts: dict[str, int] = {}
         for row in rows:
             tags = row.get("niche_tags")
-            if not isinstance(tags, list):
-                continue
             seen_in_channel: set[str] = set()
-            for raw_tag in tags:
-                if not isinstance(raw_tag, str):
-                    continue
-                tag = raw_tag.strip()
-                if tag:
+            if not isinstance(tags, list) or len(tags) == 0:
+                unknown_tag = "Unknown / Needs Review"
+                unique.add(unknown_tag)
+                seen_in_channel.add(unknown_tag)
+            else:
+                for raw_tag in tags:
+                    tag = _canonicalize_niche_tag(raw_tag if isinstance(raw_tag, str) else None)
                     unique.add(tag)
                     seen_in_channel.add(tag)
             for tag in seen_in_channel:

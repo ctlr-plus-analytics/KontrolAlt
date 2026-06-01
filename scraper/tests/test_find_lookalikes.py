@@ -40,14 +40,18 @@ def test_niche_matches_require_one_overlapping_tag_and_exclude_seed() -> None:
     matches: list[dict[str, object]] = []
     seed_channel = {
         "id": "seed",
-        "niche_tags": ["gold", "retirement"],
+        "niche_tags": ["Financial / Macro", "News / Commentary"],
         "subscriber_count": 1000,
     }
     channels = [
         seed_channel,
-        {"id": "one", "niche_tags": ["gold"], "subscriber_count": 1050},
-        {"id": "two", "niche_tags": ["gold", "retirement", "health"], "subscriber_count": 950},
-        {"id": "three", "niche_tags": ["gold"], "subscriber_count": 1200},
+        {"id": "one", "niche_tags": ["Financial / Macro"], "subscriber_count": 1050},
+        {
+            "id": "two",
+            "niche_tags": ["Financial / Macro", "News / Commentary", "Health / Wellness"],
+            "subscriber_count": 950,
+        },
+        {"id": "three", "niche_tags": ["Financial / Macro"], "subscriber_count": 1200},
     ]
 
     _append_niche_matches("s1", seed_channel, channels, matches)
@@ -57,21 +61,21 @@ def test_niche_matches_require_one_overlapping_tag_and_exclude_seed() -> None:
             "seed_id": "s1",
             "matched_channel_id": "one",
             "match_type": "niche_overlap",
-            "match_detail": "Shared tags: gold | Subscribers: 1000 vs 1050 (+5.00%)",
+            "match_detail": "Shared tags: Financial / Macro | Subscribers: 1000 vs 1050 (+5.00%)",
         },
         {
             "seed_id": "s1",
             "matched_channel_id": "two",
             "match_type": "niche_overlap",
-            "match_detail": "Shared tags: gold, retirement | Subscribers: 1000 vs 950 (-5.00%)",
+            "match_detail": "Shared tags: Financial / Macro, News / Commentary | Subscribers: 1000 vs 950 (-5.00%)",
         }
     ]
 
 
 def test_niche_matches_reject_when_subscriber_similarity_fails() -> None:
     matches: list[dict[str, object]] = []
-    seed_channel = {"id": "seed", "niche_tags": ["gold"], "subscriber_count": 1000}
-    channels = [{"id": "other", "niche_tags": ["gold"], "subscriber_count": 1110}]
+    seed_channel = {"id": "seed", "niche_tags": ["Financial / Macro"], "subscriber_count": 1000}
+    channels = [{"id": "other", "niche_tags": ["Financial / Macro"], "subscriber_count": 1110}]
 
     _append_niche_matches("s1", seed_channel, channels, matches)
 
@@ -80,10 +84,10 @@ def test_niche_matches_reject_when_subscriber_similarity_fails() -> None:
 
 def test_niche_matches_accept_subscriber_similarity_boundary() -> None:
     matches: list[dict[str, object]] = []
-    seed_channel = {"id": "seed", "niche_tags": ["gold"], "subscriber_count": 1000}
+    seed_channel = {"id": "seed", "niche_tags": ["Financial / Macro"], "subscriber_count": 1000}
     channels = [
-        {"id": "low", "niche_tags": ["gold"], "subscriber_count": 900},
-        {"id": "high", "niche_tags": ["gold"], "subscriber_count": 1100},
+        {"id": "low", "niche_tags": ["Financial / Macro"], "subscriber_count": 900},
+        {"id": "high", "niche_tags": ["Financial / Macro"], "subscriber_count": 1100},
     ]
 
     _append_niche_matches("s1", seed_channel, channels, matches)
@@ -93,8 +97,8 @@ def test_niche_matches_accept_subscriber_similarity_boundary() -> None:
 
 def test_niche_matches_reject_when_no_overlap() -> None:
     matches: list[dict[str, object]] = []
-    seed_channel = {"id": "seed", "niche_tags": ["gold"], "subscriber_count": 1000}
-    channels = [{"id": "other", "niche_tags": ["health"], "subscriber_count": 1000}]
+    seed_channel = {"id": "seed", "niche_tags": ["Financial / Macro"], "subscriber_count": 1000}
+    channels = [{"id": "other", "niche_tags": ["Health / Wellness"], "subscriber_count": 1000}]
 
     _append_niche_matches("s1", seed_channel, channels, matches)
 

@@ -16,10 +16,9 @@ export function LookalikeMatchCard({ match }: LookalikeMatchCardProps) {
   const channel = match.channel;
   const platformBadgeClass = {
     rumble: "bg-[#E8712B]/10 text-[#E8712B]",
-    bitchute: "bg-[#7B3FA0]/10 text-[#7B3FA0]",
     substack: "bg-[#FF6719]/10 text-[#C04A0E]",
   } as const;
-  const platformAbbrev = { rumble: "R", bitchute: "B", substack: "S" } as const;
+  const platformAbbrev = { rumble: "R", substack: "S" } as const;
 
   return (
     <div className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
@@ -60,10 +59,13 @@ export function LookalikeMatchCard({ match }: LookalikeMatchCardProps) {
             >
               {match.match_type === "guest_appearance"
                 ? "Guest Appearance"
-                : "Niche Overlap"}
+                : "Category Overlap"}
             </Badge>
             {channel?.gate0_status && (
-              <Gate0Badge status={channel.gate0_status} />
+              <Gate0Badge
+                status={channel.gate0_status}
+                flaggedBrand={channel.gate0_flagged_brand}
+              />
             )}
           </div>
 

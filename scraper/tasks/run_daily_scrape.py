@@ -3,7 +3,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
-from uuid import UUID
 
 from celery import chord
 from postgrest.exceptions import APIError
@@ -15,7 +14,6 @@ from core.runtime_settings import get_runtime_settings
 from tasks.compute_velocity import compute_velocity_all
 from tasks.discover_channels import discover_channels_now
 from tasks.run_gate0 import run_gate0
-from tasks.scrape_bitchute import scrape_bitchute_channel
 from tasks.scrape_rumble import scrape_rumble_channel
 from tasks.scrape_substack import scrape_substack_channel
 
@@ -33,12 +31,9 @@ def _stage_scrape_signatures(
     runtime = get_runtime_settings()
     batch_size = max(1, runtime.scrape_dispatch_batch_size)
     pause_s = max(0.0, runtime.scrape_dispatch_pause_seconds)
-    # BitChute is currently far more block-sensitive; pace starts to avoid
-    # simultaneous challenge hits across multiple workers.
     platform_min_gap_s: dict[str, int] = {
-        "bitchute": 20,
-        "rumble": 4,
-        "substack": 2,
+        "rumble": 2,
+        "substack": 1,
     }
     platform_seen: dict[str, int] = {}
     staged: list[object] = []
@@ -60,8 +55,6 @@ def _enabled_platforms() -> frozenset[str]:
     enabled: set[str] = set()
     if runtime.scrape_platform_slot_limit_rumble != 0:
         enabled.add("rumble")
-    if runtime.scrape_platform_slot_limit_bitchute != 0:
-        enabled.add("bitchute")
     if runtime.scrape_platform_slot_limit_substack != 0:
         enabled.add("substack")
     return frozenset(enabled)
@@ -126,80 +119,33 @@ def _queue_due_gate0_checks() -> int:
     return min(len(due_channels), limit)
 
 
-def _latest_snapshot_by_channel_id(channel_ids: list[str]) -> dict[str, datetime]:
-    """Return latest scraped_at timestamp per channel id."""
-    if not channel_ids:
-        return {}
-
-    unique_ids = list(dict.fromkeys(channel_ids))
-    chunk_size = 200
-    client = get_supabase_client()
-    latest: dict[str, datetime] = {}
-    try:
-        for idx in range(0, len(unique_ids), chunk_size):
-            chunk_ids = unique_ids[idx : idx + chunk_size]
-            snapshots_result = (
-                client.table("channel_snapshots")
-                .select("channel_id,scraped_at")
-                .in_("channel_id", chunk_ids)
-                .order("channel_id")
-                .order("scraped_at", desc=True)
-                .execute()
-            )
-            for row in snapshots_result.data or []:
-                channel_id = str(row.get("channel_id") or "")
-                if not channel_id or channel_id in latest:
-                    continue
-                parsed = _parse_datetime(row.get("scraped_at"))
-                if parsed is not None:
-                    latest[channel_id] = parsed
-    except APIError as exc:
-        logger.warning(
-            "Failed to fetch latest channel snapshots; falling back to no-history mode: %s",
-            exc,
-            exc_info=True,
-        )
-        return {}
-    return latest
-
-
 def _prioritize_channels_for_scrape(
     channels: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    """Return only never-scraped channels for daily scrape queueing."""
+    """Return only never-scraped channels for daily scrape queueing.
+
+    Uses last_scraped_at from the channels row directly — no channel_snapshots
+    lookup needed, eliminating N+1 Supabase queries at orchestration time.
+    """
     runtime = get_runtime_settings()
-    channel_ids: list[str] = []
-    for row in channels:
-        raw_id = row.get("id")
-        try:
-            channel_ids.append(str(UUID(str(raw_id))))
-        except (TypeError, ValueError):
-            continue
-
-    latest_by_id = _latest_snapshot_by_channel_id(channel_ids)
-    prioritized: list[tuple[bool, datetime, dict[str, object]]] = []
-
-    for row in channels:
-        channel_id = str(row.get("id") or "")
-        latest = latest_by_id.get(channel_id)
-        never_scraped = (row.get("has_been_scraped") is False) or latest is None
-        if not never_scraped:
-            continue
-        # Keep unresolved/new channels and all never-scraped channels.
-        prioritized.append((True, datetime.min.replace(tzinfo=timezone.utc), row))
-
     platform_rank = {
         platform: index for index, platform in enumerate(runtime.scrape_platform_priority)
     }
-    # never scraped first, then oldest scrape first, then platform priority
+    prioritized: list[tuple[datetime, dict[str, object]]] = []
+    for row in channels:
+        last_scraped = _parse_datetime(row.get("last_scraped_at"))
+        never_scraped = (row.get("has_been_scraped") is False) or last_scraped is None
+        if not never_scraped:
+            continue
+        prioritized.append((last_scraped or datetime.min.replace(tzinfo=timezone.utc), row))
+
     prioritized.sort(
         key=lambda item: (
-            not item[0],
-            item[1],
-            platform_rank.get(str(item[2].get("platform") or ""), 99),
+            item[0],
+            platform_rank.get(str(item[1].get("platform") or ""), 99),
         )
     )
-    return [item[2] for item in prioritized]
+    return [item[1] for item in prioritized]
 
 
 @celery_app.task(name="scraper.tasks.run_post_scrape_tasks")
@@ -275,32 +221,24 @@ def _passes_weekly_velocity_threshold(channel: dict[str, object]) -> bool:
 def _select_weekly_velocity_channels(
     channels: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    """Select clean, scraped, metric-rich channels for weekly velocity snapshots."""
-    channel_ids: list[str] = []
-    for row in channels:
-        raw_id = row.get("id")
-        try:
-            channel_ids.append(str(UUID(str(raw_id))))
-        except (TypeError, ValueError):
-            continue
+    """Select clean, scraped, metric-rich channels for weekly velocity snapshots.
 
-    latest_by_id = _latest_snapshot_by_channel_id(channel_ids)
+    Uses last_scraped_at from the channels row directly — no snapshot lookup.
+    """
     now = datetime.now(timezone.utc)
     runtime = get_runtime_settings()
     stale_age = timedelta(hours=max(0, runtime.velocity_weekly_stale_hours))
-    selected: list[tuple[datetime, dict[str, object]]] = []
-
-    for row in channels:
-        channel_id = str(row.get("id") or "")
-        latest = latest_by_id.get(channel_id)
-        if latest is not None and now - latest < stale_age:
-            continue
-        if _passes_weekly_velocity_threshold(row):
-            selected.append((latest or datetime.min.replace(tzinfo=timezone.utc), row))
-
     platform_rank = {
         platform: index for index, platform in enumerate(runtime.scrape_platform_priority)
     }
+    selected: list[tuple[datetime, dict[str, object]]] = []
+    for row in channels:
+        last_scraped = _parse_datetime(row.get("last_scraped_at"))
+        if last_scraped is not None and now - last_scraped < stale_age:
+            continue
+        if _passes_weekly_velocity_threshold(row):
+            selected.append((last_scraped or datetime.min.replace(tzinfo=timezone.utc), row))
+
     selected.sort(
         key=lambda item: (
             item[0],
@@ -331,7 +269,8 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
             client.table("channels")
             .select(
                 "id,channel_url,platform,subscriber_count,avg_views,avg_comments,"
-                "comment_tier,has_been_scraped,discovery_status,gate0_status"
+                "comment_tier,has_been_scraped,discovery_status,gate0_status,"
+                "last_scraped_at"
             )
             .eq("is_active", True)
             .eq("gate0_status", "clean")
@@ -356,7 +295,7 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
             continue
         if platform not in enabled_platforms:
             continue
-        if platform in {"rumble", "bitchute", "substack"} and is_open(platform):
+        if platform in {"rumble", "substack"} and is_open(platform):
             logger.warning(
                 "Skipping %s weekly velocity scrape due to open circuit breaker: %s",
                 platform,
@@ -365,8 +304,6 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
             continue
         if platform == "rumble":
             scrape_signatures.append((platform, scrape_rumble_channel.s(channel_url)))
-        elif platform == "bitchute":
-            scrape_signatures.append((platform, scrape_bitchute_channel.s(channel_url)))
         elif platform == "substack":
             scrape_signatures.append((platform, scrape_substack_channel.s(channel_url)))
         else:
@@ -407,7 +344,8 @@ def run_daily_scrape() -> dict[str, object]:
             client.table("channels")
             .select(
                 "id,channel_url,platform,subscriber_count,avg_views,avg_comments,"
-                "last_active_date,has_been_scraped,discovery_status,discovery_source"
+                "last_active_date,has_been_scraped,discovery_status,discovery_source,"
+                "last_scraped_at"
             )
             .eq("is_active", True)
             .execute()
@@ -426,7 +364,7 @@ def run_daily_scrape() -> dict[str, object]:
             continue
         if platform not in enabled_platforms:
             continue
-        if platform in {"rumble", "bitchute", "substack"} and is_open(platform):
+        if platform in {"rumble", "substack"} and is_open(platform):
             logger.warning(
                 "Skipping %s scrape due to open circuit breaker: %s",
                 platform,
@@ -435,8 +373,6 @@ def run_daily_scrape() -> dict[str, object]:
             continue
         if platform == "rumble":
             scrape_signatures.append((platform, scrape_rumble_channel.s(channel_url)))
-        elif platform == "bitchute":
-            scrape_signatures.append((platform, scrape_bitchute_channel.s(channel_url)))
         elif platform == "substack":
             scrape_signatures.append((platform, scrape_substack_channel.s(channel_url)))
         else:
@@ -466,3 +402,4 @@ def run_daily_scrape() -> dict[str, object]:
         "queued": queued,
         "workflow_task_id": workflow.id,
     }
+

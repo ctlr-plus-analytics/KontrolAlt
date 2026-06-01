@@ -65,7 +65,7 @@ def discover_keyword_expansion(
             "duplicates": 0,
             "invalid": 1,
             "inserted_rumble": 0,
-            "inserted_bitchute": 0,
+            "inserted_substack": 0,
             "category_metrics": {},
             "feedback_terms": [],
             "error": str(exc),

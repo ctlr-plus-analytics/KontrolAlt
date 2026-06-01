@@ -26,7 +26,7 @@ def test_demographic_uses_combined_channel_text() -> None:
         ["Physical gold protects fixed income"],
     )
 
-    assert set(result["niche_tags"]) >= {"gold_investment", "retirement"}
+    assert "Financial / Macro" in set(result["niche_tags"])
 
 
 def test_demographic_matches_new_keyword_categories() -> None:
@@ -37,15 +37,15 @@ def test_demographic_matches_new_keyword_categories() -> None:
     )
 
     assert set(result["niche_tags"]) >= {
-        "alternative_media_politics",
-        "preparedness_self_reliance",
+        "Conservative Politics",
+        "Prepper / Survival",
     }
 
 
 def test_demographic_uses_runtime_taxonomy(monkeypatch) -> None:
     monkeypatch.setattr(
         "utils.keyword_matcher.get_runtime_keyword_taxonomy",
-        lambda: {"custom_niche": ["special phrase"]},
+        lambda: {"News / Commentary": ["special phrase"]},
     )
 
     result = compute_channel_demographic(
@@ -54,4 +54,4 @@ def test_demographic_uses_runtime_taxonomy(monkeypatch) -> None:
         [],
     )
 
-    assert result["niche_tags"] == ["custom_niche"]
+    assert result["niche_tags"] == ["News / Commentary"]

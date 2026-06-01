@@ -30,17 +30,17 @@ def test_subscriber_similarity_rejects_outside_band() -> None:
 def test_niche_subscriber_matching_requires_both_conditions() -> None:
     seed_channel = {
         "id": "seed",
-        "niche_tags": ["gold", "retirement"],
+        "niche_tags": ["Financial / Macro", "News / Commentary"],
         "subscriber_count": 1000,
     }
     channels = [
         seed_channel,
-        {"id": "a", "niche_tags": ["gold"], "subscriber_count": 1050},
-        {"id": "b", "niche_tags": ["gold"], "subscriber_count": 1200},
-        {"id": "c", "niche_tags": ["culture"], "subscriber_count": 1000},
+        {"id": "a", "niche_tags": ["Financial / Macro"], "subscriber_count": 1050},
+        {"id": "b", "niche_tags": ["Financial / Macro"], "subscriber_count": 1200},
+        {"id": "c", "niche_tags": ["Conservative Politics"], "subscriber_count": 1000},
     ]
 
     matches = _build_niche_subscriber_matches_for_seed("s1", seed_channel, channels)
 
     assert [match["matched_channel_id"] for match in matches] == ["a"]
-    assert "Shared tags: gold" in str(matches[0]["match_detail"])
+    assert "Shared tags: Financial / Macro" in str(matches[0]["match_detail"])

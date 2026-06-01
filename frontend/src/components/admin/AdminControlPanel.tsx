@@ -41,7 +41,7 @@ function getTaskLabel(kind: ManualTaskKind): string {
   if (kind === "scrape") return "Full Scrape";
   if (kind === "discovery") return "Discovery";
   if (kind === "weekly-velocity") return "Weekly Velocity";
-  return "Gate 0 Batch";
+  return "Previous Gold Affiliation Batch";
 }
 
 function isTaskSettled(status?: AdminTaskStatusResponse): boolean {
@@ -245,14 +245,14 @@ export function AdminControlPanel() {
             .map((value) => value.trim())
             .filter(Boolean);
           const result = await triggerAdminGate0Now({ channel_ids: ids, reason: "admin-ui" }, token);
-          setMessage(`Queued Gate 0 tasks: ${result.queued}`);
+          setMessage(`Queued previous gold affiliation tasks: ${result.queued}`);
           setTaskRuns((prev) => [{
             id: `${kind}-${result.triggered_at}`,
             kind,
             label: getTaskLabel(kind),
             taskIds: result.task_ids,
             triggeredAt: result.triggered_at,
-            message: `Queued Gate 0 tasks: ${result.queued}`,
+            message: `Queued previous gold affiliation tasks: ${result.queued}`,
             statuses: {},
             pollingError: null,
           }, ...prev.slice(0, 4)]);
@@ -347,7 +347,7 @@ export function AdminControlPanel() {
     try {
       const result = await updateAdminKeywordTaxonomy(updated, token);
       setKeywordTaxonomy(result.taxonomy);
-      setTaxonomySuccess("Niche taxonomy saved.");
+      setTaxonomySuccess("Category taxonomy saved.");
       const auditData = await getAdminAudit(1, AUDIT_PAGE_SIZE, token);
       setAudit(auditData.data);
     } catch (error) {
@@ -377,7 +377,7 @@ export function AdminControlPanel() {
     const niche = editNiche.trim();
     const keywords = parseKeywords(editKeywords);
     if (!niche || keywords.length === 0) {
-      setTaxonomyError("Niche and at least one keyword are required.");
+      setTaxonomyError("Category and at least one keyword are required.");
       return;
     }
     setEditingTaxonomyIdx(null);
@@ -400,7 +400,7 @@ export function AdminControlPanel() {
     const niche = newNiche.trim();
     const keywords = parseKeywords(newKeywords);
     if (!niche || keywords.length === 0) {
-      setTaxonomyError("Niche and at least one keyword are required.");
+      setTaxonomyError("Category and at least one keyword are required.");
       return;
     }
     setIsAddingTaxonomy(false);
@@ -446,7 +446,7 @@ export function AdminControlPanel() {
           <Button variant="primary" size="sm" onClick={() => void runTask("scrape")}>Trigger Full Scrape</Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("discovery")}>Trigger Discovery</Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("weekly-velocity")}>Trigger Weekly Velocity</Button>
-          <Button variant="primary" size="sm" onClick={() => void runTask("gate0")}>Trigger Gate 0 Batch</Button>
+          <Button variant="primary" size="sm" onClick={() => void runTask("gate0")}>Trigger Previous Gold Affiliation Batch</Button>
         </div>
         <textarea
           value={gate0IdsInput}
@@ -566,8 +566,8 @@ export function AdminControlPanel() {
       </section>
 
       <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
-        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">Gate 0 Competitors</h2>
-        <p className="mb-3 text-xs text-[#6B6B6B]">Channels promoting these brands are flagged dirty. Changes take effect on the next Gate 0 run.</p>
+        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">Previous Gold Affiliation Competitors</h2>
+        <p className="mb-3 text-xs text-[#6B6B6B]">Channels promoting these brands are flagged with a prior gold affiliation. Changes take effect on the next affiliation run.</p>
 
         {competitorsError && (
           <p className="mb-3 text-xs text-[#B22222]">{competitorsError}</p>
@@ -665,8 +665,8 @@ export function AdminControlPanel() {
       </section>
 
       <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
-        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">Niche Keywords</h2>
-        <p className="mb-3 text-xs text-[#6B6B6B]">Niche tags and keywords are sourced from database settings. Changes take effect on subsequent discovery/scrape runs.</p>
+        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">Category Keywords</h2>
+        <p className="mb-3 text-xs text-[#6B6B6B]">Broad category tags and keywords are sourced from database settings. Changes take effect on subsequent discovery/scrape runs.</p>
 
         {taxonomyError && (
           <p className="mb-3 text-xs text-[#B22222]">{taxonomyError}</p>
@@ -678,7 +678,7 @@ export function AdminControlPanel() {
         <table className="min-w-full text-left text-sm">
           <thead className="text-xs uppercase tracking-wide text-[#6B6B6B]">
             <tr>
-              <th className="px-2 py-2">Niche</th>
+              <th className="px-2 py-2">Category</th>
               <th className="px-2 py-2">Keywords</th>
               <th className="px-2 py-2">Actions</th>
             </tr>
@@ -693,7 +693,7 @@ export function AdminControlPanel() {
                         value={editNiche}
                         onChange={(e) => setEditNiche(e.target.value)}
                         className="w-full rounded border border-[#E8E4DC] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
-                        placeholder="Niche key"
+                        placeholder="Category name"
                       />
                     </td>
                     <td className="px-2 py-2">
@@ -733,7 +733,7 @@ export function AdminControlPanel() {
                     value={newNiche}
                     onChange={(e) => setNewNiche(e.target.value)}
                     className="w-full rounded border border-[#E8E4DC] px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
-                    placeholder="Niche key"
+                    placeholder="Category name"
                     autoFocus
                   />
                 </td>
@@ -758,7 +758,7 @@ export function AdminControlPanel() {
 
         {!isAddingTaxonomy && (
           <div className="mt-3">
-            <Button variant="primary" size="sm" onClick={handleStartTaxonomyAdd}>+ Add Niche</Button>
+            <Button variant="primary" size="sm" onClick={handleStartTaxonomyAdd}>+ Add Category</Button>
           </div>
         )}
       </section>

@@ -17,7 +17,7 @@ def test_extract_urls_includes_bare_outbound_and_link_in_bio_domains() -> None:
 
 
 def test_extract_urls_filters_internal_platform_links() -> None:
-    text = "https://rumble.com/c/test https://bitchute.com/channel/x example.com"
+    text = "https://rumble.com/c/test example.com"
 
     assert extract_urls(text) == ["https://example.com"]
 
@@ -25,3 +25,4 @@ def test_extract_urls_filters_internal_platform_links() -> None:
 def test_competitor_url_detection() -> None:
     assert is_competitor_url("https://noblegold.com/promo")
     assert not is_competitor_url("https://example.com")
+

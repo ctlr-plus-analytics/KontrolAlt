@@ -15,7 +15,7 @@ _BARE_DOMAIN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _TRAILING_PUNCTUATION = ".,;:!?)\"]}'"
-_INTERNAL_DOMAINS = {"rumble.com", "bitchute.com"}
+_INTERNAL_DOMAINS = {"rumble.com"}
 _LINKTREE_DOMAINS = {
     "linktree",
     "linktr.ee",

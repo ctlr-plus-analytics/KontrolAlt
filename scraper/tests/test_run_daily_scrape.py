@@ -103,7 +103,7 @@ def test_daily_prioritization_keeps_only_new_or_missing_metrics(
             },
             {
                 "id": new_id,
-                "platform": "bitchute",
+                "platform": "substack",
                 "has_been_scraped": False,
                 "discovery_status": "new",
                 "subscriber_count": None,
@@ -114,7 +114,7 @@ def test_daily_prioritization_keeps_only_new_or_missing_metrics(
         ]
     )
 
-    assert [row["id"] for row in result] == [new_id, missing_id]
+    assert [row["id"] for row in result] == [new_id]
 
 
 def test_weekly_velocity_threshold_prefers_clean_higher_metrics(
@@ -166,3 +166,4 @@ def test_weekly_velocity_selection_skips_recent_snapshots(
     )
 
     assert [row["id"] for row in result] == [stale_id]
+

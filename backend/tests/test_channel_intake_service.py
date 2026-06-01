@@ -31,7 +31,7 @@ def test_canonicalize_supported_url_rumble() -> None:
 
 def test_canonicalize_supported_url_rejects_mismatched_platform() -> None:
     url, platform, error = _canonicalize_supported_url(
-        "https://bitchute.com/channel/demo",
+        "https://substack.com/@demo",
         expected_platform=Platform.rumble,
     )
 
@@ -62,12 +62,12 @@ def test_canonicalize_supported_url_substack_subdomain() -> None:
 
 def test_parse_bulk_urls_supports_newline_and_commas() -> None:
     parsed = _parse_bulk_urls(
-        "https://rumble.com/c/one,\nhttps://bitchute.com/channel/two\nhttps://rumble.com/c/three"
+        "https://rumble.com/c/one,\nhttps://substack.com/@two\nhttps://rumble.com/c/three"
     )
 
     assert parsed == [
         "https://rumble.com/c/one",
-        "https://bitchute.com/channel/two",
+        "https://substack.com/@two",
         "https://rumble.com/c/three",
     ]
 

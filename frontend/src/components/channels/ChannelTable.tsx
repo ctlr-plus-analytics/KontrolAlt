@@ -25,15 +25,17 @@ type SortableColumn = {
 };
 
 const COLUMNS: SortableColumn[] = [
-  { key: null, label: "Channel Name" },
+  { key: null, label: "Channel" },
   { key: null, label: "Platform" },
-  { key: "avg_comments", label: "Avg Comments", align: "right" },
-  { key: null, label: "Comment Tier" },
-  { key: null, label: "Gate 0" },
   { key: "subscriber_count", label: "Subscribers", align: "right" },
+  { key: null, label: "Niche (Category)" },
   { key: "avg_views", label: "Avg Views", align: "right" },
+  { key: "avg_comments", label: "Avg Comments", align: "right" },
   { key: "engagement_rate", label: "Engagement Rate %", align: "right" },
-  { key: "last_active_date", label: "Last Active" },
+  { key: null, label: "Previous Gold Affiliation" },
+  { key: null, label: "Contact Status" },
+  { key: null, label: "Source" },
+  { key: null, label: "Last Updated" },
 ];
 
 export function ChannelTable({
