@@ -3,7 +3,7 @@ import { formatEngagementRate } from "@/lib/utils";
 
 describe("formatEngagementRate", () => {
   it("formats valid avg comments and subscribers as a percent", () => {
-    expect(formatEngagementRate(100000, 25000)).toBe("25.0%");
+    expect(formatEngagementRate(100000, 25000)).toBe("25.000%");
   });
 
   it("returns N/A when subscribers is null", () => {
@@ -22,7 +22,7 @@ describe("formatEngagementRate", () => {
     expect(formatEngagementRate(-100, 25000)).toBe("N/A");
   });
 
-  it("caps engagement rate at 100.0%", () => {
-    expect(formatEngagementRate(1000, 5000)).toBe("100.0%");
+  it("caps engagement rate at 100.000%", () => {
+    expect(formatEngagementRate(1000, 5000)).toBe("100.000%");
   });
 });

@@ -52,7 +52,7 @@ export function formatEngagementRate(
 
   const engagementRate = (avgComments / subscriberCount) * 100;
   const cappedRate = Math.min(engagementRate, 100);
-  return `${cappedRate.toFixed(1)}%`;
+  return `${cappedRate.toFixed(3)}%`;
 }
 
 /**

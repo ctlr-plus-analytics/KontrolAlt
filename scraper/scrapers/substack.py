@@ -293,13 +293,6 @@ class SubstackScraper(BaseScraper):
                         retryable=False,
                     )
                 subscriber_count = parse_count_text(str(_raw_sub_count))
-                if subscriber_count is not None and subscriber_count < 1000:
-                    raise ScraperClassifiedError(
-                        "substack_low_subscriber_count",
-                        f"Substack channel has fewer than 1000 subscribers ({subscriber_count}): {channel_base_url}",
-                        terminal=True,
-                        retryable=False,
-                    )
 
                 # ── Step 3: latest posts API ──────────────────────────────────
                 post_data_map, posts_bytes = await self._fetch_profile_posts(
@@ -308,13 +301,6 @@ class SubstackScraper(BaseScraper):
                 stage_marks.append(("fetch_posts", perf_counter() - stage_t0))
 
             # ── Outside browser context ───────────────────────────────────────
-            if len(post_data_map) < 3:
-                raise ScraperClassifiedError(
-                    "substack_too_few_posts",
-                    f"Substack profile has fewer than 3 posts — too sparse: {channel_base_url}",
-                    terminal=True,
-                    retryable=False,
-                )
 
             # Contact info from userLinks + bio text, split by type
             user_links: list[dict] = profile.get("userLinks") or []

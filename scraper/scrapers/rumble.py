@@ -465,26 +465,6 @@ class RumbleScraper(BaseScraper):
                         "Rumble: no videos parsed from videos-tab selectors for %s",
                         videos_url,
                     )
-                # Quality gates: terminate channels that will never meet scoring
-                # thresholds, without tripping the circuit breaker.
-                if subscriber_count is not None and subscriber_count < 1000:
-                    about_task.cancel()
-                    await asyncio.gather(about_task, return_exceptions=True)
-                    raise ScraperClassifiedError(
-                        "rumble_low_subscriber_count",
-                        f"Rumble channel has fewer than 1000 followers ({subscriber_count}): {channel_base_url}",
-                        terminal=True,
-                        retryable=False,
-                    )
-                if len(video_data_map) < 3:
-                    about_task.cancel()
-                    await asyncio.gather(about_task, return_exceptions=True)
-                    raise ScraperClassifiedError(
-                        "rumble_too_few_videos",
-                        f"Rumble channel has fewer than 3 videos ({len(video_data_map)}): {channel_base_url}",
-                        terminal=True,
-                        retryable=False,
-                    )
                 stage_marks.append(("fast_path_card_parse", perf_counter() - stage_t0))
 
                 description, about_socials, about_contact_soup, about_error_reasons = await about_task
