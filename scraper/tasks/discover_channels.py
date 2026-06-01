@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -76,6 +77,32 @@ _SUBSTACK_HANDLE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _SUPPORTED_DISCOVERY_PLATFORMS = {"rumble", "substack"}
+
+# Query quality tracking (Redis)
+_QSTAT_KEY_PREFIX = "discovery:qstat:"
+_QSTAT_TTL_SECONDS = 30 * 24 * 3600
+
+# Pre-classification filter
+_PRE_CLASSIFY_BATCH_SIZE = 10
+_PRE_CLASSIFY_MAX_CHANNELS = 200
+_PRE_CLASSIFY_FILTER_CONFIDENCE = 0.75
+_PRE_CLASSIFY_MODEL = "llama-3.1-8b-instant"
+
+_TARGET_NICHES = frozenset({
+    "Prepper / Survival",
+    "Financial / Macro",
+    "Conservative Politics",
+    "Health / Wellness",
+    "Homesteading",
+    "Crypto / Alternative Assets",
+    "Religious / Values-Based",
+    "News / Commentary",
+})
+
+_NICHE_LIST_STR = (
+    "Prepper/Survival, Financial/Macro, Conservative Politics, Health/Wellness, "
+    "Homesteading, Crypto/Alternative Assets, Religious/Values-Based, News/Commentary"
+)
 
 
 def _utc_now_iso() -> str:
@@ -155,6 +182,9 @@ def upsert_discovered_channel(
     title: str | None,
     category: str | None,
     confidence: float,
+    quality_tier: str | None = None,
+    serp_title: str | None = None,
+    serp_snippet: str | None = None,
 ) -> tuple[bool, bool]:
     """Insert or refresh a discovered channel row.
 
@@ -183,6 +213,12 @@ def upsert_discovered_channel(
             payload["discovery_category"] = category
         if not bool(existing.get("has_been_scraped")) and title:
             payload["name"] = title
+        if quality_tier and not existing.get("discovery_quality_tier"):
+            payload["discovery_quality_tier"] = quality_tier
+        if serp_title and not existing.get("discovery_serp_title"):
+            payload["discovery_serp_title"] = serp_title[:200]
+        if serp_snippet and not existing.get("discovery_serp_snippet"):
+            payload["discovery_serp_snippet"] = serp_snippet[:500]
 
         result = (
             client.table("channels")
@@ -211,6 +247,12 @@ def upsert_discovered_channel(
     }
     if source_ref:
         payload["discovered_from_channel_id"] = source_ref
+    if quality_tier:
+        payload["discovery_quality_tier"] = quality_tier
+    if serp_title:
+        payload["discovery_serp_title"] = serp_title[:200]
+    if serp_snippet:
+        payload["discovery_serp_snippet"] = serp_snippet[:500]
 
     result = client.table("channels").insert(payload).execute()
     return bool(result.data), False
@@ -260,15 +302,289 @@ def _extract_relative_channel_urls(
     return list(candidates.values())
 
 
-def _seed_discovery_confidence(source_field: str) -> float:
-    """Score seed evidence by how directly the source field points to a channel."""
+def _seed_discovery_confidence(source_field: str, source_quality_tier: str = "low") -> float:
+    """Score seed evidence by source field type plus a boost for high-quality seed channels."""
     if source_field in {"contact_info", "secondary_urls"}:
-        return 0.97
-    if source_field == "description":
-        return 0.92
-    if source_field == "video_titles":
-        return 0.84
-    return 0.9
+        base = 0.97
+    elif source_field == "description":
+        base = 0.92
+    elif source_field == "video_titles":
+        base = 0.84
+    else:
+        base = 0.90
+    tier_boost = {"high": 0.03, "medium": 0.01, "low": 0.0}.get(source_quality_tier, 0.0)
+    return min(1.0, base + tier_boost)
+
+
+def _seed_quality_tier(channel: dict[str, object]) -> str:
+    """Derive a quality tier for a seed channel based on its engagement and Gate 0 status."""
+    gate0 = channel.get("gate0_status")
+    comment_tier = channel.get("comment_tier")
+    if gate0 == "clean" and comment_tier in {"whale", "sweet_spot"}:
+        return "high"
+    if gate0 == "clean" or comment_tier in {"whale", "sweet_spot", "active"}:
+        return "medium"
+    return "low"
+
+
+def _score_serp_item_quality(
+    item: dict[str, object], position: int
+) -> tuple[str, float]:
+    """Score a SERP result item for channel quality signal strength.
+
+    Returns (tier, score) where tier is 'high', 'medium', or 'low'.
+    """
+    score = 0.0
+
+    # SERP position — earlier is stronger signal.
+    if position <= 3:
+        score += 0.15
+    elif position <= 6:
+        score += 0.05
+
+    # Subscriber/follower count mention in snippet or title.
+    text = f"{item.get('title') or ''} {item.get('snippet') or ''}".lower()
+    count_match = re.search(
+        r"(\d[\d,.]*)\s*([kKmM])?\s*(subscribers?|followers?|members?)", text
+    )
+    if count_match:
+        raw = count_match.group(1).replace(",", "")
+        try:
+            n = float(raw)
+            multiplier = {"k": 1_000, "m": 1_000_000}.get(
+                (count_match.group(2) or "").lower(), 1
+            )
+            count = n * multiplier
+            if count >= 100_000:
+                score += 0.30
+            elif count >= 10_000:
+                score += 0.20
+            elif count >= 1_000:
+                score += 0.10
+        except ValueError:
+            pass
+
+    # Direct SERP link signal: presence of a raw URL in the link field.
+    if item.get("link"):
+        score += 0.10
+
+    # Keyword density in snippet.
+    snippet_lower = (item.get("snippet") or "").lower()
+    from utils.runtime_taxonomy import get_runtime_keyword_taxonomy
+    taxonomy = get_runtime_keyword_taxonomy()
+    for keywords in taxonomy.values():
+        for kw in keywords[:5]:
+            if kw in snippet_lower:
+                score += 0.10
+                break
+
+    # Recency signal from date field.
+    date_str = str(item.get("date") or "")
+    if date_str and any(yr in date_str for yr in ["2024", "2025", "2026"]):
+        score += 0.05
+
+    if score >= 0.40:
+        return "high", score
+    if score >= 0.15:
+        return "medium", score
+    return "low", score
+
+
+def _record_query_stat(category: str, platform: str, field: str, amount: int = 1) -> None:
+    """Increment a Redis counter for query quality tracking."""
+    if not category or not platform:
+        return
+    try:
+        from tasks.scrape_helpers import _redis_client
+        client = _redis_client()
+        key = f"{_QSTAT_KEY_PREFIX}{category}:{platform}"
+        client.hincrby(key, field, amount)
+        client.expire(key, _QSTAT_TTL_SECONDS)
+    except Exception as exc:
+        logger.debug("Failed to record query stat: %s", exc)
+
+
+def _get_category_quality_scores() -> dict[str, float]:
+    """Return historical quality score (classified_known / fired) per category."""
+    try:
+        from tasks.scrape_helpers import _redis_client
+        client = _redis_client()
+        scores: dict[str, float] = {}
+        for key in client.scan_iter(f"{_QSTAT_KEY_PREFIX}*"):
+            key_str = key.decode() if isinstance(key, bytes) else key
+            suffix = key_str[len(_QSTAT_KEY_PREFIX):]
+            parts = suffix.split(":")
+            if len(parts) < 2:
+                continue
+            category = parts[0]
+            data = client.hgetall(key)
+            fired = int(data.get(b"fired", 0) or data.get("fired", 0) or 0)
+            classified = int(
+                data.get(b"classified_known", 0) or data.get("classified_known", 0) or 0
+            )
+            if fired > 0:
+                scores[category] = max(scores.get(category, 0.0), classified / fired)
+        return scores
+    except Exception:
+        return {}
+
+
+def _build_pre_classify_prompt(batch: list[dict[str, object]]) -> str:
+    lines = [
+        f"NICHES: {_NICHE_LIST_STR}\n",
+        "For each channel, decide if it fits any target niche.",
+        'Respond with JSON: {"results": [{"id": 0, "on_topic": true, '
+        '"niches": ["Niche Name"], "confidence": 0.9}, ...]}\n',
+        "CHANNELS:",
+    ]
+    for i, entry in enumerate(batch):
+        title = str(entry.get("serp_title") or "").strip()
+        snippet = str(entry.get("serp_snippet") or "")[:300].strip()
+        url = str(entry.get("channel_url") or "")
+        category = str(entry.get("discovery_category") or "")
+        lines.append(f"{i}. URL: {url}")
+        if title:
+            lines.append(f"   Title: {title}")
+        if snippet:
+            lines.append(f"   Snippet: {snippet}")
+        if category:
+            lines.append(f"   Search niche: {category}")
+    return "\n".join(lines)
+
+
+def _parse_pre_classify_response(
+    raw_text: str,
+    batch: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    try:
+        data = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return []
+    items = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("id")
+        if not isinstance(idx, int) or idx < 0 or idx >= len(batch):
+            continue
+        channel_url = str(batch[idx].get("channel_url") or "")
+        raw_niches = item.get("niches")
+        niches = (
+            [n for n in raw_niches if isinstance(n, str) and n in _TARGET_NICHES]
+            if isinstance(raw_niches, list)
+            else []
+        )
+        try:
+            confidence = max(0.0, min(1.0, float(item.get("confidence") or 0.0)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        out.append({
+            "channel_url": channel_url,
+            "on_topic": bool(item.get("on_topic", True)),
+            "niches": niches,
+            "confidence": confidence,
+        })
+    return out
+
+
+def _pre_classify_new_urls(
+    new_urls: list[dict[str, object]],
+    api_key: str,
+) -> list[dict[str, object]]:
+    """Batch-classify newly discovered channels using SERP data via Groq.
+
+    Writes discovery_niche_hint to DB. Removes channels from the scrape queue
+    when Groq is confident they are off-topic. High-quality-tier channels skip
+    classification (already strong signal). Falls back gracefully on any error.
+    """
+    try:
+        from groq import Groq
+    except ImportError:
+        logger.debug("groq package not installed; skipping pre-classification")
+        return new_urls
+
+    # Only classify ambiguous keyword-discovered channels that have SERP text.
+    candidates = [
+        u for u in new_urls
+        if u.get("quality_tier") != "high" and (u.get("serp_title") or u.get("serp_snippet"))
+    ][:_PRE_CLASSIFY_MAX_CHANNELS]
+
+    if not candidates:
+        return new_urls
+
+    groq_client = Groq(api_key=api_key)
+    supabase = get_supabase_client()
+    hint_map: dict[str, list[str]] = {}
+    off_topic: set[str] = set()
+    now = _utc_now_iso()
+
+    for batch_start in range(0, len(candidates), _PRE_CLASSIFY_BATCH_SIZE):
+        batch = candidates[batch_start: batch_start + _PRE_CLASSIFY_BATCH_SIZE]
+        prompt = _build_pre_classify_prompt(batch)
+        try:
+            completion = groq_client.chat.completions.create(
+                model=_PRE_CLASSIFY_MODEL,
+                max_tokens=800,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You evaluate whether alternative media channel links target "
+                            "specific research niches. Respond with valid JSON only."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            results = _parse_pre_classify_response(
+                completion.choices[0].message.content, batch
+            )
+        except Exception as exc:
+            logger.warning("Pre-classification batch failed: %s", exc)
+            results = []
+
+        for res in results:
+            url = str(res.get("channel_url") or "")
+            niches = res.get("niches") or []
+            on_topic = bool(res.get("on_topic", True))
+            confidence = float(res.get("confidence") or 0.0)
+            hint_map[url] = niches if niches else ["Unknown / Needs Review"]
+
+            if not on_topic and confidence >= _PRE_CLASSIFY_FILTER_CONFIDENCE:
+                off_topic.add(url)
+
+            if url:
+                try:
+                    supabase.table("channels").update({
+                        "discovery_niche_hint": hint_map[url],
+                        "updated_at": now,
+                    }).eq("channel_url", url).execute()
+                except Exception as exc:
+                    logger.debug("Failed to write niche hint for %s: %s", url, exc)
+
+        time.sleep(0.10)
+
+    filtered = 0
+    result: list[dict[str, object]] = []
+    for entry in new_urls:
+        channel_url = str(entry.get("channel_url") or "")
+        if channel_url in hint_map:
+            entry = {**entry, "discovery_niche_hint": hint_map[channel_url]}
+        if channel_url in off_topic:
+            filtered += 1
+            continue
+        result.append(entry)
+
+    if filtered:
+        logger.info(
+            "Pre-classification filtered %d off-topic channels from scrape queue", filtered
+        )
+    return result
 
 
 def _normalize_platform_filter(platform: str | None) -> set[str]:
@@ -332,6 +648,9 @@ def _iter_search_queries(
 ) -> list[tuple[str, str, str, str]]:
     queries: list[tuple[str, str, str, str]] = []
     categories = list(keyword_taxonomy.keys())
+    # Prioritise categories with historically higher classification success rates.
+    quality_scores = _get_category_quality_scores()
+    categories.sort(key=lambda cat: quality_scores.get(cat, 0.0), reverse=True)
     keyword_positions: dict[str, int] = {category: 0 for category in categories}
     template_positions: dict[tuple[str, int], int] = {}
 
@@ -565,7 +884,10 @@ def _feedback_queries(
 def _discover_from_known_channels(client, *, platform: str | None = None) -> dict[str, object]:
     allowed_platforms = _normalize_platform_filter(platform)
     insert_limit = min(get_runtime_settings().discovery_insert_limit, _INSERT_LIMIT)
-    columns = "id,channel_url,name,description,video_titles,contact_info,secondary_urls"
+    columns = (
+        "id,channel_url,name,description,video_titles,contact_info,secondary_urls,"
+        "gate0_status,comment_tier,niche_tags"
+    )
 
     discovered = 0
     inserted = 0
@@ -594,8 +916,12 @@ def _discover_from_known_channels(client, *, platform: str | None = None) -> dic
     source_channels = 0
     for channel in _iter_channel_rows(client, columns):
         source_channels += 1
+        # Do not expand from dirty channels — they may contaminate the seed set.
+        if channel.get("gate0_status") == "dirty":
+            continue
         source_channel_id = str(channel.get("id") or "")
         source_channel_url = str(channel.get("channel_url") or "")
+        seed_tier = _seed_quality_tier(channel)
         for candidate, source_field in _collect_known_channel_candidates(channel):
             if candidate.platform not in allowed_platforms:
                 continue
@@ -613,7 +939,7 @@ def _discover_from_known_channels(client, *, platform: str | None = None) -> dic
                 break
 
             try:
-                confidence = _seed_discovery_confidence(source_field)
+                confidence = _seed_discovery_confidence(source_field, seed_tier)
                 changed, existed = upsert_discovered_channel(
                     client=client,
                     candidate=candidate,
@@ -622,6 +948,7 @@ def _discover_from_known_channels(client, *, platform: str | None = None) -> dic
                     title=_fallback_name(candidate.channel_url),
                     category=None,
                     confidence=confidence,
+                    quality_tier=seed_tier,
                 )
             except APIError:
                 invalid += 1
@@ -779,6 +1106,9 @@ def _discover_from_keywords(
             metrics["feedback_queries"] += 1
         else:
             metrics["base_queries"] += 1
+        # Record query fired for quality feedback loop.
+        _stat_platform = "rumble" if "site:rumble.com" in query else "substack"
+        _record_query_stat(category, _stat_platform, "fired")
         no_new_for_query = 0
         no_new_for_active_query = True
         terms_for_query: Counter[str] = Counter()
@@ -811,6 +1141,11 @@ def _discover_from_keywords(
 
             for item in organic_results:
                 title = str(item.get("title") or "").strip()
+                serp_position = int(item.get("position") or 99)
+                serp_snippet = str(item.get("snippet") or "")[:500]
+                item_quality_tier, _item_score = _score_serp_item_quality(
+                    item, serp_position
+                )
                 terms = _extract_feedback_terms(item)
                 terms_for_query.update(terms)
                 feedback_terms_counter.update(terms)
@@ -839,6 +1174,9 @@ def _discover_from_keywords(
                             title=title or _fallback_name(candidate.channel_url),
                             category=category,
                             confidence=confidence,
+                            quality_tier=item_quality_tier,
+                            serp_title=title[:200] if title else None,
+                            serp_snippet=serp_snippet or None,
                         )
                     except APIError:
                         invalid += 1
@@ -860,11 +1198,16 @@ def _discover_from_keywords(
                         metrics["inserted"] += 1
                         new_this_page += 1
                         no_new_for_active_query = False
+                        _record_query_stat(category, candidate.platform, "inserted")
                         new_urls.append(
                             {
                                 "channel_url": candidate.channel_url,
                                 "platform": candidate.platform,
                                 "confidence": confidence,
+                                "quality_tier": item_quality_tier,
+                                "serp_title": title[:200] if title else None,
+                                "serp_snippet": serp_snippet or None,
+                                "discovery_category": category,
                             }
                         )
 
@@ -933,13 +1276,21 @@ def queue_discovered_channel_scrapes(new_urls: list[dict[str, object]]) -> int:
     scrape_new_limit = min(
         get_runtime_settings().discovery_new_scrape_limit, _SCRAPE_NEW_LIMIT
     )
+    def _scrape_priority(row: dict[str, object]) -> float:
+        tier_map = {"high": 1.0, "medium": 0.6, "low": 0.2}
+        tier = tier_map.get(str(row.get("quality_tier") or ""), 0.3)
+        conf = float(row.get("confidence") or 0.0)
+        hint = row.get("discovery_niche_hint")
+        niche_signal = (
+            1.0
+            if isinstance(hint, list) and hint and hint != ["Unknown / Needs Review"]
+            else 0.0
+        )
+        return (tier * 0.4) + (conf * 0.4) + (niche_signal * 0.2)
+
     seen: set[str] = set()
     client = get_supabase_client()
-    priority_rows = sorted(
-        new_urls,
-        key=lambda row: float(row.get("confidence") or 0.0),
-        reverse=True,
-    )
+    priority_rows = sorted(new_urls, key=_scrape_priority, reverse=True)
     for row in priority_rows:
         if queued >= scrape_new_limit:
             break
@@ -1073,6 +1424,11 @@ def discover_channels_now(
         *(seed_result.get("new_urls") or []),
         *(keyword_result.get("new_urls") or []),
     ]
+
+    api_key = scraper_settings.groq_api_key
+    if new_urls and api_key:
+        new_urls = _pre_classify_new_urls(new_urls, api_key)
+
     scrape_queued = queue_discovered_channel_scrapes(new_urls) if queue_scrapes else 0
 
     return {

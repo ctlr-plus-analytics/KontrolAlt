@@ -11,6 +11,7 @@ from worker import celery_app
 from core.circuit_breaker import is_open
 from core.supabase import get_supabase_client
 from core.runtime_settings import get_runtime_settings
+from tasks.classify_channels import classify_channels
 from tasks.compute_velocity import compute_velocity_all
 from tasks.discover_channels import discover_channels_now
 from tasks.run_gate0 import run_gate0
@@ -119,10 +120,34 @@ def _queue_due_gate0_checks() -> int:
     return min(len(due_channels), limit)
 
 
+def _channel_scrape_priority(row: dict[str, object], platform_rank: dict[str, int]) -> tuple:
+    """Composite sort key for daily scrape ordering (higher = scrape first).
+
+    Weights:
+      - evidence_count  : how many times independently discovered (strongest signal)
+      - quality_tier    : SERP-scored tier from discovery
+      - confidence      : discovery confidence score
+      - niche_hint      : has a known pre-classification niche (not Unknown)
+      - platform_rank   : configured platform priority (lower index = higher priority)
+    """
+    tier_map = {"high": 2, "medium": 1, "low": 0}
+    evidence = min(int(row.get("discovery_evidence_count") or 1), 10)
+    tier = tier_map.get(str(row.get("discovery_quality_tier") or ""), 0)
+    confidence = float(row.get("discovery_confidence") or 0.0)
+    hint = row.get("discovery_niche_hint")
+    has_niche = (
+        1 if isinstance(hint, list) and hint and hint != ["Unknown / Needs Review"] else 0
+    )
+    platform = str(row.get("platform") or "")
+    p_rank = platform_rank.get(platform, 99)
+    # Sort descending on quality signals, ascending on platform_rank.
+    return (-evidence, -tier, -confidence, -has_niche, p_rank)
+
+
 def _prioritize_channels_for_scrape(
     channels: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    """Return only never-scraped channels for daily scrape queueing.
+    """Return never-scraped channels sorted by discovery quality (best first).
 
     Uses last_scraped_at from the channels row directly — no channel_snapshots
     lookup needed, eliminating N+1 Supabase queries at orchestration time.
@@ -131,61 +156,29 @@ def _prioritize_channels_for_scrape(
     platform_rank = {
         platform: index for index, platform in enumerate(runtime.scrape_platform_priority)
     }
-    prioritized: list[tuple[datetime, dict[str, object]]] = []
-    for row in channels:
-        last_scraped = _parse_datetime(row.get("last_scraped_at"))
-        never_scraped = (row.get("has_been_scraped") is False) or last_scraped is None
-        if not never_scraped:
-            continue
-        prioritized.append((last_scraped or datetime.min.replace(tzinfo=timezone.utc), row))
-
-    prioritized.sort(
-        key=lambda item: (
-            item[0],
-            platform_rank.get(str(item[1].get("platform") or ""), 99),
-        )
-    )
-    return [item[1] for item in prioritized]
+    never_scraped = [
+        row for row in channels
+        if (row.get("has_been_scraped") is False)
+        or _parse_datetime(row.get("last_scraped_at")) is None
+    ]
+    never_scraped.sort(key=lambda row: _channel_scrape_priority(row, platform_rank))
+    return never_scraped
 
 
 @celery_app.task(name="scraper.tasks.run_post_scrape_tasks")
 def run_post_scrape_tasks() -> dict[str, object]:
-    """Queue due Gate 0 checks and velocity computation after scraping."""
-    runtime = get_runtime_settings()
-    discovery_failed = False
-    if runtime.discovery_enabled:
-        try:
-            discovery_result = discover_channels_now(queue_scrapes=True)
-        except Exception as exc:
-            discovery_failed = True
-            logger.error("Failed to run channel discovery: %s", exc, exc_info=True)
-            discovery_result = {
-                "seed_expansion": {"error": str(exc)},
-                "keyword_expansion": {"error": str(exc)},
-                "inserted": 0,
-                "refreshed": 0,
-                "duplicates": 0,
-                "invalid": 1,
-                "new_urls": [],
-                "scrape_queued": 0,
-                "error": str(exc),
-            }
-    else:
-        discovery_result = {"disabled": True}
-
+    """Run Gate 0 checks and channel classification after scraping completes."""
     try:
         gate0_queued = _queue_due_gate0_checks()
     except APIError as exc:
         logger.error("Failed to queue Gate 0 checks: %s", exc, exc_info=True)
         gate0_queued = 0
 
-    if discovery_failed:
-        logger.warning("Post-scrape discovery completed with failures")
+    classify_task = classify_channels.delay()
+
     return {
-        "discovery": discovery_result,
-        "discovery_failed": discovery_failed,
         "gate0_queued": gate0_queued,
-        "velocity_task_id": None,
+        "classify_task_id": classify_task.id,
     }
 
 
@@ -338,6 +331,23 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
 def run_daily_scrape() -> dict[str, object]:
     """Queue active channel scrapes and compute velocity after completion."""
     logger.info("Starting daily scrape workflow")
+
+    # Discovery runs first so newly found channels are included in today's scrape
+    # batch and sorted alongside the existing backlog by quality priority.
+    # queue_scrapes=False: let the chord below handle dispatch so newly discovered
+    # channels go through the same priority sort as the rest of the backlog.
+    runtime_pre = get_runtime_settings()
+    if runtime_pre.discovery_enabled:
+        try:
+            disc = discover_channels_now(queue_scrapes=False)
+            logger.info(
+                "Pre-scrape discovery complete: inserted=%d refreshed=%d scrape_queued=0",
+                disc.get("inserted", 0),
+                disc.get("refreshed", 0),
+            )
+        except Exception as exc:
+            logger.error("Pre-scrape discovery failed (continuing): %s", exc, exc_info=True)
+
     try:
         client = get_supabase_client()
         result = (
@@ -345,7 +355,8 @@ def run_daily_scrape() -> dict[str, object]:
             .select(
                 "id,channel_url,platform,subscriber_count,avg_views,avg_comments,"
                 "last_active_date,has_been_scraped,discovery_status,discovery_source,"
-                "last_scraped_at"
+                "last_scraped_at,discovery_confidence,discovery_quality_tier,"
+                "discovery_evidence_count,discovery_niche_hint"
             )
             .eq("is_active", True)
             .execute()

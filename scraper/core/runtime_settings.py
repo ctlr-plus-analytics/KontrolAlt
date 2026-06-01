@@ -14,7 +14,7 @@ class RuntimeSettings:
     settings_loaded: bool = True
     daily_scrape_utc_time: str = "02:00"
     gate0_enabled: bool = True
-    discovery_enabled: bool = False
+    discovery_enabled: bool = True
     lookalike_enabled: bool = True
     scrape_platform_priority: tuple[str, ...] = ("substack", "rumble")
     scrape_only_new_or_missing_metrics: bool = True

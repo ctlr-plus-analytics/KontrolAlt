@@ -33,9 +33,15 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    task_default_queue="celery",
+    task_routes={
+        "scraper.tasks.scrape_rumble_channel": {"queue": "rumble"},
+        "scraper.tasks.scrape_substack_channel": {"queue": "substack"},
+    },
     imports=[
         "tasks.scrape_rumble",
         "tasks.scrape_substack",
+        "tasks.scrape_never_scraped",
         "tasks.maintenance",
         "tasks.compute_velocity",
         "tasks.discover_channels",

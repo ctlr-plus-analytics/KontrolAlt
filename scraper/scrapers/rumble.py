@@ -173,10 +173,9 @@ RUMBLE_VIDEO = {
         # visible) and one or more p.media-description--more (hidden until "Show
         # more" is clicked).  All paragraphs are present in the static HTML, so
         # BeautifulSoup sees the full content without any Playwright interaction.
-        # Use "div.media-description" as the container to collect all child <p>
-        # tags and embedded <a href> links in one query.
-        "primary": "div.media-description",
-        "fallbacks": [],
+        # data-js attr is Rumble's own JS hook — more stable than cosmetic CSS class.
+        "primary": "[data-js='media_long_description_container']",
+        "fallbacks": ["div.media-description"],
         "extract": "children(p.media-description)+a[href]",
         "normalize": "text()+hrefs",
         "js_required": False,
@@ -357,6 +356,7 @@ class RumbleScraper(BaseScraper):
     VIDEO_PAGE_DATE_SELECTOR = RUMBLE_VIDEO["upload_date"]["primary"]
     VIDEO_PAGE_COMMENT_SELECTOR = RUMBLE_VIDEO["comment_count"]["primary"]
     VIDEO_PAGE_DESC_SELECTOR = RUMBLE_VIDEO["description"]["primary"]
+    VIDEO_PAGE_DESC_FALLBACKS = RUMBLE_VIDEO["description"]["fallbacks"]
 
     async def scrape(self, channel_url: str) -> dict[str, object]:
         """Scrape a single Rumble channel."""
@@ -1127,6 +1127,11 @@ class RumbleScraper(BaseScraper):
             secondary_links — affiliate links and general website URLs (→ secondary_urls)
         """
         container = soup.select_one(self.VIDEO_PAGE_DESC_SELECTOR)
+        if container is None:
+            for fallback in self.VIDEO_PAGE_DESC_FALLBACKS:
+                container = soup.select_one(fallback)
+                if container is not None:
+                    break
         if container is None:
             return "", [], []
 
