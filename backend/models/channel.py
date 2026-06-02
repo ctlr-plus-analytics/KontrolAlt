@@ -104,7 +104,7 @@ class Channel(BaseModel):
     gate0_source_url: str | None = None
 
     ai_summary: str | None = None
-    ai_channel_report: dict[str, str] | None = None
+    ai_channel_report: str | None = None
 
     created_at: datetime
     updated_at: datetime

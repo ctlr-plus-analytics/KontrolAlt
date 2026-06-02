@@ -28,7 +28,8 @@ _VALID_CATEGORIES = frozenset({
 })
 
 _SYSTEM_PROMPT = (
-    "You are an expert analyst of alternative media channels for a research platform. "
+    "You are a sharp analyst writing influencer profile reports for a precious-metals "
+    "creator partnership research system. "
     "You always respond with valid JSON only — no prose, no explanation outside the JSON object."
 )
 
@@ -41,16 +42,6 @@ _CATEGORY_DESCRIPTIONS = """\
 - Crypto / Alternative Assets: Cryptocurrency, Bitcoin, DeFi, hard money, alternative store of value outside fiat
 - Religious / Values-Based: Christian or faith-based worldview, biblical teaching, traditional family values, pro-life, spiritual content
 - News / Commentary: Broad news analysis, current events commentary, political/cultural criticism, independent journalism"""
-
-_QA_KEYS = (
-    "creator_about",
-    "audience_relationship",
-    "age_55_appeal",
-    "acquisition_relevance",
-    "monetization_pattern",
-    "conversion_signals",
-    "risk_flags",
-)
 
 
 def _build_prompt(channel: dict[str, object]) -> str:
@@ -106,6 +97,52 @@ def _build_prompt(channel: dict[str, object]) -> str:
     )
 
 
+_QA_INSTRUCTIONS = (
+    "INSTRUCTIONS:\n"
+    "- You are writing an executive-style influencer profile report for a precious-metals creator partnership research system.\n"
+    "- The report is for Kelly. Write like a sharp human analyst, not like a generic AI model.\n"
+    "- Follow the tone, structure, specificity, and length of the approved Black Conservative Patriot sample report, but only use the data actually provided by the Kontrol_Alt platform.\n"
+    "- Do not add platform data that is not visible. Do not invent YouTube counts, podcast counts, Locals memberships, Telegram size, agency status, sponsorship history, or audience demographics unless those items are directly provided in the channel data.\n"
+    "- Use plain, intelligent, businesslike language. The writing should feel like common sense backed by channel evidence.\n"
+    "- Do NOT use numeric scores, formulas, confidence percentages, grading rubrics, or obvious AI-style classifications.\n"
+    "- Do NOT use long em dashes. Use commas, periods, colons, or parentheses.\n"
+    "- Do NOT over-classify the channel. Explain what the channel is, what the evidence says, and how Kelly should think about it.\n"
+    "- Use only these available fields when provided: channel name, platform, channel URL, subscriber count, average views, engagement rate, average comments, posts per week, last active date, channel about text, recent video titles, external links, topic categories, scrape history, scrape errors, previous gold affiliation status, previous gold affiliation company, search query, flagged brand, and source URL.\n"
+    "- When metrics are available, mention them naturally in the right paragraph. For example: subscribers, average views, average comments, engagement rate, posts per week, and last active date.\n"
+    "- When something is confirmed by the channel data or source URL, state it directly.\n"
+    "- When something is only inferred, say that carefully and explain the signal behind it.\n"
+    "- Never invent audience demographics, 55+ audience share, sponsorship history, agency representation, conversion performance, or contact status.\n"
+    "- Avoid repeating weak phrases like 'appears to', 'suggests', and 'the available data indicates' in every sentence. Use direct language when the evidence is clear. Use cautious language only when the evidence is incomplete or inferred.\n"
+    "- For age_55_appeal, do not claim confirmed 55+ audience fit unless direct demographic evidence is provided.\n"
+    "- If 55+ appeal is only inferred, explain the exact common-sense signals from the channel data, such as alternative news, political commentary, economic anxiety, national stability, preparedness language, distrust of institutions, or visible financial-protection sponsor signals.\n"
+    "- If the channel language or geography does not clearly match a U.S. English-speaking audience, say that plainly.\n"
+    "- For acquisition_relevance, do not automatically recommend outreach. Explain how Kelly should think about the channel for acquisition, benchmarking, watchlist, or manual review.\n"
+    "- If previous gold affiliation or a competitor brand is detected, explain that clearly in normal language.\n"
+    "- If previous gold affiliation is detected, the channel may still be useful as a benchmark or research signal, but should not be described as a clean net-new outreach target without human review.\n"
+    "- For monetization_pattern, only describe visible monetization evidence from the provided links. Examples include donation links, Bitcoin or crypto links, email contact, social links, direct-response sponsor URLs, or competitor landing pages.\n"
+    "- If no clear monetization pattern is visible, say it requires further review rather than claiming none exists.\n"
+    "- For conversion_signals, discuss practical signs of audience trust and action using available data: strong comments, high views relative to subscribers, consistent posting, direct-response links, donation behavior, contact paths, or competitor sponsor signals.\n"
+    "- For risk_flags, write a practical risk paragraph. Consider previous gold affiliation, competitor conflict, language or geography mismatch, political polarization, scrape errors, suspicious metadata, weak 55+ evidence, and contactability gaps.\n"
+    "- Do not dramatize risk. Explain it plainly.\n"
+    "- Keep each answer polished and specific. Write shorter when less data is available.\n"
+    "- Do not copy the approved sample facts. Use the sample only as a tone and structure guide.\n"
+    "- Write the report as a single flowing narrative of 5 to 8 paragraphs. No section headers, no bullet points, no JSON, no markdown. Each paragraph should cover a natural analytical angle: what the channel is, the audience relationship, 55+ fit, acquisition framing, monetization evidence, conversion signals, and risk. The paragraphs should flow as one coherent analyst read.\n"
+    "- Respond with ONLY the plain narrative text. No preamble, no closing sign-off, no JSON wrapper.\n\n"
+    "APPROVED STYLE SAMPLE TO FOLLOW:\n"
+    "Influencer Profile: Black Conservative Patriot (BCP)\n"
+    "Black Conservative Patriot, often abbreviated BCP, is a political commentator and content creator who delivers daily news and analysis from a conservative, anti-establishment perspective. He brands himself around authenticity and real conservative news, appealing to audiences that distrust mainstream media and prefer independent, grassroots voices.\n\n"
+    "The approved sample uses concrete platform details when available, such as YouTube, Rumble, podcast distribution, Locals, Instagram, and Twitter/X. It does not speak generally when platform-specific numbers are available.\n\n"
+    "Engagement quality is discussed through available metrics such as regular uploads, view ranges, podcast cadence, ratings, and community-support signals. The analysis explains what the numbers mean without turning the profile into a scoring formula.\n\n"
+    "Audience themes are described in plain language: grassroots conservatives, anti-establishment politics, patriot identity, distrust of mainstream media, daily political news consumption, independence, and authenticity. The analysis explains why the audience may be attentive to messaging around real value and protecting freedom without pretending to know exact demographics.\n\n"
+    "Sponsorship history is handled carefully. If no major visible brand sponsorships or gold IRA affiliations are found, the report says that directly. If a gold or competitor affiliation is found, the report names it and explains how that affects outreach or benchmark value.\n\n"
+    "Fit commentary is balanced. It names strengths and limitations in normal language, such as reach, cadence, loyalty, clean sponsorship history, weak platform performance, limited contactability, untested conversion potential, or competitor affiliation.\n\n"
+    "The overall read is a clear analyst conclusion. It does not use a visible score. It explains whether the channel looks promising, limited, useful as a benchmark, worth manual review, or not clean for outreach because of previous gold affiliation or other limitations.\n\n"
+    "SPECIAL STYLE EXAMPLE USING KONTROL_ALT DATA ONLY:\n"
+    "For a channel like Red Pill News, the platform data shows Rumble, 15,300 subscribers, 17,267 average views, 158 average comments, 1.033% engagement rate, 3 posts per week, and last active 5 days ago. The channel about text is 'Serwis informacyjny Red Pill News,' and recent titles include Polish-language phrasing such as 'Prawdziwa os czasu wydarzen.' The external links include email, Bitcoin.com, Facebook, Telegram, X/Twitter, YouTube, buycoffee.to, and tv.suwerenni.org. The system also shows Previous Gold Affiliation: Yes, Noble Gold, with flagged brand noblegoldinvestments.com and source URL https://noblegoldinvestments.com/RedPill78.\n\n"
+    "A good report should say that Red Pill News has meaningful engagement for its size and may be useful as a market benchmark or manual-review case. It should not say the channel is a clean acquisition target because prior Noble Gold affiliation is detected. It should also mention that the Polish-language channel text and video titles limit confidence for a U.S. English-speaking Goldco campaign unless there is a specific localization reason to review it.\n\n"
+)
+
+
 def _build_qa_prompt(channel: dict[str, object]) -> str:
     platform = str(channel.get("platform") or "unknown")
     name = str(channel.get("name") or "")
@@ -117,7 +154,10 @@ def _build_qa_prompt(channel: dict[str, object]) -> str:
     engagement_rate = channel.get("engagement_rate")
     posts_per_week = channel.get("posts_per_week")
     last_active_date = channel.get("last_active_date")
+    gate0_status = str(channel.get("gate0_status") or "unchecked")
     gate0_flagged_brand = channel.get("gate0_flagged_brand")
+    gate0_search_query = channel.get("gate0_search_query")
+    gate0_source_url = channel.get("gate0_source_url")
     contact_info = channel.get("contact_info") or ""
     secondary_urls = channel.get("secondary_urls") or []
 
@@ -140,7 +180,16 @@ def _build_qa_prompt(channel: dict[str, object]) -> str:
         links_parts.append(str(contact_info))
     links_str = ", ".join(links_parts) if links_parts else "(none)"
 
-    competitor_str = f"Gate0 flagged competitor brand: {gate0_flagged_brand}" if gate0_flagged_brand else "No competitor brand flagged"
+    # Gold affiliation block — surfaced fully so the AI can reason about it correctly.
+    if gate0_flagged_brand:
+        affiliation_lines = [f"Previous Gold Affiliation: Yes, {gate0_flagged_brand}"]
+        if gate0_search_query:
+            affiliation_lines.append(f"Search Query: {gate0_search_query}")
+        if gate0_source_url:
+            affiliation_lines.append(f"Source URL: {gate0_source_url}")
+        affiliation_str = "\n".join(affiliation_lines)
+    else:
+        affiliation_str = f"Previous Gold Affiliation: None detected (Gate0 status: {gate0_status})"
 
     recent_videos = channel.get("recent_videos") or []
     video_lines: list[str] = []
@@ -174,11 +223,6 @@ def _build_qa_prompt(channel: dict[str, object]) -> str:
     videos_block = "\n".join(video_lines) if video_lines else "  (none available)"
 
     return (
-        "CHANNEL INTELLIGENCE ANALYSIS\n\n"
-        "Context: You are conducting acquisition due diligence for a precious-metals "
-        "direct-response marketing company. The target acquisition audience is 55+ conservative "
-        "Americans who respond to financial protection, national stability, and trust-based "
-        "authority messaging.\n\n"
         "CHANNEL DATA:\n"
         f"Platform: {platform}\n"
         f"Name: {name}\n"
@@ -191,30 +235,11 @@ def _build_qa_prompt(channel: dict[str, object]) -> str:
         f"Engagement Rate: {engagement_str}\n"
         f"Posts Per Week: {ppw_str}\n"
         f"Last Active: {last_active_str}\n"
-        f"Description: {description or '(none)'}\n"
+        f"Channel About: {description or '(none)'}\n"
         f"External Links / Contact: {links_str}\n"
-        f"{competitor_str}\n\n"
+        f"{affiliation_str}\n\n"
         f"Recent {content_type}s:\n{videos_block}\n\n"
-        "INSTRUCTIONS:\n"
-        "- Answer all 7 questions below with 3–5 sentences each.\n"
-        "- Use analytical, hedged prose: 'appears to', 'suggests', 'the available data indicates'.\n"
-        "- Never overclaim certainty when data is sparse or ambiguous.\n"
-        "- For age_55_appeal: only state confirmed 55+ fit if the content themes, tone, or "
-        "available evidence strongly support it — otherwise describe the likelihood.\n"
-        "- For monetization_pattern: if no clear pattern is visible, say it requires further "
-        "review rather than claiming none exists.\n"
-        "- For risk_flags: always consider inactivity, competitor conflicts, contactability gaps, "
-        "political polarization risk, and weak 55+ audience fit.\n"
-        "- Respond with ONLY a JSON object using exactly these 7 keys.\n\n"
-        '{\n'
-        '  "creator_about": "What is this creator/channel really about?",\n'
-        '  "audience_relationship": "What kind of audience relationship does the creator appear to have?",\n'
-        '  "age_55_appeal": "Does the channel appear to include or appeal to a 55+ retirement-age audience segment?",\n'
-        '  "acquisition_relevance": "Does the channel appear relevant for acquisition outreach?",\n'
-        '  "monetization_pattern": "What monetization pattern is visible?",\n'
-        '  "conversion_signals": "What are the main conversion signals?",\n'
-        '  "risk_flags": "What are the risk flags?"\n'
-        '}'
+        + _QA_INSTRUCTIONS
     )
 
 
@@ -262,25 +287,12 @@ def _parse_response(
     return categories, summary, confidence, signals
 
 
-def _parse_qa_response(raw_text: str | None) -> dict[str, str] | None:
-    """Parse AI Q&A JSON response into a dict with the 7 answer keys."""
-    data = extract_json_object(raw_text)
-    if data is None:
-        if not raw_text:
-            logger.warning("Q&A AI response was empty or None")
-        else:
-            logger.warning("Q&A JSON parse failure: %.200s", raw_text)
+def _parse_qa_response(raw_text: str | None) -> str | None:
+    """Return the narrative report text, or None if empty."""
+    if not raw_text or not raw_text.strip():
+        logger.warning("Q&A AI response was empty or None")
         return None
-
-    report: dict[str, str] = {}
-    for key in _QA_KEYS:
-        val = data.get(key)
-        if isinstance(val, str) and val.strip():
-            report[key] = val.strip()
-
-    if not report:
-        return None
-    return report
+    return raw_text.strip()
 
 
 def _compute_context_score(channel: dict[str, object]) -> int:
@@ -342,7 +354,7 @@ def _classify_one(
     return _parse_response(extract_response_text(response))
 
 
-def _qa_one(channel: dict[str, object], client) -> dict[str, str] | None:
+def _qa_one(channel: dict[str, object], client) -> str | None:
     from google.genai import types
     prompt = _build_qa_prompt(channel)
     response = client.models.generate_content(
@@ -350,8 +362,8 @@ def _qa_one(channel: dict[str, object], client) -> dict[str, str] | None:
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction=_SYSTEM_PROMPT,
-            response_mime_type="application/json",
-            max_output_tokens=2000,
+            response_mime_type="text/plain",
+            max_output_tokens=3000,
             temperature=0.2,
             thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
@@ -447,7 +459,8 @@ def classify_channels(
         "id,platform,channel_url,name,description,subscriber_count,"
         "avg_views,avg_comments,engagement_rate,posts_per_week,last_active_date,"
         "niche_tags,video_titles,recent_videos,secondary_urls,contact_info,"
-        "gate0_flagged_brand,classification_context_score,discovery_category,"
+        "gate0_status,gate0_flagged_brand,gate0_search_query,gate0_source_url,"
+        "classification_context_score,discovery_category,"
         "ai_summary,ai_channel_report"
     )
 

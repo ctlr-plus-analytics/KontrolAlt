@@ -223,7 +223,7 @@ def _scan_serper_results(
     if not isinstance(organic_results, list):
         return None, None
 
-    for item in organic_results[:20]:
+    for item in organic_results[:10]:
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "")
@@ -254,7 +254,7 @@ def _run_serper_search(
             },
             json={
                 "q": search_query,
-                "num": 20,
+                "num": 10,
             },
         )
         if response.status_code in _SERPER_QUOTA_STATUS_CODES:
@@ -291,7 +291,7 @@ def _build_search_queries(
             queries.append(f'"{channel_handle}" "{competitor.brand}"')
 
     for competitor in competitors:
-        for domain in competitor.domains[:2]:
+        for domain in competitor.domains[:1]:
             queries.append(f'site:{domain} "{channel_name}"')
             if handle_differs:
                 queries.append(f'site:{domain} "{channel_handle}"')
@@ -471,12 +471,16 @@ def _run_gate0_sync(
 
 
 @celery_app.task(name="scraper.tasks.run_gate0_all")
-def run_gate0_all(recheck_clean: bool = False) -> dict[str, object]:
+def run_gate0_all(
+    recheck_clean: bool = False,
+    dashboard_eligible_only: bool = False,
+) -> dict[str, object]:
     """Fetch all eligible channels and dispatch individual run_gate0 tasks.
 
     Args:
-        recheck_clean: When True, re-queue channels already marked clean.
-                       By default only unchecked/pending channels are queued.
+        recheck_clean:           When True, re-queue channels already marked clean.
+                                 By default only unchecked/pending channels are queued.
+        dashboard_eligible_only: When True, restrict to dashboard_eligible=True channels.
     """
     client = get_supabase_client()
     try:
@@ -488,6 +492,8 @@ def run_gate0_all(recheck_clean: bool = False) -> dict[str, object]:
         )
         if not recheck_clean:
             query = query.in_("gate0_status", ["unchecked", "pending"])
+        if dashboard_eligible_only:
+            query = query.eq("dashboard_eligible", True)
         result = query.execute()
         channels = result.data or []
     except APIError as exc:
@@ -513,8 +519,10 @@ def run_gate0_all(recheck_clean: bool = False) -> dict[str, object]:
         except Exception as exc:
             logger.warning("run_gate0_all: failed to queue %s: %s", channel_id, exc)
 
-    logger.info("run_gate0_all: queued=%d total_fetched=%d recheck_clean=%s",
-                queued, len(channels), recheck_clean)
+    logger.info(
+        "run_gate0_all: queued=%d total_fetched=%d recheck_clean=%s dashboard_eligible_only=%s",
+        queued, len(channels), recheck_clean, dashboard_eligible_only,
+    )
     return {"queued": queued, "total_fetched": len(channels)}
 
 

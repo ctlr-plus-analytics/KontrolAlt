@@ -71,21 +71,10 @@ export interface Channel {
   gate0_source_url: string | null;
 
   ai_summary: string | null;
-  ai_channel_report: ChannelIntelligenceReport | null;
+  ai_channel_report: string | null;
 
   created_at: string;
   updated_at: string;
-}
-
-/** AI-generated channel intelligence Q&A report. */
-export interface ChannelIntelligenceReport {
-  creator_about?: string;
-  audience_relationship?: string;
-  age_55_appeal?: string;
-  acquisition_relevance?: string;
-  monetization_pattern?: string;
-  conversion_signals?: string;
-  risk_flags?: string;
 }
 
 /** Computed growth velocity scores for a channel. */

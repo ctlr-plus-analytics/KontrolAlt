@@ -18,7 +18,6 @@ import {
 } from "lucide-react";
 import type {
   Channel,
-  ChannelIntelligenceReport,
   RecentVideo,
   VelocityScore,
   Gate0Result,
@@ -635,20 +634,7 @@ export function ChannelDetail({
 }
 
 /* ─── Channel Intelligence Report ─── */
-const QA_ITEMS: { key: keyof ChannelIntelligenceReport; label: string; risk?: boolean }[] = [
-  { key: "creator_about",        label: "What is this channel really about?" },
-  { key: "audience_relationship",label: "Audience relationship" },
-  { key: "age_55_appeal",        label: "55+ audience appeal" },
-  { key: "acquisition_relevance",label: "Acquisition relevance" },
-  { key: "monetization_pattern", label: "Monetization pattern" },
-  { key: "conversion_signals",   label: "Conversion signals" },
-  { key: "risk_flags",           label: "Risk flags", risk: true },
-];
-
-function ChannelIntelligenceSection({ report }: { report: ChannelIntelligenceReport }) {
-  const items = QA_ITEMS.filter(({ key }) => report[key]);
-  if (items.length === 0) return null;
-
+function ChannelIntelligenceSection({ report }: { report: string }) {
   return (
     <div>
       <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
@@ -661,23 +647,11 @@ function ChannelIntelligenceSection({ report }: { report: ChannelIntelligenceRep
             AI
           </span>
           <span className="text-[10px] font-semibold uppercase tracking-widest text-[#6B6B6B]">
-            Acquisition Due Diligence
+            Analyst Report
           </span>
         </div>
-        <div className="divide-y divide-[#E8E4DC]">
-          {items.map(({ key, label, risk }) => (
-            <div key={key} className="px-5 py-4">
-              <p
-                className={cn(
-                  "mb-1.5 text-[10px] font-semibold uppercase tracking-widest",
-                  risk ? "text-[#B22222]" : "text-[#6B6B6B]"
-                )}
-              >
-                {label}
-              </p>
-              <p className="text-sm leading-6 text-[#1A1A2E]">{report[key]}</p>
-            </div>
-          ))}
+        <div className="px-5 py-5">
+          <p className="whitespace-pre-wrap text-sm leading-7 text-[#1A1A2E]">{report}</p>
         </div>
       </div>
     </div>
