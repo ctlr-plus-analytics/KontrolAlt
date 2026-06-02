@@ -19,7 +19,8 @@ _CHANNELS_TABLE = "channels"
 _CHANNEL_LIST_SELECT = (
     "id,platform,channel_url,name,subscriber_count,avg_views,avg_comments,"
     "comment_tier,posts_per_week,last_active_date,niche_tags,is_active,"
-    "gate0_status,gate0_checked_at,has_been_scraped,discovery_status,"
+    "gate0_status,gate0_checked_at,secondary_urls,do_not_contact,"
+    "has_been_scraped,discovery_status,"
     "last_scrape_error,dashboard_metrics_complete,dashboard_url_valid,"
     "dashboard_eligible,engagement_rate,view_velocity_30d,view_velocity_90d,"
     "comment_velocity_30d,comment_velocity_90d,velocity_computed_at,"
@@ -46,6 +47,7 @@ _CHANNEL_COLUMNS = {
     "gate0_status",
     "gate0_checked_at",
     "secondary_urls",
+    "do_not_contact",
     "has_been_scraped",
     "discovery_status",
     "last_scrape_error",
@@ -528,6 +530,47 @@ async def update_channel_gate0_status(
             exc_info=True,
         )
         raise SupabaseError(f"Failed to update gate0 status: {exc}") from exc
+
+
+async def update_channel_do_not_contact(
+    channel_id: UUID, do_not_contact: str | None
+) -> ChannelWithMetrics:
+    """Update a channel's do-not-contact status."""
+    try:
+        existing = (
+            supabase_admin.table("channels")
+            .select("id")
+            .eq("id", str(channel_id))
+            .maybe_single()
+            .execute()
+        )
+        if existing.data is None:
+            raise NotFoundError(f"Channel {channel_id} not found")
+
+        supabase_admin.table("channels").update(
+            {
+                "do_not_contact": do_not_contact,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ).eq("id", str(channel_id)).execute()
+
+        updated = await get_channel_by_id(channel_id)
+        if updated is None:
+            raise NotFoundError(f"Channel {channel_id} not found")
+        logger.info(
+            "Updated channel %s do_not_contact to %s", channel_id, do_not_contact
+        )
+        return updated
+    except NotFoundError:
+        raise
+    except (APIError, TypeError, ValueError) as exc:
+        logger.error(
+            "Failed to update do_not_contact for %s: %s",
+            channel_id,
+            exc,
+            exc_info=True,
+        )
+        raise SupabaseError(f"Failed to update do_not_contact: {exc}") from exc
 
 
 async def upsert_channel(data: dict[str, object]) -> dict[str, object]:

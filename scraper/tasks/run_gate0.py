@@ -210,7 +210,7 @@ def _scan_text_for_competitors(
                 return domain, _source_url_for_domain(text, source_url, domain)
 
         if _contains_brand(text_lower, competitor.brand):
-            return competitor.brand, None
+            return competitor.brand, source_url
 
     return None, None
 

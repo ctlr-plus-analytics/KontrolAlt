@@ -38,6 +38,7 @@ def test_discovery_row_maps_velocity_and_gate0_models() -> None:
         "gate0_status": "clean",
         "gate0_checked_at": "2026-05-01T00:00:00+00:00",
         "secondary_urls": [],
+        "do_not_contact": "Current Partner",
         "created_at": "2026-05-01T00:00:00+00:00",
         "updated_at": "2026-05-01T00:00:00+00:00",
         "velocity_id": "00000000-0000-0000-0000-000000000002",
@@ -60,6 +61,8 @@ def test_discovery_row_maps_velocity_and_gate0_models() -> None:
     assert channel.velocity.view_velocity_90d == 12.5
     assert channel.gate0 is not None
     assert channel.gate0.result_status.value == "clean"
+    assert channel.do_not_contact is not None
+    assert channel.do_not_contact.value == "Current Partner"
 
 
 def test_canonical_niche_tags_maps_unknown_bucket() -> None:

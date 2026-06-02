@@ -21,6 +21,7 @@ import type {
   ResolverSeedRequest,
   ResolverResponse,
   ResolverConfirmRequest,
+  UpdateChannelDoNotContactRequest,
   ScrapeTaskResponse,
   AdminMeResponse,
   AdminTaskTriggerRequest,
@@ -258,6 +259,19 @@ export async function deleteChannelCompletely(
 ): Promise<ChannelDeleteResponse> {
   return apiFetch<ChannelDeleteResponse>(`/api/v1/channels/${channelId}`, {
     method: "DELETE",
+    token,
+  });
+}
+
+/** Update a channel's do-not-contact status. */
+export async function updateChannelDoNotContact(
+  channelId: string,
+  payload: UpdateChannelDoNotContactRequest,
+  token?: string
+): Promise<ChannelDetail> {
+  return apiFetch<ChannelDetail>(`/api/v1/channels/${channelId}/do-not-contact`, {
+    method: "PATCH",
+    body: payload,
     token,
   });
 }

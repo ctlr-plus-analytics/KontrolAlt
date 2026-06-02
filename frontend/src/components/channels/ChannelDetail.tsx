@@ -34,6 +34,7 @@ import {
   deleteChannelCompletely,
   deleteChannelHistory,
   getChannelLookalikes,
+  updateChannelDoNotContact,
 } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
 import { useRealtimeRefresh } from "@/hooks/useRealtimeRefresh";
@@ -46,6 +47,8 @@ interface ChannelDetailProps {
   gate0: Gate0Result | null;
   scrapeLogs: ScrapeLog[];
 }
+
+type DoNotContactChoice = NonNullable<Channel["do_not_contact"]>;
 
 export function ChannelDetail({
   channel,
@@ -61,6 +64,13 @@ export function ChannelDetail({
   const [lookalikesError, setLookalikesError] = useState<string | null>(null);
   const [deletingHistory, setDeletingHistory] = useState(false);
   const [deletingCompletely, setDeletingCompletely] = useState(false);
+  const [doNotContactUpdating, setDoNotContactUpdating] = useState<
+    DoNotContactChoice | "reset" | null
+  >(null);
+  const [doNotContactError, setDoNotContactError] = useState<string | null>(null);
+  const [doNotContactMessage, setDoNotContactMessage] = useState<string | null>(
+    null
+  );
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteMessage, setDeleteMessage] = useState<string | null>(null);
 
@@ -145,6 +155,13 @@ export function ChannelDetail({
     substack: "bg-[#FF6719]/10 text-[#C04A0E]",
   };
   const channelAbout = channel.description?.trim() ?? "";
+  const doNotContactLabel = channel.do_not_contact ?? "Not Set";
+  const doNotContactBadgeVariant =
+    channel.do_not_contact === "Hired and Canceled"
+      ? "danger"
+      : channel.do_not_contact === "Current Partner"
+        ? "gold"
+        : "muted";
   const recentVideos = (channel.recent_videos ?? []).length
     ? (channel.recent_videos ?? []).map((video, index) => mapRecentVideo(video, index))
     : (channel.video_titles ?? [])
@@ -204,6 +221,39 @@ export function ChannelDetail({
     }
   };
 
+  const handleDoNotContactUpdate = async (value: Channel["do_not_contact"]) => {
+    if (!session?.access_token) {
+      setDoNotContactError("You must be signed in to update do-not-contact.");
+      return;
+    }
+    if (doNotContactUpdating !== null) {
+      return;
+    }
+
+    setDoNotContactError(null);
+    setDoNotContactMessage(null);
+    setDoNotContactUpdating(value ?? "reset");
+    try {
+      await updateChannelDoNotContact(
+        channel.id,
+        { do_not_contact: value },
+        session.access_token
+      );
+      setDoNotContactMessage(
+        value ? `Do not contact set to ${value}.` : "Do not contact reset."
+      );
+      router.refresh();
+    } catch (err) {
+      setDoNotContactError(
+        err instanceof Error
+          ? err.message
+          : "Failed to update do-not-contact status."
+      );
+    } finally {
+      setDoNotContactUpdating(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* ─── Header Section ─── */}
@@ -247,6 +297,52 @@ export function ChannelDetail({
 
           <div className="flex flex-col items-end gap-3">
             <Gate0Badge status={gate0Status} flaggedBrand={channel.gate0_flagged_brand} />
+            <div className="w-full max-w-[340px] rounded-xl border border-[#E8E4DC] bg-[#FAF8F4] p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-[#6B6B6B]">
+                  Do Not Contact
+                </p>
+                <Badge variant={doNotContactBadgeVariant}>
+                  {doNotContactLabel}
+                </Badge>
+              </div>
+              <div className="mt-3 flex flex-wrap justify-end gap-2">
+                <Button
+                  variant="danger"
+                  size="sm"
+                  loading={doNotContactUpdating === "Hired and Canceled"}
+                  disabled={!session?.access_token || doNotContactUpdating !== null}
+                  onClick={() => void handleDoNotContactUpdate("Hired and Canceled")}
+                >
+                  Hired and Canceled
+                </Button>
+                <Button
+                  variant="accent"
+                  size="sm"
+                  loading={doNotContactUpdating === "Current Partner"}
+                  disabled={!session?.access_token || doNotContactUpdating !== null}
+                  onClick={() => void handleDoNotContactUpdate("Current Partner")}
+                >
+                  Current Partner
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  loading={doNotContactUpdating === "reset"}
+                  disabled={!session?.access_token || doNotContactUpdating !== null}
+                  className="border border-[#E8E4DC] bg-white hover:bg-[#FAF8F4]"
+                  onClick={() => void handleDoNotContactUpdate(null)}
+                >
+                  Reset
+                </Button>
+              </div>
+              {doNotContactError && (
+                <p className="mt-2 text-xs text-[#B22222]">{doNotContactError}</p>
+              )}
+              {doNotContactMessage && (
+                <p className="mt-2 text-xs text-[#6B6B6B]">{doNotContactMessage}</p>
+              )}
+            </div>
             <div className="flex gap-2">
               <a
                 href={channel.channel_url}

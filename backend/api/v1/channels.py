@@ -10,6 +10,7 @@ from core.logging import get_logger
 from core.security import get_current_user
 from models.channel import (
     CategoryTagListResponse,
+    ChannelDoNotContactUpdateRequest,
     ChannelFilters,
     ChannelDeleteResponse,
     Gate0StatusListResponse,
@@ -212,6 +213,24 @@ async def get_channel(
         raise HTTPException(status_code=404, detail="Channel not found")
 
     return result
+
+
+@router.patch("/{channel_id}/do-not-contact", response_model=ChannelWithMetrics)
+async def update_channel_do_not_contact(
+    channel_id: UUID,
+    body: ChannelDoNotContactUpdateRequest,
+    user: dict = Depends(get_current_user),
+) -> ChannelWithMetrics:
+    """Set or clear the manual do-not-contact status for a channel."""
+    try:
+        return await channel_service.update_channel_do_not_contact(
+            channel_id,
+            body.do_not_contact.value if body.do_not_contact is not None else None,
+        )
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    except SupabaseError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.delete("/{channel_id}/history", response_model=ChannelDeleteResponse)

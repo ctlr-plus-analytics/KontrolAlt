@@ -12,6 +12,9 @@ export type CommentTier = "active" | "sweet_spot" | "whale";
 /** Gate 0 compliance check status. */
 export type Gate0Status = "clean" | "dirty" | "pending" | "unchecked";
 
+/** Manual do-not-contact status. */
+export type DoNotContactStatus = "Hired and Canceled" | "Current Partner";
+
 /** Scrape log status. */
 export type ScrapeStatus = "success" | "blocked" | "retry" | "failed";
 
@@ -48,6 +51,7 @@ export interface Channel {
   gate0_status: Gate0Status;
   gate0_checked_at: string | null;
   secondary_urls: string[];
+  do_not_contact: DoNotContactStatus | null;
   has_been_scraped: boolean;
   discovery_status: "new" | "queued" | "scraped" | "failed" | "dead" | "blocked";
   last_scrape_error: string | null;
@@ -239,6 +243,10 @@ export interface ResolverConfirmSelection {
 export interface ResolverConfirmRequest {
   selections: ResolverConfirmSelection[];
   trigger_scrape_now: boolean;
+}
+
+export interface UpdateChannelDoNotContactRequest {
+  do_not_contact: DoNotContactStatus | null;
 }
 
 /** Filter state for channel discovery table. */

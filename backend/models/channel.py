@@ -38,6 +38,13 @@ class Gate0Status(str, Enum):
     unchecked = "unchecked"
 
 
+class DoNotContactStatus(str, Enum):
+    """Manual outreach suppression status for a channel."""
+
+    hired_and_canceled = "Hired and Canceled"
+    current_partner = "Current Partner"
+
+
 class DiscoveryStatus(str, Enum):
     """Channel discovery lifecycle status."""
 
@@ -81,6 +88,7 @@ class Channel(BaseModel):
     gate0_status: Gate0Status = Gate0Status.unchecked
     gate0_checked_at: datetime | None = None
     secondary_urls: list[str] = Field(default_factory=list)
+    do_not_contact: DoNotContactStatus | None = None
     has_been_scraped: bool = False
     discovery_status: DiscoveryStatus = DiscoveryStatus.new
     last_scrape_error: str | None = None
@@ -334,3 +342,9 @@ class ChannelDeleteResponse(BaseModel):
 
     message: str
     channel_id: UUID
+
+
+class ChannelDoNotContactUpdateRequest(BaseModel):
+    """Request payload for setting or clearing do-not-contact state."""
+
+    do_not_contact: DoNotContactStatus | None

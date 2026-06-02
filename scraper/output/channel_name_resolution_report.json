@@ -1,16 +1,16 @@
 {
   "summary": {
-    "mode": "dry_run",
+    "mode": "write",
     "csv": "scraper\\DO NOT CONTACT_CURRENT PARTNERS.csv",
     "total_seeds": 110,
-    "inserted": 0,
-    "updated": 0,
-    "duplicates": 0,
-    "unresolved": 75,
-    "ambiguous": 55,
+    "inserted": 8,
+    "updated": 28,
+    "duplicates": 28,
+    "unresolved": 74,
+    "ambiguous": 54,
     "below_threshold": 0,
-    "candidate_urls": 419,
-    "generated_at": "2026-06-02T19:41:36.425310+00:00"
+    "candidate_urls": 420,
+    "generated_at": "2026-06-02T19:56:17.406810+00:00"
   },
   "rows": [
     {
@@ -137,18 +137,6 @@
           ]
         },
         {
-          "channel_url": "https://substack.com/@investorinmisunderstoodcos",
-          "platform": "substack",
-          "confidence": 0.5,
-          "display_name": "Comments - My First Ever Portfolio Update",
-          "source": "serper",
-          "query": "site:substack.com \"ALCJ\"",
-          "evidence": [
-            "title=Comments - My First Ever Portfolio Update",
-            "link=https://investorinmisunderstoodcos.substack.com/p/my-first-ever-portfolio-update/comments"
-          ]
-        },
-        {
           "channel_url": "https://substack.com/@toffcapmondaymonitor",
           "platform": "substack",
           "confidence": 0.5,
@@ -182,6 +170,18 @@
           "evidence": [
             "title=January 21, 2020 - by Heather Cox Richardson - Substack",
             "link=https://heathercoxrichardson.substack.com/p/january-21-2020"
+          ]
+        },
+        {
+          "channel_url": "https://substack.com/@trishwhitcomb",
+          "platform": "substack",
+          "confidence": 0.5,
+          "display_name": "The Defense Team Second Baptist Has Assembled, and the Lawyer ...",
+          "source": "serper",
+          "query": "site:substack.com \"Jay Sekulow\"",
+          "evidence": [
+            "title=The Defense Team Second Baptist Has Assembled, and the Lawyer ...",
+            "link=https://trishwhitcomb.substack.com/p/the-defense-team-second-baptist-has"
           ]
         }
       ],
@@ -384,7 +384,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -469,7 +469,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "inserted"
     },
     {
       "seed": {
@@ -743,6 +743,18 @@
           ]
         },
         {
+          "channel_url": "https://rumble.com/c/FightBack",
+          "platform": "rumble",
+          "confidence": 0.7,
+          "display_name": "FightBack Foundation",
+          "source": "serper",
+          "query": "site:rumble.com \"Brad Barton\"",
+          "evidence": [
+            "title=FightBack Foundation - Rumble",
+            "link=https://rumble.com/c/FightBack"
+          ]
+        },
+        {
           "channel_url": "https://substack.com/@almanacofamericanpolitics",
           "platform": "substack",
           "confidence": 0.6,
@@ -777,7 +789,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -838,7 +850,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -1002,7 +1014,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -1087,7 +1099,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "inserted"
     },
     {
       "seed": {
@@ -1190,7 +1202,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -1272,15 +1284,15 @@
       ],
       "candidates": [
         {
-          "channel_url": "https://substack.com/@sonnybunch",
+          "channel_url": "https://substack.com/@philosophyhappens",
           "platform": "substack",
           "confidence": 0.78,
-          "display_name": "Sonny Bunch (@sonnybunch) - Chuck Norris, 1940\u20132026",
+          "display_name": "I once came up with some Chuck Norris philosophy jokes ...",
           "source": "serper",
           "query": "site:substack.com \"Chuck Norris\"",
           "evidence": [
-            "title=Sonny Bunch (@sonnybunch) - Chuck Norris, 1940\u20132026 - Substack",
-            "link=https://substack.com/@sonnybunch/note/c-230760654"
+            "title=I once came up with some Chuck Norris philosophy jokes ... - Substack",
+            "link=https://substack.com/@philosophyhappens/note/c-186378858"
           ]
         },
         {
@@ -1421,7 +1433,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -1585,7 +1597,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -1622,7 +1634,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "inserted"
     },
     {
       "seed": {
@@ -1707,7 +1719,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -1746,6 +1758,18 @@
           ]
         },
         {
+          "channel_url": "https://rumble.com/c/c-5554017",
+          "platform": "rumble",
+          "confidence": 0.7,
+          "display_name": "The Life Podcast",
+          "source": "serper",
+          "query": "site:rumble.com \"Dr Jockers\"",
+          "evidence": [
+            "title=The Life Podcast - Rumble",
+            "link=https://rumble.com/c/c-5554017"
+          ]
+        },
+        {
           "channel_url": "https://substack.com/@drsarapugh",
           "platform": "substack",
           "confidence": 0.68,
@@ -1767,18 +1791,6 @@
           "evidence": [
             "title=Ivermectin: DEADLY FERTILITY TOXIN?? Drs. Yeadon, Cole, Barre ...",
             "link=https://rumble.com/v5dyssa-ivermectin-deadly-fertility-toxin-drs.-yeadon-cole-barre-and-makis-weigh-in.html"
-          ]
-        },
-        {
-          "channel_url": "https://substack.com/@brentmackinnon",
-          "platform": "substack",
-          "confidence": 0.6,
-          "display_name": "The Magnesium Miracle with Dr Carolyn Dean",
-          "source": "serper",
-          "query": "site:substack.com \"Dr Jockers\"",
-          "evidence": [
-            "title=The Magnesium Miracle with Dr Carolyn Dean",
-            "link=https://brentmackinnon.substack.com/p/the-magnesium-miracle-with-dr-carolyn"
           ]
         }
       ],
@@ -1825,6 +1837,18 @@
           ]
         },
         {
+          "channel_url": "https://substack.com/@ourtablescompany",
+          "platform": "substack",
+          "confidence": 0.6,
+          "display_name": "Our Table in July",
+          "source": "serper",
+          "query": "site:substack.com \"Fresh and Fit\"",
+          "evidence": [
+            "title=Our Table in July",
+            "link=https://ourtablescompany.substack.com/p/our-table-in-july"
+          ]
+        },
+        {
           "channel_url": "https://substack.com/@cityjournal",
           "platform": "substack",
           "confidence": 0.6,
@@ -1846,18 +1870,6 @@
           "evidence": [
             "title=Tiering & Analyzing Bucs Offensive Coordinator Candidates",
             "link=https://jonledyard.substack.com/p/tiering-and-analyzing-bucs-offensive"
-          ]
-        },
-        {
-          "channel_url": "https://substack.com/@helenlewis",
-          "platform": "substack",
-          "confidence": 0.6,
-          "display_name": "The Bluestocking 407: Kennedys and Ayatollahmaxxing",
-          "source": "serper",
-          "query": "site:substack.com \"Fresh and Fit\"",
-          "evidence": [
-            "title=The Bluestocking 407: Kennedys and Ayatollahmaxxing",
-            "link=https://helenlewis.substack.com/p/the-bluestocking-407-kennedys-and"
           ]
         }
       ],
@@ -2050,18 +2062,6 @@
           ]
         },
         {
-          "channel_url": "https://substack.com/@roberthubbell",
-          "platform": "substack",
-          "confidence": 0.6,
-          "display_name": "Today's Edition: \u201cNot dead yet.\u201d - by Robert B. Hubbell",
-          "source": "serper",
-          "query": "site:substack.com \"Freedom from the Press\"",
-          "evidence": [
-            "title=Today's Edition: \u201cNot dead yet.\u201d - by Robert B. Hubbell",
-            "link=https://roberthubbell.substack.com/p/todays-edition-not-dead-yet"
-          ]
-        },
-        {
           "channel_url": "https://substack.com/@etosamoe",
           "platform": "substack",
           "confidence": 0.6,
@@ -2071,6 +2071,18 @@
           "evidence": [
             "title=Becoming Russia: Part III - Chris Williams",
             "link=https://etosamoe.substack.com/p/becoming-russia-part-iii?utm_medium=post+viewer"
+          ]
+        },
+        {
+          "channel_url": "https://substack.com/@roberthubbell",
+          "platform": "substack",
+          "confidence": 0.6,
+          "display_name": "Today's Edition: \u201cNot dead yet.\u201d - by Robert B. Hubbell",
+          "source": "serper",
+          "query": "site:substack.com \"Freedom from the Press\"",
+          "evidence": [
+            "title=Today's Edition: \u201cNot dead yet.\u201d - by Robert B. Hubbell",
+            "link=https://roberthubbell.substack.com/p/todays-edition-not-dead-yet"
           ]
         }
       ],
@@ -2679,7 +2691,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -2885,7 +2897,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -3092,7 +3104,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -3220,7 +3232,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "inserted"
     },
     {
       "seed": {
@@ -3323,7 +3335,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -3469,7 +3481,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -3944,7 +3956,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -4267,7 +4279,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -4306,18 +4318,6 @@
           ]
         },
         {
-          "channel_url": "https://rumble.com/c/RootAndBranchAssnLtd",
-          "platform": "rumble",
-          "confidence": 0.7,
-          "display_name": "Root and Branch Association Ltd.",
-          "source": "serper",
-          "query": "site:rumble.com \"Roseanne Barr\"",
-          "evidence": [
-            "title=Root and Branch Association Ltd. - Rumble",
-            "link=https://rumble.com/c/RootAndBranchAssnLtd"
-          ]
-        },
-        {
           "channel_url": "https://substack.com/@open",
           "platform": "substack",
           "confidence": 0.68,
@@ -4340,6 +4340,18 @@
             "title=What's So Funny? - by John Warner - The Biblioracle Recommends",
             "link=https://biblioracle.substack.com/p/whats-so-funny"
           ]
+        },
+        {
+          "channel_url": "https://substack.com/@adamcarolla",
+          "platform": "substack",
+          "confidence": 0.6,
+          "display_name": "Driving to Roseanne's House - The Adam Carolla Vlog #1",
+          "source": "serper",
+          "query": "site:substack.com \"Roseanne Barr\"",
+          "evidence": [
+            "title=Driving to Roseanne's House - The Adam Carolla Vlog #1",
+            "link=https://adamcarolla.substack.com/p/the-adam-carolla-vlog-1-driving-to"
+          ]
         }
       ],
       "best_candidate": {
@@ -4352,7 +4364,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -4437,7 +4449,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -4523,7 +4535,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -4687,7 +4699,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -4772,7 +4784,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "inserted"
     },
     {
       "seed": {
@@ -4991,7 +5003,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -5125,7 +5137,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "inserted"
     },
     {
       "seed": {
@@ -5164,15 +5176,15 @@
           ]
         },
         {
-          "channel_url": "https://rumble.com/c/ShawnRyan",
+          "channel_url": "https://rumble.com/c/c-5739474",
           "platform": "rumble",
-          "confidence": 0.99,
-          "display_name": "Shawn Ryan",
+          "confidence": 0.78,
+          "display_name": "Shawn Ryan Clips",
           "source": "serper",
           "query": "site:rumble.com \"Shawn Ryan\"",
           "evidence": [
-            "title=Shawn Ryan - Rumble",
-            "link=https://rumble.com/c/ShawnRyan?duration=long"
+            "title=Shawn Ryan Clips - Rumble",
+            "link=https://rumble.com/c/c-5739474"
           ]
         },
         {
@@ -5368,7 +5380,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -5532,7 +5544,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -5617,7 +5629,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -5668,18 +5680,6 @@
           ]
         },
         {
-          "channel_url": "https://substack.com/@eoinhiggins",
-          "platform": "substack",
-          "confidence": 0.6,
-          "display_name": "The trials of Graham Platner - The Flashpoint | Eoin Higgins",
-          "source": "serper",
-          "query": "site:substack.com \"Stew Peters\"",
-          "evidence": [
-            "title=The trials of Graham Platner - The Flashpoint | Eoin Higgins | Substack",
-            "link=https://eoinhiggins.substack.com/p/the-trials-of-graham-platner"
-          ]
-        },
-        {
           "channel_url": "https://substack.com/@scottkahn",
           "platform": "substack",
           "confidence": 0.6,
@@ -5689,6 +5689,18 @@
           "evidence": [
             "title=David Duke, Graham Platner, and the Absence of Reptentance",
             "link=https://scottkahn.substack.com/p/david-duke-graham-platner-and-the"
+          ]
+        },
+        {
+          "channel_url": "https://substack.com/@eoinhiggins",
+          "platform": "substack",
+          "confidence": 0.6,
+          "display_name": "The trials of Graham Platner - The Flashpoint | Eoin Higgins",
+          "source": "serper",
+          "query": "site:substack.com \"Stew Peters\"",
+          "evidence": [
+            "title=The trials of Graham Platner - The Flashpoint | Eoin Higgins | Substack",
+            "link=https://eoinhiggins.substack.com/p/the-trials-of-graham-platner"
           ]
         }
       ],
@@ -5702,7 +5714,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -5866,7 +5878,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -5951,7 +5963,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "inserted"
     },
     {
       "seed": {
@@ -6304,18 +6316,6 @@
           ]
         },
         {
-          "channel_url": "https://rumble.com/c/russellbrandclips",
-          "platform": "rumble",
-          "confidence": 0.99,
-          "display_name": "Russell Brand Clips",
-          "source": "serper",
-          "query": "site:rumble.com \"Russell Brand\"",
-          "evidence": [
-            "title=Russell Brand Clips - Rumble",
-            "link=https://rumble.com/c/russellbrandclips"
-          ]
-        },
-        {
           "channel_url": "https://substack.com/@joeljmiller",
           "platform": "substack",
           "confidence": 0.7,
@@ -6350,13 +6350,31 @@
             "title=The Time Russell Brand Tried To Make Me His Girlfriend",
             "link=https://jessicadelfino.substack.com/p/the-time-russell-brand-tried-to-make"
           ]
+        },
+        {
+          "channel_url": "https://substack.com/@drlauraeanderson",
+          "platform": "substack",
+          "confidence": 0.68,
+          "display_name": "Russell Brand: From Predator to Prophet",
+          "source": "serper",
+          "query": "site:substack.com \"Russell Brand\"",
+          "evidence": [
+            "title=Russell Brand: From Predator to Prophet",
+            "link=https://drlauraeanderson.substack.com/p/russell-brand-from-predator-to-prophet"
+          ]
         }
       ],
-      "best_candidate": null,
+      "best_candidate": {
+        "channel_url": "https://rumble.com/c/russellbrand",
+        "platform": "rumble",
+        "confidence": 0.99,
+        "display_name": "Russell Brand",
+        "source": "serper"
+      },
       "verified_title": null,
       "verified_url": null,
-      "status": "unresolved",
-      "action": null
+      "status": "ready",
+      "action": "updated"
     },
     {
       "seed": {
@@ -6441,7 +6459,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -6559,18 +6577,6 @@
           ]
         },
         {
-          "channel_url": "https://substack.com/@eshap",
-          "platform": "substack",
-          "confidence": 0.6,
-          "display_name": "Next Generation Audiences: Brand New Research!",
-          "source": "serper",
-          "query": "site:substack.com \"The People's Voice\"",
-          "evidence": [
-            "title=Next Generation Audiences: Brand New Research!",
-            "link=https://eshap.substack.com/p/next-gen-audiences"
-          ]
-        },
-        {
           "channel_url": "https://substack.com/@firstbranchforecast",
           "platform": "substack",
           "confidence": 0.6,
@@ -6580,6 +6586,18 @@
           "evidence": [
             "title=Interview: Rep. Steny Hoyer - First Branch Forecast",
             "link=https://firstbranchforecast.substack.com/p/interview-rep-steny-hoyer"
+          ]
+        },
+        {
+          "channel_url": "https://substack.com/@eshap",
+          "platform": "substack",
+          "confidence": 0.6,
+          "display_name": "Next Generation Audiences: Brand New Research!",
+          "source": "serper",
+          "query": "site:substack.com \"The People's Voice\"",
+          "evidence": [
+            "title=Next Generation Audiences: Brand New Research!",
+            "link=https://eshap.substack.com/p/next-gen-audiences"
           ]
         },
         {
@@ -6605,7 +6623,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "updated"
     },
     {
       "seed": {
@@ -6668,15 +6686,15 @@
           ]
         },
         {
-          "channel_url": "https://substack.com/@juliebindel",
+          "channel_url": "https://substack.com/@benthams",
           "platform": "substack",
           "confidence": 0.6,
-          "display_name": "Laurie Penny: The Gender Goblin strikes again",
+          "display_name": "Why I Think Trans Women Are Women - by Bentham's Bulldog",
           "source": "serper",
           "query": "site:substack.com \"Blaire White\"",
           "evidence": [
-            "title=Laurie Penny: The Gender Goblin strikes again",
-            "link=https://juliebindel.substack.com/p/laurie-penny-the-gender-goblin-strikes"
+            "title=Why I Think Trans Women Are Women - by Bentham's Bulldog",
+            "link=https://benthams.substack.com/p/why-i-think-trans-women-are-women"
           ]
         }
       ],
@@ -6690,7 +6708,7 @@
       "verified_title": null,
       "verified_url": null,
       "status": "ready",
-      "action": "candidate"
+      "action": "inserted"
     },
     {
       "seed": {
@@ -7136,15 +7154,15 @@
           ]
         },
         {
-          "channel_url": "https://rumble.com/c/c-966897",
-          "platform": "rumble",
-          "confidence": 0.7,
-          "display_name": "Music Videos",
+          "channel_url": "https://substack.com/@druby",
+          "platform": "substack",
+          "confidence": 0.68,
+          "display_name": "Dr. Jane Ruby",
           "source": "serper",
-          "query": "site:rumble.com \"Dr. Jane Ruby\"",
+          "query": "site:substack.com \"Dr. Jane Ruby\"",
           "evidence": [
-            "title=Music Videos - Rumble",
-            "link=https://rumble.com/c/c-966897/videos?e9s=src_v1_cbl"
+            "title=Dr. Jane Ruby | Substack",
+            "link=https://druby.substack.com/"
           ]
         }
       ],
@@ -7203,27 +7221,27 @@
           ]
         },
         {
-          "channel_url": "https://substack.com/@sportstalk",
+          "channel_url": "https://substack.com/@explodingwhalesports",
           "platform": "substack",
           "confidence": 0.68,
-          "display_name": "Will Johnson, Michigan: 2025 NFL Draft Profile & Scouting Report",
+          "display_name": "Will Johnson reaps all-league honors",
           "source": "serper",
           "query": "site:substack.com \"Will Johnson\"",
           "evidence": [
-            "title=Will Johnson, Michigan: 2025 NFL Draft Profile & Scouting Report",
-            "link=https://sportstalk.substack.com/p/will-johnson-michigan-2025-nfl-draft"
+            "title=Will Johnson reaps all-league honors",
+            "link=https://explodingwhalesports.substack.com/p/will-johnson-reaps-all-league-honors"
           ]
         },
         {
-          "channel_url": "https://substack.com/@itsfelder",
+          "channel_url": "https://substack.com/@jonledyard",
           "platform": "substack",
           "confidence": 0.68,
-          "display_name": "Mason Graham and Will Johnson are why Wolverines have a good ...",
+          "display_name": "2025 NFL Draft Scouting Report: Michigan CB Will Johnson",
           "source": "serper",
           "query": "site:substack.com \"Will Johnson\"",
           "evidence": [
-            "title=Mason Graham and Will Johnson are why Wolverines have a good ...",
-            "link=https://itsfelder.substack.com/p/mason-graham-and-will-johnson-are"
+            "title=2025 NFL Draft Scouting Report: Michigan CB Will Johnson",
+            "link=https://jonledyard.substack.com/p/2025-nfl-draft-scouting-report-michigan-46d"
           ]
         }
       ],
@@ -7289,18 +7307,6 @@
           ]
         },
         {
-          "channel_url": "https://rumble.com/c/PastorBenGraham",
-          "platform": "rumble",
-          "confidence": 0.7,
-          "display_name": "Real Talk with Pastor Ben Graham",
-          "source": "serper",
-          "query": "site:rumble.com \"Anna Khait\"",
-          "evidence": [
-            "title=Real Talk with Pastor Ben Graham - Rumble",
-            "link=https://rumble.com/c/PastorBenGraham?page=2"
-          ]
-        },
-        {
           "channel_url": "https://rumble.com/c/PatriotStrong",
           "platform": "rumble",
           "confidence": 0.7,
@@ -7310,6 +7316,18 @@
           "evidence": [
             "title=The Patriot Strong Podcast - Rumble",
             "link=https://rumble.com/c/PatriotStrong?page=4"
+          ]
+        },
+        {
+          "channel_url": "https://rumble.com/c/PastorBenGraham",
+          "platform": "rumble",
+          "confidence": 0.7,
+          "display_name": "Real Talk with Pastor Ben Graham",
+          "source": "serper",
+          "query": "site:rumble.com \"Anna Khait\"",
+          "evidence": [
+            "title=Real Talk with Pastor Ben Graham - Rumble",
+            "link=https://rumble.com/c/PastorBenGraham?page=2"
           ]
         },
         {
