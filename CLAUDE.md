@@ -51,10 +51,9 @@ Frontend connects to Supabase as anon (JWT-gated via Supabase Auth).
 - **Entry**: `worker.py` — Celery app, imports all task modules, validates proxy pool on worker startup.
 - **Beat schedule**: `schedules/beat_schedule.py` — daily scrape + weekly velocity, times read from `RuntimeSettings`.
 - **Task modules** (`tasks/`): `run_daily_scrape` orchestrates the full workflow using Celery `chord`; individual platform tasks (`scrape_rumble`, `scrape_bitchute`, `scrape_substack`) are dispatched with staggered `countdown` delays.
-- **Runtime settings**: `core/runtime_settings.py` — frozen dataclass with all tunable operational parameters (slot limits, circuit breaker thresholds, CF bypass timing, discovery limits). Defaults are the live values; changes require a code deploy (no DB-driven hot-reload currently wired to the dataclass).
+- **Runtime settings**: `core/runtime_settings.py` — frozen dataclass with all tunable operational parameters (slot limits, retry delays, CF bypass timing, discovery limits). Defaults are the live values; changes require a code deploy (no DB-driven hot-reload currently wired to the dataclass).
 - **Browser layer** (`core/browser.py`): Camoufox (stealth Playwright) + proxy injection. Heavy media URLs are blocked. CF challenge detection and two-cycle retry live in `core/cf_bypass.py`.
 - **Proxy system** (`core/proxy.py`): Redis-backed health scoring and quarantine; residential proxies for Rumble/BitChute.
-- **Circuit breaker** (`core/circuit_breaker.py`): Redis keys `scrape:cb:fail:<platform>` and `scrape:cb:open:<platform>` gate platform scrapes.
 - **Discovery pipeline**: `tasks/discover_channels.py` uses Serper (Google Search API) for keyword + seed expansion → `channels` table upsert. `tasks/find_lookalikes.py` is separate from discovery.
 
 ### Frontend (`frontend/`)

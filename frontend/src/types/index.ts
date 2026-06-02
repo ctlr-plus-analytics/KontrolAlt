@@ -54,6 +54,7 @@ export interface Channel {
   dashboard_metrics_complete: boolean;
   dashboard_url_valid: boolean;
   dashboard_eligible: boolean;
+  engagement_rate: number | null;
 
   // Consolidated velocity fields
   view_velocity_30d: number | null;

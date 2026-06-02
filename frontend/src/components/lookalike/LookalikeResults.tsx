@@ -25,7 +25,7 @@ export function LookalikeResults({
     <div className="rounded-xl border border-[#E8E4DC] bg-white p-6 shadow-sm">
       <div className="mb-4 flex items-center gap-2">
         <h2 className="text-lg font-semibold tracking-tight text-[#1A1A2E]">
-          Lookalike Channels
+          Similar Channels
         </h2>
         {results && results.length > 0 && (
           <Badge variant="gold">{results.length}</Badge>
@@ -42,7 +42,7 @@ export function LookalikeResults({
         <div className="flex flex-col items-center justify-center py-16">
           <GitBranch size={48} className="mb-4 text-[#E8E4DC]" />
           <p className="text-sm text-[#6B6B6B]">
-            Enter seed creators to find lookalike channels
+            Enter seed creators to find similar channels
           </p>
         </div>
       )}
@@ -56,7 +56,7 @@ export function LookalikeResults({
       {results && !loading && results.length === 0 && (
         <div className="flex flex-col items-center justify-center py-16">
           <p className="text-sm text-[#6B6B6B]">
-            No lookalike channels found for the given creators
+            No similar channels found for the given creators
           </p>
         </div>
       )}

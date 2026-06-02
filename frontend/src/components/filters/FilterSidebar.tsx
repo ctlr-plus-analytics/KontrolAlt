@@ -11,6 +11,7 @@ interface FilterSidebarProps {
   setFilters: (filters: ChannelFilters) => void;
   categoryTagOptions: CategoryTagOption[];
   categoryTagsLoading?: boolean;
+  onCategoryMenuOpen?: () => void;
 }
 
 export const DEFAULT_FILTERS: ChannelFilters = {
@@ -79,6 +80,7 @@ export function FilterSidebar({
   setFilters,
   categoryTagOptions,
   categoryTagsLoading = false,
+  onCategoryMenuOpen,
 }: FilterSidebarProps) {
   const [isCategoryMenuOpen, setIsCategoryMenuOpen] = useState<boolean>(false);
   const categoryMenuRef = useRef<HTMLDivElement | null>(null);
@@ -266,8 +268,7 @@ export function FilterSidebar({
 
       <SectionLabel>Advanced</SectionLabel>
       <div className="flex flex-col gap-4 px-4 pb-6">
-        {categoryTagOptions.length > 0 && (
-          <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-1">
             <FilterLabel>Topic Category</FilterLabel>
             <p className="text-[11px] text-[#F7F4EE]/35">
               Broad, approximate tags. Channels may span multiple categories.
@@ -275,7 +276,10 @@ export function FilterSidebar({
             <div className="relative" ref={categoryMenuRef}>
               <button
                 type="button"
-                onClick={() => setIsCategoryMenuOpen((prev) => !prev)}
+                onClick={() => {
+                  setIsCategoryMenuOpen((prev) => !prev);
+                  onCategoryMenuOpen?.();
+                }}
                 className="flex w-full items-center justify-between rounded-lg border border-[#F7F4EE]/10 bg-[#F7F4EE]/6 px-3 py-2 text-sm text-[#F7F4EE] transition-shadow hover:border-[#F7F4EE]/20 focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/60"
               >
                 <span className="truncate">
@@ -319,6 +323,16 @@ export function FilterSidebar({
                   <div className="my-1 h-px bg-[#F7F4EE]/10" />
 
                   <div className="max-h-64 overflow-y-auto scrollbar-thin">
+                    {categoryTagsLoading && categoryTagOptions.length === 0 && (
+                      <div className="px-2.5 py-3 text-sm text-[#F7F4EE]/45">
+                        Loading categories...
+                      </div>
+                    )}
+                    {!categoryTagsLoading && categoryTagOptions.length === 0 && (
+                      <div className="px-2.5 py-3 text-sm text-[#F7F4EE]/45">
+                        No categories available
+                      </div>
+                    )}
                     {categoryTagOptions.map((option) => {
                       const isActive = filters.category_tags.includes(option.tag);
                       const isEmpty = option.count === 0 && !isActive;
@@ -365,7 +379,6 @@ export function FilterSidebar({
               )}
             </div>
           </div>
-        )}
 
         <NumericRangeFilter
           label="Subscribers"

@@ -1,6 +1,5 @@
 """Celery tasks: scrape Substack channels."""
 
-import asyncio
 import logging
 import random
 from urllib.parse import urlsplit
@@ -10,51 +9,31 @@ from playwright.async_api import Error as PlaywrightError
 from postgrest.exceptions import APIError
 
 from worker import celery_app
-from core.config import scraper_settings
-from core.circuit_breaker import is_open, record_failure, record_success
 from core.exceptions import CloudflareBlockError, ScraperBlockedError, ScraperClassifiedError
-from core.proxy import proxy_session_manager
 from core.supabase import get_supabase_client
 from core.runtime_settings import get_runtime_settings
 from models import ScrapeTaskArgs, ScrapeTaskResult
 from scrapers.substack import SubstackScraper
+from tasks.scrape_failure_policy import (
+    handle_blocked_scrape_error,
+    handle_classified_scrape_error,
+    handle_retryable_scrape_error,
+)
 from tasks.scrape_helpers import (
     acquire_scrape_lock,
-    blocked_retry_countdown_seconds,
     daily_budget_bytes,
-    deactivate_channel_for_url,
     get_daily_bytes_used,
-    has_retries_remaining,
-    has_retries_remaining_for_block,
-    log_scrape_task_attempt,
+    release_global_slot,
     release_keyword_discovery_hold,
+    release_platform_slot,
     release_scrape_lock,
-    retry_countdown_seconds,
     record_daily_bytes_used,
+    try_acquire_global_slot,
+    try_acquire_platform_slot,
 )
+from tasks.task_queues import QUEUE_SUBSTACK
 
 logger = logging.getLogger(__name__)
-
-_NON_BREAKER_REASON_CODES = {
-    "unsupported_substack_url_shape",
-    "substack_handle_redirected_to_search",
-    "substack_see_subscribers_stub",
-    "substack_profile_not_found",
-    # "substack_low_subscriber_count",  # re-enable after validating breaker codes
-    # "substack_too_few_posts",         # re-enable after validating breaker codes
-    # Parse errors: data was absent in the API response, not a platform outage.
-    # Should not penalise the breaker or permanently strand the channel.
-    "parse_missing_subscriber_count",
-    "parse_missing_avg_views",
-    "parse_missing_avg_comments",
-    "parse_missing_posts_per_week",
-    "parse_missing_last_active_date",
-}
-
-
-def _should_trip_substack_breaker(exc: ScraperClassifiedError) -> bool:
-    """Return True when a classified Substack failure should count toward breaker."""
-    return exc.reason_code not in _NON_BREAKER_REASON_CODES
 
 
 def _is_supported_substack_channel_url(channel_url: str) -> bool:
@@ -84,16 +63,6 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
         ).model_dump(mode="json")
 
     logger.info("Starting Substack scrape: %s", channel_url)
-    if is_open("substack"):
-        logger.warning(
-            "Skipping Substack scrape due to open circuit breaker: %s",
-            channel_url,
-        )
-        return ScrapeTaskResult(
-            status="failed",
-            channel_url=channel_url,
-            error="Circuit breaker open for substack",
-        ).model_dump(mode="json")
 
     if not acquire_scrape_lock(channel_url):
         logger.info("Skipping duplicate in-flight Substack scrape: %s", channel_url)
@@ -103,8 +72,36 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
             error="Duplicate in-flight scrape skipped",
         ).model_dump(mode="json")
 
-    if get_runtime_settings().scrape_platform_slot_limit_substack == 0:
+    runtime = get_runtime_settings()
+    if not try_acquire_global_slot(runtime.scrape_global_slot_limit):
         release_scrape_lock(channel_url)
+        scrape_substack_channel.apply_async(
+            args=[channel_url],
+            countdown=random.randint(20, 60),
+            queue=QUEUE_SUBSTACK,
+        )
+        return ScrapeTaskResult(
+            status="skipped",
+            channel_url=channel_url,
+        ).model_dump(mode="json")
+
+    substack_limit = runtime.scrape_platform_slot_limit_substack
+    if substack_limit == 0:
+        release_global_slot()
+        release_scrape_lock(channel_url)
+        return ScrapeTaskResult(
+            status="skipped",
+            channel_url=channel_url,
+        ).model_dump(mode="json")
+
+    if not try_acquire_platform_slot("substack", substack_limit):
+        release_global_slot()
+        release_scrape_lock(channel_url)
+        scrape_substack_channel.apply_async(
+            args=[channel_url],
+            countdown=random.randint(30, 90),
+            queue=QUEUE_SUBSTACK,
+        )
         return ScrapeTaskResult(
             status="skipped",
             channel_url=channel_url,
@@ -138,7 +135,6 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
 
         storage_url = result.get("channel_url", channel_url) if isinstance(result, dict) else channel_url
         release_keyword_discovery_hold(scraper, storage_url)
-        record_success("substack")
         logger.info("Substack scrape complete: %s", channel_url)
         return ScrapeTaskResult(
             status="success",
@@ -147,102 +143,63 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
         ).model_dump(mode="json")
 
     except CloudflareBlockError as exc:
-        if exc.rotation_helps:
-            session_id = proxy_session_manager.extract_session_id(scraper._session_key)
-            proxy_session_manager.mark_blocked(session_id or (scraper._session_key or channel_url))
-        if not has_retries_remaining_for_block(self):
-            record_failure("substack")
-            log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
-            return ScrapeTaskResult(
-                status="failed",
-                channel_url=channel_url,
-                error=str(exc),
-            ).model_dump(mode="json")
-        log_scrape_task_attempt(scraper, channel_url, "blocked", exc, self)
-        raise self.retry(
-            exc=exc,
-            countdown=blocked_retry_countdown_seconds(self),
+        return handle_blocked_scrape_error(
+            platform="substack",
+            scraper=scraper,
+            channel_url=channel_url,
+            error=exc,
+            task=self,
+            result_factory=ScrapeTaskResult,
+            logger=logger,
         )
 
     except ScraperBlockedError as exc:
-        session_id = proxy_session_manager.extract_session_id(scraper._session_key)
-        proxy_session_manager.mark_blocked(session_id or (scraper._session_key or channel_url))
-        if not has_retries_remaining_for_block(self):
-            record_failure("substack")
-            log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
-            return ScrapeTaskResult(
-                status="failed",
-                channel_url=channel_url,
-                error=str(exc),
-            ).model_dump(mode="json")
-        log_scrape_task_attempt(scraper, channel_url, "blocked", exc, self)
-        raise self.retry(
-            exc=exc,
-            countdown=blocked_retry_countdown_seconds(self),
+        return handle_blocked_scrape_error(
+            platform="substack",
+            scraper=scraper,
+            channel_url=channel_url,
+            error=exc,
+            task=self,
+            result_factory=ScrapeTaskResult,
+            logger=logger,
         )
 
     except ScraperClassifiedError as exc:
-        if exc.terminal and not exc.retryable:
-            if _should_trip_substack_breaker(exc):
-                record_failure("substack")
-            deactivate_channel_for_url(scraper, channel_url)
-            log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
-            return ScrapeTaskResult(
-                status="failed",
-                channel_url=channel_url,
-                error=str(exc),
-            ).model_dump(mode="json")
-
-        if not has_retries_remaining(self):
-            if _should_trip_substack_breaker(exc):
-                record_failure("substack")
-            # Non-breaker parse errors re-queue so the next daily batch retries them.
-            log_status = "retry" if not _should_trip_substack_breaker(exc) else "failed"
-            log_scrape_task_attempt(scraper, channel_url, log_status, exc, self)
-            return ScrapeTaskResult(
-                status="failed",
-                channel_url=channel_url,
-                error=str(exc),
-            ).model_dump(mode="json")
-
-        log_scrape_task_attempt(scraper, channel_url, "retry", exc, self)
-        raise self.retry(
-            exc=exc,
-            countdown=retry_countdown_seconds(self),
+        return handle_classified_scrape_error(
+            platform="substack",
+            scraper=scraper,
+            channel_url=channel_url,
+            error=exc,
+            task=self,
+            result_factory=ScrapeTaskResult,
+            logger=logger,
         )
 
     except (APIError, PlaywrightError, RuntimeError, TypeError, ValueError) as exc:
-        if not has_retries_remaining(self):
-            record_failure("substack")
-            log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
-            return ScrapeTaskResult(
-                status="failed",
-                channel_url=channel_url,
-                error=str(exc),
-            ).model_dump(mode="json")
-
-        log_scrape_task_attempt(scraper, channel_url, "retry", exc, self)
-        raise self.retry(
-            exc=exc,
-            countdown=retry_countdown_seconds(self),
+        return handle_retryable_scrape_error(
+            platform="substack",
+            scraper=scraper,
+            channel_url=channel_url,
+            error=exc,
+            task=self,
+            result_factory=ScrapeTaskResult,
+            logger=logger,
         )
 
     except Exception as exc:
-        if not has_retries_remaining(self):
-            record_failure("substack")
-            log_scrape_task_attempt(scraper, channel_url, "failed", exc, self)
-            return ScrapeTaskResult(
-                status="failed",
-                channel_url=channel_url,
-                error=str(exc),
-            ).model_dump(mode="json")
-
-        log_scrape_task_attempt(scraper, channel_url, "retry", exc, self)
-        raise self.retry(
-            exc=exc,
-            countdown=retry_countdown_seconds(self),
+        return handle_retryable_scrape_error(
+            platform="substack",
+            scraper=scraper,
+            channel_url=channel_url,
+            error=exc,
+            task=self,
+            result_factory=ScrapeTaskResult,
+            logger=logger,
+            unexpected=True,
         )
     finally:
+        release_platform_slot("substack")
+        release_global_slot()
         release_scrape_lock(channel_url)
 
 
@@ -278,15 +235,13 @@ def scrape_substack_all(never_scraped_only: bool = True) -> dict[str, object]:
         logger.error("Failed to fetch Substack channel URLs: %s", exc)
         return {"queued": 0, "error": str(exc)}
 
-    if is_open("substack"):
-        logger.warning(
-            "Skipping batch Substack scrape dispatch due to open circuit breaker"
-        )
-        return {"queued": 0, "skipped": "circuit_breaker_open"}
-
     for i, url in enumerate(urls):
         stagger_s = int(i * random.uniform(4, 10))
-        scrape_substack_channel.apply_async(args=[url], countdown=stagger_s)
+        scrape_substack_channel.apply_async(
+            args=[url],
+            countdown=stagger_s,
+            queue=QUEUE_SUBSTACK,
+        )
 
     logger.info("Queued %d Substack channel scrapes", len(urls))
     return {"queued": len(urls)}

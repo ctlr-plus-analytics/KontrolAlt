@@ -48,7 +48,9 @@ export function ChannelTableView({
   const [intakeOpen, setIntakeOpen] = useState<boolean>(false);
   const [categoryTagOptions, setCategoryTagOptions] = useState<CategoryTagOption[]>([]);
   const [categoryTagsLoading, setCategoryTagsLoading] = useState<boolean>(false);
+  const [categoryTagsLoadedKey, setCategoryTagsLoadedKey] = useState<string | null>(null);
   const { session } = useAuth();
+  const token = session?.access_token;
   const categoryTagsScopeFilters = useMemo(
     () => ({
       platform: filters.platform,
@@ -171,22 +173,22 @@ export function ChannelTableView({
     setIntakeOpen(false);
   }, [refetch]);
 
-  // Re-fetch category tag counts whenever filters change so counts reflect
-  // the current filtered dataset (category_tags itself is excluded server-side).
-  useEffect(() => {
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      if (!cancelled) {
-        setCategoryTagsLoading(true);
-      }
-      const tagsResult = await getCategoryTags(session?.access_token, categoryTagsScopeFilters).catch(() => null);
-      if (!cancelled) {
-        setCategoryTagOptions(tagsResult ?? []);
-        setCategoryTagsLoading(false);
-      }
-    }, 300);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [session?.access_token, categoryTagsScopeKey, categoryTagsScopeFilters]);
+  const loadCategoryTags = useCallback(async () => {
+    if (!token || categoryTagsLoading || categoryTagsLoadedKey === categoryTagsScopeKey) {
+      return;
+    }
+    setCategoryTagsLoading(true);
+    const tagsResult = await getCategoryTags(token, categoryTagsScopeFilters).catch(() => null);
+    setCategoryTagOptions(tagsResult ?? []);
+    setCategoryTagsLoadedKey(categoryTagsScopeKey);
+    setCategoryTagsLoading(false);
+  }, [
+    categoryTagsLoadedKey,
+    categoryTagsLoading,
+    categoryTagsScopeFilters,
+    categoryTagsScopeKey,
+    token,
+  ]);
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -196,6 +198,7 @@ export function ChannelTableView({
         setFilters={handleSetFilters}
         categoryTagOptions={categoryTagOptions}
         categoryTagsLoading={categoryTagsLoading}
+        onCategoryMenuOpen={loadCategoryTags}
       />
 
       {/* ── Main Content ── */}

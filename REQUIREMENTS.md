@@ -187,7 +187,6 @@ The product is a research and discovery tool. It is not a CRM, pipeline manager,
 - The workflow must dispatch platform-specific scrape tasks for supported platforms.
 - Unsupported platforms must be skipped.
 - The workflow must respect configured batch size, dispatch pause, max channels, retry limits, and optional daily byte budget.
-- The workflow must skip a platform while its circuit breaker is open.
 - After scraping, the system must run post-scrape tasks:
   - Seed expansion discovery
   - Keyword expansion discovery
@@ -201,8 +200,6 @@ The product is a research and discovery tool. It is not a CRM, pipeline manager,
 - Retry delays must use exponential backoff with jitter.
 - Blocked/challenge errors must obey the configured per-channel block retry limit.
 - Final failures must be logged.
-- Platform circuit breakers must open after repeated failures within the configured window.
-- Circuit breakers must cool down automatically.
 - Failed scrape logging must create a minimal channel row when needed so failures remain observable.
 
 ### 4.10 Velocity Computation
@@ -420,7 +417,7 @@ The product is a research and discovery tool. It is not a CRM, pipeline manager,
 - Supabase Auth for user authentication.
 - Supabase PostgreSQL for application data.
 - Supabase Realtime for frontend refresh subscriptions.
-- Redis for Celery broker, result backend, circuit breaker state, and scrape byte usage.
+- Redis for Celery broker, result backend, scraper state, and scrape byte usage.
 - Serper Search API for Gate 0 and keyword discovery.
 - Residential proxy provider for scraper browser traffic.
 - Rumble and BitChute as source platforms.

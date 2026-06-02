@@ -51,6 +51,48 @@ class _FakeSupabaseAdmin:
         return _FakeQuery(self, update_payload=payload)
 
 
+class _FakeCeleryTask:
+    id = "bootstrap-task-1"
+
+
+class _FakeCelery:
+    def __init__(self):
+        self.sent_tasks = []
+
+    def send_task(self, task_name, *args, **kwargs):
+        self.sent_tasks.append((task_name, args, kwargs))
+        return _FakeCeleryTask()
+
+
+def test_trigger_never_scraped_bootstrap_dispatches_task_and_audits(monkeypatch):
+    fake_celery = _FakeCelery()
+    audit_calls = []
+    monkeypatch.setattr(admin_service, "_celery", fake_celery)
+    monkeypatch.setattr(admin_service, "_audit", lambda **kwargs: audit_calls.append(kwargs))
+
+    result = asyncio.run(
+        admin_service.trigger_never_scraped_bootstrap(
+            actor={"id": "u1", "email": "admin@example.com"},
+            reason="test",
+        )
+    )
+
+    assert fake_celery.sent_tasks == [
+        (
+            admin_service.TASK_SCRAPE_NEVER_SCRAPED_RUMBLE_SUBSTACK,
+            (),
+            {"queue": admin_service.QUEUE_DISCOVERY},
+        )
+    ]
+    assert result.task_id == "bootstrap-task-1"
+    assert result.task_ids == ["bootstrap-task-1"]
+    assert audit_calls[-1]["target"] == "scrape.never_scraped_rumble_substack"
+    assert audit_calls[-1]["metadata"] == {
+        "task_ids": ["bootstrap-task-1"],
+        "reason": "test",
+    }
+
+
 def test_get_keyword_taxonomy_returns_db_value(monkeypatch):
     fake = _FakeSupabaseAdmin(
         {"keyword_taxonomy": [{"niche": "alpha", "keywords": ["one"]}]}

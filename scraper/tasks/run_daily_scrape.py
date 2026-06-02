@@ -4,25 +4,25 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
-from celery import chord
+from celery import chain, chord
 from postgrest.exceptions import APIError
 
 from worker import celery_app
-from core.circuit_breaker import is_open
 from core.supabase import get_supabase_client
 from core.runtime_settings import get_runtime_settings
 from tasks.classify_channels import classify_channels
 from tasks.compute_velocity import compute_velocity_all
-from tasks.discover_channels import discover_channels_now
+from tasks.discover_channels import discover_channels
 from tasks.run_gate0 import run_gate0
 from tasks.scrape_rumble import scrape_rumble_channel
 from tasks.scrape_substack import scrape_substack_channel
+from tasks.task_queues import QUEUE_CLASSIFY, QUEUE_GATE0, scrape_queue_for_platform
 
 logger = logging.getLogger(__name__)
 
 
 class _ScrapeSignature(Protocol):
-    def set(self, **options: int) -> "_ScrapeSignature": ...
+    def set(self, **options: object) -> "_ScrapeSignature": ...
 
 
 def _stage_scrape_signatures(
@@ -37,7 +37,7 @@ def _stage_scrape_signatures(
         "substack": 1,
     }
     platform_seen: dict[str, int] = {}
-    staged: list[object] = []
+    staged: list[_ScrapeSignature] = []
     for idx, (platform, sig) in enumerate(scrape_signatures):
         stage = idx // batch_size
         batch_delay = int(stage * pause_s)
@@ -46,7 +46,11 @@ def _stage_scrape_signatures(
         platform_delay = seen_count * gap
         delay = max(batch_delay, platform_delay)
         platform_seen[platform] = seen_count + 1
-        staged.append(sig.set(countdown=delay))
+        queue = scrape_queue_for_platform(platform)
+        options: dict[str, object] = {"countdown": delay}
+        if queue is not None:
+            options["queue"] = queue
+        staged.append(sig.set(**options))
     return staged
 
 
@@ -104,6 +108,7 @@ def _queue_due_gate0_checks() -> int:
         client.table("channels")
         .select("id,gate0_status,gate0_checked_at")
         .eq("is_active", True)
+        .eq("has_been_scraped", True)
         .execute()
     )
     due_channels: list[tuple[int, str]] = []
@@ -115,7 +120,7 @@ def _queue_due_gate0_checks() -> int:
 
     limit = get_runtime_settings().gate0_daily_queue_limit
     for _, channel_id in sorted(due_channels)[:limit]:
-        run_gate0.delay(channel_id, False)
+        run_gate0.apply_async(args=[channel_id, False], queue=QUEUE_GATE0)
 
     return min(len(due_channels), limit)
 
@@ -174,11 +179,16 @@ def run_post_scrape_tasks() -> dict[str, object]:
         logger.error("Failed to queue Gate 0 checks: %s", exc, exc_info=True)
         gate0_queued = 0
 
-    classify_task = classify_channels.delay()
+    classify_task_id = None
+    try:
+        classify_task = classify_channels.apply_async(queue=QUEUE_CLASSIFY)
+        classify_task_id = classify_task.id
+    except Exception as exc:
+        logger.error("Failed to dispatch classify_channels task: %s", exc, exc_info=True)
 
     return {
         "gate0_queued": gate0_queued,
-        "classify_task_id": classify_task.id,
+        "classify_task_id": classify_task_id,
     }
 
 
@@ -288,13 +298,6 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
             continue
         if platform not in enabled_platforms:
             continue
-        if platform in {"rumble", "substack"} and is_open(platform):
-            logger.warning(
-                "Skipping %s weekly velocity scrape due to open circuit breaker: %s",
-                platform,
-                channel_url,
-            )
-            continue
         if platform == "rumble":
             scrape_signatures.append((platform, scrape_rumble_channel.s(channel_url)))
         elif platform == "substack":
@@ -327,27 +330,13 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
     }
 
 
-@celery_app.task(name="scraper.tasks.run_daily_scrape")
-def run_daily_scrape() -> dict[str, object]:
-    """Queue active channel scrapes and compute velocity after completion."""
-    logger.info("Starting daily scrape workflow")
+@celery_app.task(name="scraper.tasks.dispatch_daily_scrapes")
+def dispatch_daily_scrapes() -> dict[str, object]:
+    """Fetch active channels and dispatch the daily scrape chord.
 
-    # Discovery runs first so newly found channels are included in today's scrape
-    # batch and sorted alongside the existing backlog by quality priority.
-    # queue_scrapes=False: let the chord below handle dispatch so newly discovered
-    # channels go through the same priority sort as the rest of the backlog.
-    runtime_pre = get_runtime_settings()
-    if runtime_pre.discovery_enabled:
-        try:
-            disc = discover_channels_now(queue_scrapes=False)
-            logger.info(
-                "Pre-scrape discovery complete: inserted=%d refreshed=%d scrape_queued=0",
-                disc.get("inserted", 0),
-                disc.get("refreshed", 0),
-            )
-        except Exception as exc:
-            logger.error("Pre-scrape discovery failed (continuing): %s", exc, exc_info=True)
-
+    Runs after discovery completes so newly found channels are included in the
+    batch alongside the existing backlog, sorted by quality priority.
+    """
     try:
         client = get_supabase_client()
         result = (
@@ -375,13 +364,6 @@ def run_daily_scrape() -> dict[str, object]:
             continue
         if platform not in enabled_platforms:
             continue
-        if platform in {"rumble", "substack"} and is_open(platform):
-            logger.warning(
-                "Skipping %s scrape due to open circuit breaker: %s",
-                platform,
-                channel_url,
-            )
-            continue
         if platform == "rumble":
             scrape_signatures.append((platform, scrape_rumble_channel.s(channel_url)))
         elif platform == "substack":
@@ -401,11 +383,10 @@ def run_daily_scrape() -> dict[str, object]:
         }
 
     staged = _stage_scrape_signatures(scrape_signatures)
-
     queued = len(staged)
     workflow = chord(staged)(run_post_scrape_tasks.si())
     logger.info(
-        "Queued daily scrape workflow: scrapes=%d velocity_callback=%s",
+        "Queued daily scrape workflow: scrapes=%d callback=%s",
         queued,
         workflow.id,
     )
@@ -413,4 +394,27 @@ def run_daily_scrape() -> dict[str, object]:
         "queued": queued,
         "workflow_task_id": workflow.id,
     }
+
+
+@celery_app.task(name="scraper.tasks.run_daily_scrape")
+def run_daily_scrape() -> dict[str, object]:
+    """Kick off the daily scrape workflow.
+
+    If discovery is enabled, dispatches a chain: discover → dispatch_daily_scrapes.
+    Otherwise dispatches dispatch_daily_scrapes directly. Returns immediately so
+    the worker-discovery slot is not blocked during the long discovery phase.
+    """
+    logger.info("Starting daily scrape workflow")
+    runtime = get_runtime_settings()
+    if runtime.discovery_enabled:
+        workflow = chain(
+            discover_channels.si(queue_scrapes=False),
+            dispatch_daily_scrapes.si(),
+        ).delay()
+        logger.info("Dispatched discovery → scrape chain: %s", workflow.id)
+        return {"chain_id": workflow.id, "discovery_enabled": True}
+
+    task = dispatch_daily_scrapes.delay()
+    logger.info("Dispatched scrape dispatch (discovery disabled): %s", task.id)
+    return {"task_id": task.id, "discovery_enabled": False}
 

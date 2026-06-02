@@ -13,6 +13,7 @@ from core.config import scraper_settings
 from core.supabase import get_supabase_client
 from core.runtime_settings import Gate0CompetitorSetting, get_runtime_settings
 from models import Gate0TaskResult
+from tasks.task_queues import QUEUE_GATE0
 
 logger = logging.getLogger(__name__)
 
@@ -503,7 +504,11 @@ def run_gate0_all(recheck_clean: bool = False) -> dict[str, object]:
             client.table("channels").update(
                 {"gate0_status": "pending", "updated_at": now_iso}
             ).eq("id", channel_id).execute()
-            celery_app.send_task("scraper.tasks.run_gate0", args=[channel_id, False])
+            celery_app.send_task(
+                "scraper.tasks.run_gate0",
+                args=[channel_id, False],
+                queue=QUEUE_GATE0,
+            )
             queued += 1
         except Exception as exc:
             logger.warning("run_gate0_all: failed to queue %s: %s", channel_id, exc)
@@ -530,7 +535,10 @@ def run_gate0(
         )
     except (APIError, httpx.HTTPError, RuntimeError, ValueError) as exc:
         logger.error("Gate 0 failed for %s: %s", channel_id, exc, exc_info=True)
-        if self.request.retries >= self.max_retries:
+        # Retrying on quota exhaustion wastes more API credits. Give up immediately
+        # and let the next daily run re-queue the channel as unchecked.
+        is_quota_error = isinstance(exc, RuntimeError) and "quota" in str(exc).lower()
+        if is_quota_error or self.request.retries >= self.max_retries:
             try:
                 _mark_gate0_unchecked(channel_id, str(exc))
             except APIError:

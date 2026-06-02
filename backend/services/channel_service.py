@@ -16,6 +16,16 @@ logger = get_logger(__name__)
 # Canonical source table. This service must not depend on the retired
 # `channel_discovery` view.
 _CHANNELS_TABLE = "channels"
+_CHANNEL_LIST_SELECT = (
+    "id,platform,channel_url,name,subscriber_count,avg_views,avg_comments,"
+    "comment_tier,posts_per_week,last_active_date,niche_tags,is_active,"
+    "gate0_status,gate0_checked_at,has_been_scraped,discovery_status,"
+    "last_scrape_error,dashboard_metrics_complete,dashboard_url_valid,"
+    "dashboard_eligible,engagement_rate,view_velocity_30d,view_velocity_90d,"
+    "comment_velocity_30d,comment_velocity_90d,velocity_computed_at,"
+    "gate0_result_id,gate0_search_query,gate0_result_status,"
+    "gate0_flagged_brand,gate0_source_url,ai_summary,created_at,updated_at"
+)
 _CHANNEL_COLUMNS = {
     "id",
     "platform",
@@ -42,6 +52,7 @@ _CHANNEL_COLUMNS = {
     "dashboard_metrics_complete",
     "dashboard_url_valid",
     "dashboard_eligible",
+    "engagement_rate",
     "view_velocity_30d",
     "view_velocity_90d",
     "comment_velocity_30d",
@@ -106,7 +117,7 @@ def _fetch_channels_by_ids_ordered(channel_ids: list[str]) -> list[dict[str, obj
         return []
     result = (
         supabase_admin.table(_CHANNELS_TABLE)
-        .select("*")
+        .select(_CHANNEL_LIST_SELECT)
         .in_("id", channel_ids)
         .execute()
     )
@@ -130,17 +141,6 @@ def _fetch_all_rows(base_query, batch_size: int = 1000) -> list[dict]:
             break
         offset += batch_size
     return all_rows
-
-
-def _computed_engagement_rate(row: dict[str, object]) -> float | None:
-    """Compute engagement rate as avg_comments / subscriber_count * 100."""
-    subscriber_count = row.get("subscriber_count")
-    avg_comments = row.get("avg_comments")
-    if not isinstance(subscriber_count, (int, float)) or subscriber_count <= 0:
-        return None
-    if not isinstance(avg_comments, (int, float)):
-        return None
-    return (float(avg_comments) / float(subscriber_count)) * 100.0
 
 
 def _channel_from_discovery_row(row: dict[str, object]) -> ChannelWithMetrics:
@@ -184,7 +184,7 @@ async def get_channels(
     """Fetch paginated, filtered channels from the channels table."""
     try:
         query = supabase_admin.table(_CHANNELS_TABLE).select(
-            "*",
+            _CHANNEL_LIST_SELECT,
             count="exact",
         )
         query = query.eq("is_active", True)
@@ -258,7 +258,8 @@ async def get_channels(
         if filters.category_tags and requires_canonical_fallback:
             candidate_query = supabase_admin.table(_CHANNELS_TABLE).select(
                 "id,niche_tags,subscriber_count,avg_comments,"
-                "avg_views,last_active_date,view_velocity_30d,view_velocity_90d"
+                "avg_views,last_active_date,view_velocity_30d,"
+                "view_velocity_90d,engagement_rate"
             )
             candidate_query = candidate_query.eq("is_active", True)
             if filters.incomplete_only:
@@ -314,69 +315,20 @@ async def get_channels(
                     "last_active_date", filters.last_active_to.isoformat()
                 )
 
-            if filters.sort_by != "engagement_rate":
-                candidate_query = candidate_query.order(
-                    filters.sort_by,
-                    desc=(filters.sort_order == "desc"),
-                    nullsfirst=False,
-                )
+            candidate_query = candidate_query.order(
+                filters.sort_by,
+                desc=(filters.sort_order == "desc"),
+                nullsfirst=False,
+            )
             candidate_rows = _fetch_all_rows(candidate_query)
             filtered_rows = [
                 row for row in candidate_rows if _row_matches_category_tags(row, filters.category_tags or [])
             ]
             total = len(filtered_rows)
-            if filters.sort_by == "engagement_rate":
-                scored_records: list[tuple[dict[str, object], float | None]] = [
-                    (row, _computed_engagement_rate(row)) for row in filtered_rows
-                ]
-                if filters.sort_order == "desc":
-                    scored_records = sorted(
-                        scored_records,
-                        key=lambda row: (
-                            row[1] is None,
-                            -(row[1] or 0.0),
-                        ),
-                    )
-                else:
-                    scored_records = sorted(
-                        scored_records,
-                        key=lambda row: (
-                            row[1] is None,
-                            row[1] or 0.0,
-                        ),
-                    )
-                filtered_rows = [row for row, _score in scored_records]
             start = (filters.page - 1) * filters.page_size
             end = start + filters.page_size
             page_ids = [str(row.get("id")) for row in filtered_rows[start:end] if row.get("id") is not None]
             records = _fetch_channels_by_ids_ordered(page_ids)
-        elif filters.sort_by == "engagement_rate":
-            # Fetch all matching rows so the in-process sort covers the full dataset,
-            # not just the first 1000 rows that Supabase would return without a range.
-            records = _fetch_all_rows(query)
-            total = len(records)
-            scored_records: list[tuple[dict[str, object], float | None]] = [
-                (row, _computed_engagement_rate(row)) for row in records
-            ]
-            if filters.sort_order == "desc":
-                scored_records = sorted(
-                    scored_records,
-                    key=lambda row: (
-                        row[1] is None,
-                        -(row[1] or 0.0),
-                    ),
-                )
-            else:
-                scored_records = sorted(
-                    scored_records,
-                    key=lambda row: (
-                        row[1] is None,
-                        row[1] or 0.0,
-                    ),
-                )
-            start = (filters.page - 1) * filters.page_size
-            end = start + filters.page_size
-            records = [row for row, _score in scored_records[start:end]]
         else:
             query = query.order(
                 filters.sort_by,

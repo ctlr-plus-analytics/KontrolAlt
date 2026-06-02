@@ -26,6 +26,9 @@ from models.channel_intake import (
     ResolverSeedResult,
 )
 from workers.tasks import (
+    QUEUE_GATE0,
+    QUEUE_RUMBLE,
+    QUEUE_SUBSTACK,
     TASK_SCRAPE_RUMBLE_CHANNEL,
     TASK_SCRAPE_SUBSTACK_CHANNEL,
 )
@@ -104,8 +107,12 @@ def _dispatch_scrape_task(channel_url: str, platform: Platform) -> str:
         Platform.rumble: TASK_SCRAPE_RUMBLE_CHANNEL,
         Platform.substack: TASK_SCRAPE_SUBSTACK_CHANNEL,
     }
+    queue_map = {
+        Platform.rumble: QUEUE_RUMBLE,
+        Platform.substack: QUEUE_SUBSTACK,
+    }
     task_name = task_map[platform]
-    task = _celery.send_task(task_name, args=[channel_url])
+    task = _celery.send_task(task_name, args=[channel_url], queue=queue_map[platform])
     return task.id
 
 
@@ -134,6 +141,7 @@ def _dispatch_gate0_after_scrape(channel_id: str) -> str | None:
             TASK_RUN_GATE0,
             args=[channel_id, True],
             countdown=120,
+            queue=QUEUE_GATE0,
         )
         return task.id
     except Exception as exc:

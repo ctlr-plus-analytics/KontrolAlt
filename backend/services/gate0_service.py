@@ -14,7 +14,7 @@ from core.logging import get_logger
 from core.supabase import supabase_admin
 from models.gate0 import Gate0CheckResponse
 from services import admin_service
-from workers.tasks import TASK_RUN_GATE0
+from workers.tasks import QUEUE_GATE0, TASK_RUN_GATE0
 
 logger = get_logger(__name__)
 
@@ -70,7 +70,11 @@ async def queue_gate0_check(channel_id: UUID) -> Gate0CheckResponse:
         raise SupabaseError(f"Failed to update gate0 status: {exc}") from exc
 
     try:
-        task = _celery.send_task(TASK_RUN_GATE0, args=[str(channel_id), True])
+        task = _celery.send_task(
+            TASK_RUN_GATE0,
+            args=[str(channel_id), True],
+            queue=QUEUE_GATE0,
+        )
     except (CeleryError, OperationalError) as exc:
         try:
             _mark_gate0_unchecked(channel_id)

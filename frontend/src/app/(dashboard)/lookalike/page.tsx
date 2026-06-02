@@ -62,7 +62,7 @@ export default function LookalikePage() {
   return (
     <div className="h-full overflow-y-auto p-6 scrollbar-thin">
       <h1 className="mb-6 text-2xl font-semibold tracking-tight text-[#1A1A2E]">
-        Lookalike Search
+        Similar Channels Search
       </h1>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[380px_1fr]">
@@ -80,7 +80,7 @@ export default function LookalikePage() {
         <div className="rounded-xl border border-[#E8E4DC] bg-white p-6 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
             <h2 className="text-lg font-semibold tracking-tight text-[#1A1A2E]">
-              Lookalike Channels
+              Similar Channels
             </h2>
             {completeMetricResults && completeMetricResults.length > 0 && (
               <Badge variant="gold">{completeMetricResults.length}</Badge>
@@ -106,7 +106,7 @@ export default function LookalikePage() {
                 className="mb-4 text-[#E8E4DC]"
               />
               <p className="text-sm text-[#6B6B6B]">
-                Enter seed creators to find lookalike channels
+                Enter seed creators to find similar channels
               </p>
             </div>
           )}
@@ -122,7 +122,7 @@ export default function LookalikePage() {
           {completeMetricResults && !loading && completeMetricResults.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16">
               <p className="text-sm text-[#6B6B6B]">
-                No lookalike channels found for the given creators
+                No similar channels found for the given creators
               </p>
             </div>
           )}

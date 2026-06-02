@@ -8,8 +8,6 @@ from models.admin import (
     AdminTaskStatusResponse,
     AdminTaskTriggerRequest,
     AdminTaskTriggerResponse,
-    CircuitBreakerResetRequest,
-    CircuitBreakerResetResponse,
     ClassifyChannelsTriggerRequest,
     CompetitorListResponse,
     Gate0BatchTriggerRequest,
@@ -64,6 +62,16 @@ async def trigger_weekly_velocity_now(
     return await admin_service.trigger_weekly_velocity(actor=user, reason=body.reason)
 
 
+@router.post("/tasks/never-scraped-bootstrap-now", response_model=AdminTaskTriggerResponse)
+async def trigger_never_scraped_bootstrap_now(
+    body: AdminTaskTriggerRequest,
+    user: dict = Depends(require_admin_user),
+) -> AdminTaskTriggerResponse:
+    return await admin_service.trigger_never_scraped_bootstrap(
+        actor=user, reason=body.reason
+    )
+
+
 @router.post("/tasks/gate0-now", response_model=Gate0BatchTriggerResponse)
 async def trigger_gate0_now(
     body: Gate0BatchTriggerRequest,
@@ -81,16 +89,6 @@ async def trigger_classify_channels_now(
 ) -> AdminTaskTriggerResponse:
     return await admin_service.trigger_classify_channels(
         actor=user, reclassify=body.reclassify, reason=body.reason
-    )
-
-
-@router.post("/tasks/reset-circuit-breaker", response_model=CircuitBreakerResetResponse)
-async def reset_circuit_breaker(
-    body: CircuitBreakerResetRequest,
-    user: dict = Depends(require_admin_user),
-) -> CircuitBreakerResetResponse:
-    return await admin_service.reset_circuit_breaker(
-        actor=user, platform=body.platform, reason=body.reason
     )
 
 

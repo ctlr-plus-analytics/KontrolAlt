@@ -420,6 +420,18 @@ export async function triggerAdminWeeklyVelocityNow(
   });
 }
 
+/** Trigger never-scraped Rumble/Substack bootstrap as admin. */
+export async function triggerAdminNeverScrapedBootstrapNow(
+  payload: AdminTaskTriggerRequest,
+  token?: string
+): Promise<AdminTaskTriggerResponse> {
+  return apiFetch<AdminTaskTriggerResponse>("/api/v1/admin/tasks/never-scraped-bootstrap-now", {
+    method: "POST",
+    body: payload,
+    token,
+  });
+}
+
 /** Trigger Gate 0 checks for explicit channels as admin. */
 export async function triggerAdminGate0Now(
   payload: Gate0BatchTriggerRequest,

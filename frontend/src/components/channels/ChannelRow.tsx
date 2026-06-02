@@ -14,6 +14,8 @@ interface ChannelRowProps {
 
 export function ChannelRow({ channel, index }: ChannelRowProps) {
   const primaryCategory = channel.category_tags?.[0] ?? channel.niche_tags?.[0] ?? "Uncategorized";
+  const avgViews = channel.platform === "rumble" ? formatNumber(channel.avg_views) : "-";
+  const likes = channel.platform === "substack" ? formatNumber(channel.avg_views) : "-";
 
   return (
     <TableRow index={index}>
@@ -40,7 +42,11 @@ export function ChannelRow({ channel, index }: ChannelRowProps) {
       </TableCell>
 
       <TableCell className="text-right font-mono text-[#0D0D0D]">
-        {formatNumber(channel.avg_views)}
+        {avgViews}
+      </TableCell>
+
+      <TableCell className="text-right font-mono text-[#0D0D0D]">
+        {likes}
       </TableCell>
 
       <TableCell className="text-right font-mono text-[#0D0D0D]">
@@ -56,7 +62,7 @@ export function ChannelRow({ channel, index }: ChannelRowProps) {
       </TableCell>
 
       <TableCell className="max-w-0 truncate text-xs text-[#6B6B6B]">
-        {timeAgo(channel.updated_at)}
+        {timeAgo(channel.last_active_date)}
       </TableCell>
     </TableRow>
   );

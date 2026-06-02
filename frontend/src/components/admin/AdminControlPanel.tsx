@@ -10,6 +10,7 @@ import {
   triggerAdminClassifyChannels,
   triggerAdminDiscoveryNow,
   triggerAdminGate0Now,
+  triggerAdminNeverScrapedBootstrapNow,
   triggerAdminWeeklyVelocityNow,
   triggerAdminScrapeNow,
   updateAdminCompetitors,
@@ -25,7 +26,7 @@ const TASK_POLL_INTERVAL_MS = 2500;
 const TERMINAL_TASK_STATES = new Set(["SUCCESS", "FAILURE", "REVOKED"]);
 const ERROR_TASK_STATES = new Set(["FAILURE", "REVOKED"]);
 
-type ManualTaskKind = "scrape" | "discovery" | "weekly-velocity" | "gate0" | "classify-channels" | "classify-channels-all";
+type ManualTaskKind = "scrape" | "discovery" | "never-scraped-bootstrap" | "weekly-velocity" | "gate0" | "classify-channels" | "classify-channels-all";
 
 interface ManualTaskRun {
   id: string;
@@ -41,6 +42,7 @@ interface ManualTaskRun {
 function getTaskLabel(kind: ManualTaskKind): string {
   if (kind === "scrape") return "Full Scrape";
   if (kind === "discovery") return "Discovery";
+  if (kind === "never-scraped-bootstrap") return "Never-Scraped Bootstrap";
   if (kind === "weekly-velocity") return "Weekly Velocity";
   if (kind === "classify-channels") return "AI Classify (Unclassified)";
   if (kind === "classify-channels-all") return "AI Classify (All Channels)";
@@ -72,6 +74,38 @@ function getRunStateClass(run: ManualTaskRun): string {
 
 function formatTaskResult(result: unknown): string | null {
   if (result === null || result === undefined) return null;
+  if (typeof result === "object" && !Array.isArray(result)) {
+    const value = result as Record<string, unknown>;
+    if (typeof value.queued === "number") {
+      const parts = [`Queued ${value.queued}`];
+      const byPlatform = value.queued_by_platform;
+      if (byPlatform && typeof byPlatform === "object" && !Array.isArray(byPlatform)) {
+        const platformText = Object.entries(byPlatform as Record<string, unknown>)
+          .map(([platform, count]) => `${platform}: ${String(count)}`)
+          .join(", ");
+        if (platformText) parts.push(`(${platformText})`);
+      }
+      const queuedTasks = Array.isArray(value.queued_tasks) ? value.queued_tasks : [];
+      if (queuedTasks.length > 0) {
+        const preview = queuedTasks
+          .slice(0, 8)
+          .map((item) => {
+            if (!item || typeof item !== "object") return null;
+            const queued = item as Record<string, unknown>;
+            const platform = String(queued.platform ?? "unknown");
+            const taskId = String(queued.task_id ?? "no task id");
+            const url = String(queued.channel_url ?? "");
+            return `${platform} ${taskId}${url ? ` ${url}` : ""}`;
+          })
+          .filter(Boolean)
+          .join("; ");
+        if (preview) {
+          parts.push(`Tasks: ${preview}${queuedTasks.length > 8 ? `; +${queuedTasks.length - 8} more` : ""}`);
+        }
+      }
+      return parts.join(" ");
+    }
+  }
   if (typeof result === "string") return result;
   if (typeof result === "number" || typeof result === "boolean" || typeof result === "bigint") {
     return String(result);
@@ -231,6 +265,19 @@ export function AdminControlPanel() {
           }, ...prev.slice(0, 4)]);
         } else if (kind === "weekly-velocity") {
           const result = await triggerAdminWeeklyVelocityNow({ reason: "admin-ui" }, token);
+          setMessage(result.message);
+          setTaskRuns((prev) => [{
+            id: `${kind}-${result.triggered_at}`,
+            kind,
+            label: getTaskLabel(kind),
+            taskIds: result.task_ids,
+            triggeredAt: result.triggered_at,
+            message: result.message,
+            statuses: {},
+            pollingError: null,
+          }, ...prev.slice(0, 4)]);
+        } else if (kind === "never-scraped-bootstrap") {
+          const result = await triggerAdminNeverScrapedBootstrapNow({ reason: "admin-ui" }, token);
           setMessage(result.message);
           setTaskRuns((prev) => [{
             id: `${kind}-${result.triggered_at}`,
@@ -464,6 +511,7 @@ export function AdminControlPanel() {
         <div className="flex flex-wrap gap-2">
           <Button variant="primary" size="sm" onClick={() => void runTask("scrape")}>Trigger Full Scrape</Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("discovery")}>Trigger Discovery</Button>
+          <Button variant="primary" size="sm" onClick={() => void runTask("never-scraped-bootstrap")}>Bootstrap Never-Scraped Rumble/Substack</Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("weekly-velocity")}>Trigger Weekly Velocity</Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("gate0")}>Trigger Previous Gold Affiliation Batch</Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("classify-channels")}>AI Classify Channels</Button>
@@ -522,8 +570,8 @@ export function AdminControlPanel() {
         <h2 className="mb-1 text-lg font-semibold text-[#B22222]">Danger Zone — Purge All Tasks</h2>
         <p className="mb-4 text-xs text-[#6B6B6B]">
           Revokes all active, reserved, and scheduled Celery tasks, purges the broker queue,
-          and clears all Redis scraper state (platform slots, scrape locks, circuit breakers,
-          proxy health scores, byte budget). Use this to get a clean slate before a fresh scrape run.
+          and clears all Redis scraper state (platform slots, scrape locks, proxy health scores,
+          byte budget). Use this to get a clean slate before a fresh scrape run.
         </p>
 
         {!purgeConfirming && !purgeLoading && (

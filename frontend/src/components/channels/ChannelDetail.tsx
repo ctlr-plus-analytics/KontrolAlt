@@ -3,7 +3,7 @@
  */
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ExternalLink,
   Shield,
@@ -55,6 +55,9 @@ export function ChannelDetail({
   const router = useRouter();
   const { session } = useAuth();
   const [lookalikes, setLookalikes] = useState<ChannelLookalikeMatch[]>([]);
+  const [lookalikesLoaded, setLookalikesLoaded] = useState(false);
+  const [lookalikesLoading, setLookalikesLoading] = useState(false);
+  const [lookalikesError, setLookalikesError] = useState<string | null>(null);
   const [deletingHistory, setDeletingHistory] = useState(false);
   const [deletingCompletely, setDeletingCompletely] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -80,36 +83,32 @@ export function ChannelDetail({
     onRefresh: () => router.refresh(),
   });
 
-  useEffect(() => {
-    let cancelled = false;
-    const loadLookalikes = async () => {
-      try {
-        const response = await getChannelLookalikes(
-          channel.id,
-          session?.access_token ?? undefined
-        );
-        if (!cancelled) {
-          setLookalikes(
-            response.matches.filter(
-              (match) =>
-                match.channel.subscriber_count !== null &&
-                match.channel.subscriber_count !== undefined &&
-                match.channel.avg_comments !== null &&
-                match.channel.avg_comments !== undefined
-            )
-          );
-        }
-      } catch {
-        if (!cancelled) {
-          setLookalikes([]);
-        }
-      }
-    };
-    void loadLookalikes();
-    return () => {
-      cancelled = true;
-    };
-  }, [channel.id, session?.access_token]);
+  const handleLoadLookalikes = async () => {
+    if (!session?.access_token || lookalikesLoading) {
+      return;
+    }
+    setLookalikesLoading(true);
+    setLookalikesError(null);
+    try {
+      const response = await getChannelLookalikes(channel.id, session.access_token);
+      setLookalikes(
+        response.matches.filter(
+          (match) =>
+            match.channel.subscriber_count !== null &&
+            match.channel.subscriber_count !== undefined &&
+            match.channel.avg_comments !== null &&
+            match.channel.avg_comments !== undefined
+        )
+      );
+      setLookalikesLoaded(true);
+    } catch (err) {
+      setLookalikes([]);
+      setLookalikesLoaded(true);
+      setLookalikesError(err instanceof Error ? err.message : "Failed to load lookalikes.");
+    } finally {
+      setLookalikesLoading(false);
+    }
+  };
 
   const velocityMetrics = [
     {
@@ -364,7 +363,7 @@ export function ChannelDetail({
       <div>
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
           <LinkIcon size={18} className="text-[#C9A84C]" />
-          Contact &amp; Links
+          Other Channels and Links
         </h2>
         <div className="rounded-xl border border-[#E8E4DC] bg-white p-5 shadow-sm">
           {channel.contact_info.length === 0 &&
@@ -420,11 +419,30 @@ export function ChannelDetail({
         </div>
       )}
 
-      {lookalikes.length > 0 && (
-        <div>
-          <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">
-            Lookalike Channels
+      <div>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold text-[#1A1A2E]">
+            Similar Channels
           </h2>
+          <Button
+            variant="ghost"
+            size="sm"
+            loading={lookalikesLoading}
+            disabled={!session?.access_token}
+            onClick={() => void handleLoadLookalikes()}
+          >
+            Load Similar Channels
+          </Button>
+        </div>
+        {lookalikesError && (
+          <p className="mb-3 text-sm text-[#B22222]">{lookalikesError}</p>
+        )}
+        {lookalikesLoaded && lookalikes.length === 0 && !lookalikesError && (
+          <p className="rounded-xl border border-[#E8E4DC] bg-white p-5 text-sm text-[#6B6B6B] shadow-sm">
+            No similar channels found
+          </p>
+        )}
+        {lookalikes.length > 0 && (
           <div className="space-y-3">
             {lookalikes.map((match) => {
               const adapted: LookalikeMatch = {
@@ -440,8 +458,8 @@ export function ChannelDetail({
               return <LookalikeMatchCard key={adapted.id} match={adapted} />;
             })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
       {/* ─── Scrape History ─── */}
       <div>
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">

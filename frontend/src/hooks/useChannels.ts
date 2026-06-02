@@ -31,7 +31,7 @@ export function useChannels(
   initialChannels: ChannelWithVelocity[] = [],
   initialTotal: number = 0
 ): UseChannelsReturn {
-  const { session } = useAuth();
+  const { session, loading: authLoading } = useAuth();
   const token = session?.access_token;
   const [channels, setChannels] = useState<ChannelWithVelocity[]>(initialChannels);
   const [total, setTotal] = useState<number>(initialTotal);
@@ -41,6 +41,7 @@ export function useChannels(
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestRequestId = useRef<number>(0);
   const hasVisibleData = useRef<boolean>(initialChannels.length > 0);
+  const skippedInitialServerData = useRef<boolean>(false);
   const realtimeTables = useMemo(
     () => [
       { table: "channels" },
@@ -50,6 +51,11 @@ export function useChannels(
   );
 
   const fetchChannels = useCallback(async (options: FetchChannelsOptions = {}) => {
+    if (!token) {
+      setLoading(false);
+      return;
+    }
+
     const {
       showLoading = true,
       preserveDataOnError = false,
@@ -105,6 +111,23 @@ export function useChannels(
   }, [fetchChannels]);
 
   useEffect(() => {
+    if (authLoading) {
+      return;
+    }
+    if (!token) {
+      const id = setTimeout(() => setLoading(false), 0);
+      return () => clearTimeout(id);
+    }
+    if (
+      !skippedInitialServerData.current &&
+      initialChannels.length > 0 &&
+      page === 1 &&
+      isDefaultInitialQuery(filters)
+    ) {
+      skippedInitialServerData.current = true;
+      return;
+    }
+
     if (debounceTimer.current) {
       clearTimeout(debounceTimer.current);
     }
@@ -117,7 +140,7 @@ export function useChannels(
         clearTimeout(debounceTimer.current);
       }
     };
-  }, [fetchChannels]);
+  }, [authLoading, fetchChannels, filters, initialChannels.length, page, token]);
 
   useRealtimeRefresh({
     channelKey: `channels-live-${page}-${pageSize}`,
@@ -143,4 +166,26 @@ export function useChannels(
     error,
     refetch: refetchChannels,
   };
+}
+
+function isDefaultInitialQuery(filters: Partial<ChannelFilters>): boolean {
+  return (
+    (filters.platform === undefined || filters.platform === "all") &&
+    (filters.comment_tier === undefined || filters.comment_tier === "all") &&
+    (filters.gate0_statuses?.length ?? 0) === 0 &&
+    (filters.category_tags?.length ?? 0) === 0 &&
+    !filters.search_query &&
+    filters.min_subscriber_count == null &&
+    filters.max_subscriber_count == null &&
+    filters.min_avg_views == null &&
+    filters.max_avg_views == null &&
+    filters.min_avg_comments == null &&
+    filters.max_avg_comments == null &&
+    !filters.last_active_from &&
+    !filters.last_active_to &&
+    !filters.inactive_filter &&
+    !filters.incomplete_only &&
+    (filters.sort_by === undefined || filters.sort_by === "avg_comments") &&
+    (filters.sort_order === undefined || filters.sort_order === "desc")
+  );
 }

@@ -49,11 +49,16 @@ class _FakeClient:
         return _FakeQuery(self._data)
 
 
+class _FakeTask:
+    def __init__(self, task_id: str):
+        self.id = task_id
+
+
 def test_scrape_never_scraped_rumble_substack_dispatches_by_platform(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    queued_rumble: list[str] = []
-    queued_substack: list[str] = []
+    queued_rumble: list[tuple[str, int, str]] = []
+    queued_substack: list[tuple[str, int, str]] = []
 
     monkeypatch.setattr(
         "tasks.scrape_never_scraped.get_runtime_settings",
@@ -69,20 +74,39 @@ def test_scrape_never_scraped_rumble_substack_dispatches_by_platform(
             ]
         ),
     )
-    monkeypatch.setattr("tasks.scrape_never_scraped.is_open", lambda _platform: False)
     monkeypatch.setattr("tasks.scrape_never_scraped.random.uniform", lambda _a, _b: 1.0)
     monkeypatch.setattr(
         "tasks.scrape_never_scraped.scrape_rumble_channel.apply_async",
-        lambda args, countdown: queued_rumble.append(f"{args[0]}|{countdown}"),
+        lambda args, countdown, queue: queued_rumble.append(
+            (args[0], countdown, queue)
+        )
+        or _FakeTask("rumble-task-1"),
     )
     monkeypatch.setattr(
         "tasks.scrape_never_scraped.scrape_substack_channel.apply_async",
-        lambda args, countdown: queued_substack.append(f"{args[0]}|{countdown}"),
+        lambda args, countdown, queue: queued_substack.append(
+            (args[0], countdown, queue)
+        )
+        or _FakeTask("substack-task-1"),
     )
 
     result = scrape_never_scraped_rumble_substack()
 
     assert result["queued"] == 2
-    assert queued_rumble == ["https://rumble.com/c/test|0"]
-    assert queued_substack == ["https://substack.com/@test|1"]
-
+    assert result["queued_by_platform"] == {"rumble": 1, "substack": 1}
+    assert result["queued_tasks"] == [
+        {
+            "task_id": "rumble-task-1",
+            "platform": "rumble",
+            "channel_url": "https://rumble.com/c/test",
+            "countdown_seconds": 0,
+        },
+        {
+            "task_id": "substack-task-1",
+            "platform": "substack",
+            "channel_url": "https://substack.com/@test",
+            "countdown_seconds": 1,
+        },
+    ]
+    assert queued_rumble == [("https://rumble.com/c/test", 0, "rumble")]
+    assert queued_substack == [("https://substack.com/@test", 1, "substack")]

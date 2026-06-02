@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import sys
 
 from celery import Celery
 from celery.signals import worker_process_init, worker_process_shutdown
@@ -13,6 +14,20 @@ from schedules.beat_schedule import CELERY_BEAT_SCHEDULE
 
 
 logger = logging.getLogger(__name__)
+
+_BROWSER_WORKER_QUEUES = {"rumble", "substack"}
+
+
+def _should_manage_browser_pool() -> bool:
+    """Return True for worker processes consuming browser-backed scrape queues."""
+    return any(
+        arg.startswith("--queues=")
+        and any(
+            queue.strip() in _BROWSER_WORKER_QUEUES
+            for queue in arg.split("=", 1)[1].split(",")
+        )
+        for arg in sys.argv
+    )
 
 celery_app = Celery(
     "kontrol_alt_scraper",
@@ -30,16 +45,53 @@ celery_app.conf.update(
     enable_utc=True,
     beat_schedule=CELERY_BEAT_SCHEDULE,
     broker_connection_retry_on_startup=True,
+    # Prevent Redis from requeuing long-running tasks (discovery can take hours).
+    broker_transport_options={"visibility_timeout": 21600},
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
-    task_default_queue="celery",
+    task_default_queue="discovery",
     task_routes={
+        "scraper.tasks.discover_channels": {"queue": "discovery"},
+        "scraper.tasks.discover_keyword_expansion": {"queue": "discovery"},
+        "scraper.tasks.discover_seed_expansion": {"queue": "discovery"},
+        "scraper.tasks.find_lookalikes": {"queue": "discovery"},
+        "scraper.tasks.scrape_never_scraped_rumble_substack": {"queue": "discovery"},
+        "scraper.tasks.run_daily_scrape": {"queue": "discovery"},
+        "scraper.tasks.run_scrape_new_channels": {"queue": "discovery"},
+        "scraper.tasks.dispatch_daily_scrapes": {"queue": "discovery"},
+        "scraper.tasks.run_post_scrape_tasks": {"queue": "discovery"},
+        "scraper.tasks.run_weekly_velocity_scrape": {"queue": "discovery"},
+        "scraper.tasks.run_weekly_velocity_scrape_callback": {"queue": "discovery"},
+        "scraper.tasks.compute_velocity": {"queue": "discovery"},
+        "scraper.tasks.compute_velocity_all": {"queue": "discovery"},
+        "scraper.tasks.clear_platform_slots": {"queue": "discovery"},
         "scraper.tasks.scrape_rumble_channel": {"queue": "rumble"},
+        "scraper.tasks.scrape_rumble_all": {"queue": "rumble"},
         "scraper.tasks.scrape_substack_channel": {"queue": "substack"},
+        "scraper.tasks.scrape_substack_all": {"queue": "substack"},
         "scraper.tasks.classify_channels": {"queue": "classify"},
         "scraper.tasks.run_gate0": {"queue": "gate0"},
         "scraper.tasks.run_gate0_all": {"queue": "gate0"},
+    },
+    # Kill hung browser sessions before they strand a worker slot indefinitely.
+    task_annotations={
+        "scraper.tasks.scrape_rumble_channel": {
+            "time_limit": 1200,
+            "soft_time_limit": 1080,
+        },
+        "scraper.tasks.scrape_substack_channel": {
+            "time_limit": 1200,
+            "soft_time_limit": 1080,
+        },
+        "scraper.tasks.run_gate0": {
+            "time_limit": 300,
+            "soft_time_limit": 270,
+        },
+        "scraper.tasks.classify_channels": {
+            "time_limit": 7200,
+            "soft_time_limit": 6900,
+        },
     },
     imports=[
         "tasks.scrape_rumble",
@@ -53,6 +105,7 @@ celery_app.conf.update(
         "tasks.run_gate0",
         "tasks.find_lookalikes",
         "tasks.run_daily_scrape",
+        "tasks.run_scrape_new_channels",
         "tasks.classify_channels",
     ],
 )
@@ -79,9 +132,14 @@ def _on_worker_process_init(**kwargs):
             proxy_health_tracker,
             validate_proxy_pool_on_startup,
         )
-        from core.browser_pool import worker_pool
 
-        worker_pool.reset()
+        should_prewarm_browser = _should_manage_browser_pool()
+        worker_pool = None
+        if should_prewarm_browser:
+            from core.browser_pool import worker_pool as browser_worker_pool
+
+            worker_pool = browser_worker_pool
+            worker_pool.reset()
 
         async def _startup():
             await validate_proxy_pool_on_startup(
@@ -90,10 +148,15 @@ def _on_worker_process_init(**kwargs):
                 timeout=12.0,
                 concurrency=4,
             )
-            await worker_pool.ensure_browser()
+            if worker_pool is not None:
+                await worker_pool.ensure_browser()
 
-        worker_pool.run(_startup())
-        logger.info("Worker process startup complete: proxies checked, browser pre-warmed")
+        if worker_pool is not None:
+            worker_pool.run(_startup())
+            logger.info("Worker process startup complete: proxies checked, browser pre-warmed")
+        else:
+            asyncio.run(_startup())
+            logger.info("Worker process startup complete: proxies checked, browser prewarm skipped")
     except Exception as exc:
         logger.warning(
             "Worker startup tasks failed (worker will continue): %s", exc
@@ -103,6 +166,8 @@ def _on_worker_process_init(**kwargs):
 @worker_process_shutdown.connect
 def _on_worker_process_shutdown(**kwargs):
     """Cleanly close the browser pool on worker process exit."""
+    if not _should_manage_browser_pool():
+        return
     try:
         from core.browser_pool import worker_pool
         worker_pool.shutdown()

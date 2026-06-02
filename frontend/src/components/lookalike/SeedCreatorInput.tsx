@@ -53,7 +53,7 @@ export function SeedCreatorInput({
           Seed Creators
         </h2>
         <p className="mt-1 text-sm text-[#6B6B6B]">
-          Enter up to 3 proven creator names to find lookalikes
+          Enter up to 3 proven creator names to find similar channels
         </p>
       </div>
 
@@ -101,7 +101,7 @@ export function SeedCreatorInput({
         disabled={!hasValidSeed}
         className="w-full"
       >
-        Find Lookalikes
+        Find Similar Channels
       </Button>
     </form>
   );

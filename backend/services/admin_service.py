@@ -17,11 +17,17 @@ from core.supabase import supabase_admin
 from models.admin import (
     AdminTaskStatusResponse,
     AdminTaskTriggerResponse,
-    CircuitBreakerResetResponse,
     Gate0BatchTriggerResponse,
     PurgeQueueResponse,
 )
-from workers.tasks import TASK_CLASSIFY_CHANNELS, TASK_DISCOVER_CHANNELS
+from workers.tasks import (
+    QUEUE_CLASSIFY,
+    QUEUE_DISCOVERY,
+    QUEUE_GATE0,
+    TASK_CLASSIFY_CHANNELS,
+    TASK_DISCOVER_CHANNELS,
+    TASK_SCRAPE_NEVER_SCRAPED_RUMBLE_SUBSTACK,
+)
 from workers.tasks import TASK_RUN_DAILY_SCRAPE, TASK_RUN_GATE0
 from workers.tasks import TASK_RUN_WEEKLY_VELOCITY_SCRAPE
 
@@ -105,7 +111,7 @@ def _audit(
 
 
 async def trigger_full_scrape(actor: dict, reason: str | None) -> AdminTaskTriggerResponse:
-    task = _celery.send_task(TASK_RUN_DAILY_SCRAPE)
+    task = _celery.send_task(TASK_RUN_DAILY_SCRAPE, queue=QUEUE_DISCOVERY)
     _audit(
         actor=actor,
         action="tasks.trigger",
@@ -123,7 +129,7 @@ async def trigger_full_scrape(actor: dict, reason: str | None) -> AdminTaskTrigg
 async def trigger_weekly_velocity(
     actor: dict, reason: str | None
 ) -> AdminTaskTriggerResponse:
-    task = _celery.send_task(TASK_RUN_WEEKLY_VELOCITY_SCRAPE)
+    task = _celery.send_task(TASK_RUN_WEEKLY_VELOCITY_SCRAPE, queue=QUEUE_DISCOVERY)
     _audit(
         actor=actor,
         action="tasks.trigger",
@@ -139,7 +145,7 @@ async def trigger_weekly_velocity(
 
 
 async def trigger_discovery(actor: dict, reason: str | None) -> AdminTaskTriggerResponse:
-    discovery_task = _celery.send_task(TASK_DISCOVER_CHANNELS)
+    discovery_task = _celery.send_task(TASK_DISCOVER_CHANNELS, queue=QUEUE_DISCOVERY)
     task_ids = [discovery_task.id]
     _audit(
         actor=actor,
@@ -151,6 +157,27 @@ async def trigger_discovery(actor: dict, reason: str | None) -> AdminTaskTrigger
         message="Discovery workflow triggered",
         task_id=discovery_task.id,
         task_ids=task_ids,
+        triggered_at=datetime.now(timezone.utc),
+    )
+
+
+async def trigger_never_scraped_bootstrap(
+    actor: dict, reason: str | None
+) -> AdminTaskTriggerResponse:
+    task = _celery.send_task(
+        TASK_SCRAPE_NEVER_SCRAPED_RUMBLE_SUBSTACK,
+        queue=QUEUE_DISCOVERY,
+    )
+    _audit(
+        actor=actor,
+        action="tasks.trigger",
+        target="scrape.never_scraped_rumble_substack",
+        metadata={"task_ids": [task.id], "reason": reason},
+    )
+    return AdminTaskTriggerResponse(
+        message=f"Never-scraped Rumble/Substack bootstrap triggered: {task.id}",
+        task_id=task.id,
+        task_ids=[task.id],
         triggered_at=datetime.now(timezone.utc),
     )
 
@@ -176,7 +203,11 @@ async def trigger_gate0_batch(
             continue
 
         try:
-            task = _celery.send_task(TASK_RUN_GATE0, args=[str(channel_id), True])
+            task = _celery.send_task(
+                TASK_RUN_GATE0,
+                args=[str(channel_id), True],
+                queue=QUEUE_GATE0,
+            )
         except (CeleryError, OperationalError) as exc:
             if pending_marked:
                 try:
@@ -376,7 +407,7 @@ async def purge_queues(actor: dict, reason: str | None) -> PurgeQueueResponse:
         stats["direct_keys_deleted"] = 0
 
     # Step 4 — scan and delete all scraper:* state keys
-    # (platform slots, scrape locks, circuit breakers, proxy health, RPM counters, byte budget)
+    # (platform slots, scrape locks, proxy health, RPM counters, byte budget)
     try:
         scraper_keys = _scan_keys(client, "scraper:*")
         if scraper_keys:
@@ -416,6 +447,7 @@ async def trigger_classify_channels(
     task = _celery.send_task(
         TASK_CLASSIFY_CHANNELS,
         kwargs={"reclassify": reclassify},
+        queue=QUEUE_CLASSIFY,
     )
     mode = "reclassify_all" if reclassify else "unclassified_only"
     _audit(
@@ -430,32 +462,6 @@ async def trigger_classify_channels(
         task_id=task.id,
         task_ids=[task.id],
         triggered_at=datetime.now(timezone.utc),
-    )
-
-
-async def reset_circuit_breaker(
-    actor: dict, platform: str, reason: str | None
-) -> CircuitBreakerResetResponse:
-    """Clear the open-breaker and failure-counter keys for a platform."""
-    client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
-    open_key = f"scrape:cb:open:{platform}"
-    fail_key = f"scrape:cb:fail:{platform}"
-    try:
-        client.delete(open_key, fail_key)
-    except redis_lib.RedisError as exc:
-        logger.warning("Circuit breaker reset failed for %s: %s", platform, exc)
-        raise
-    _audit(
-        actor=actor,
-        action="circuit_breaker.reset",
-        target=f"platform.{platform}",
-        metadata={"reason": reason},
-    )
-    logger.info("Circuit breaker manually reset for %s by %s", platform, actor.get("email"))
-    return CircuitBreakerResetResponse(
-        platform=platform,
-        message=f"Circuit breaker cleared for {platform}.",
-        reset_at=datetime.now(timezone.utc),
     )
 
 

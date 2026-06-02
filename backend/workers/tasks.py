@@ -5,6 +5,12 @@ tasks to the scraper worker without importing the worker directly.
 """
 
 # Daily scraper workflow
+QUEUE_DISCOVERY = "discovery"
+QUEUE_RUMBLE = "rumble"
+QUEUE_SUBSTACK = "substack"
+QUEUE_CLASSIFY = "classify"
+QUEUE_GATE0 = "gate0"
+
 TASK_RUN_DAILY_SCRAPE = "scraper.tasks.run_daily_scrape"
 TASK_RUN_WEEKLY_VELOCITY_SCRAPE = "scraper.tasks.run_weekly_velocity_scrape"
 TASK_SCRAPE_RUMBLE_CHANNEL = "scraper.tasks.scrape_rumble_channel"

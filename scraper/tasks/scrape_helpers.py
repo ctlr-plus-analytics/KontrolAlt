@@ -22,6 +22,20 @@ _SCRAPE_LOCK_KEY_PREFIX = "scraper:lock:channel:"
 _PLATFORM_SLOT_KEY_PREFIX = "scraper:slot:platform:"
 _GLOBAL_SLOT_KEY = "scraper:slot:global"
 
+# Atomically decrement a counter key, deleting it when it reaches ≤ 1.
+# A plain GET + DEL/DECR is not atomic: two concurrent releases can race,
+# leaving the counter at a non-zero value after the last task finishes.
+_DECR_OR_DEL_LUA = """
+local v = redis.call('GET', KEYS[1])
+if v == false then return 0 end
+if tonumber(v) <= 1 then
+    redis.call('DEL', KEYS[1])
+else
+    redis.call('DECR', KEYS[1])
+end
+return 1
+"""
+
 
 def retry_countdown_seconds(task: Task) -> int:
     """Return exponential retry delay with jitter.
@@ -254,23 +268,39 @@ def deactivate_channel_for_url(scraper: BaseScraper, channel_url: str) -> bool:
 
 
 def release_keyword_discovery_hold(scraper: BaseScraper, channel_url: str) -> None:
-    """Mark discovered channels as scraped after successful scrape."""
-    try:
-        scraper.supabase.table("channels").update(
-            {
-                "is_active": True,
-                "has_been_scraped": True,
-                "discovery_status": "scraped",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-        ).eq("channel_url", channel_url).execute()
-    except (APIError, TypeError, ValueError) as exc:
-        logger.error(
-            "Failed to release discovery hold for %s: %s",
-            channel_url,
-            exc,
-            exc_info=True,
-        )
+    """Mark discovered channels as scraped after successful scrape.
+
+    Retries up to 3 times because a silent failure here leaves `has_been_scraped=False`,
+    which causes classify_channels to skip the channel and re-scrapes it the next day.
+    """
+    payload = {
+        "is_active": True,
+        "has_been_scraped": True,
+        "discovery_status": "scraped",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for attempt in range(1, 4):
+        try:
+            scraper.supabase.table("channels").update(payload).eq(
+                "channel_url", channel_url
+            ).execute()
+            return
+        except (APIError, TypeError, ValueError) as exc:
+            if attempt >= 3:
+                logger.error(
+                    "release_keyword_discovery_hold: all 3 attempts failed for %s — "
+                    "channel will be stuck with has_been_scraped=False: %s",
+                    channel_url,
+                    exc,
+                    exc_info=True,
+                )
+            else:
+                logger.warning(
+                    "release_keyword_discovery_hold attempt %d/3 failed for %s: %s",
+                    attempt,
+                    channel_url,
+                    exc,
+                )
 
 
 def _daily_usage_key() -> str:
@@ -353,14 +383,7 @@ def release_platform_slot(platform: str) -> None:
     """Release one in-flight slot for a platform."""
     key = f"{_PLATFORM_SLOT_KEY_PREFIX}{platform}"
     try:
-        client = _redis_client()
-        current = client.get(key)
-        if current is None:
-            return
-        if int(current) <= 1:
-            client.delete(key)
-        else:
-            client.decr(key)
+        _redis_client().eval(_DECR_OR_DEL_LUA, 1, key)
     except Exception as exc:
         logger.warning("Failed to release platform slot for %s: %s", platform, exc)
 
@@ -386,14 +409,7 @@ def try_acquire_global_slot(limit: int) -> bool:
 def release_global_slot() -> None:
     """Release one global in-flight scrape slot."""
     try:
-        client = _redis_client()
-        current = client.get(_GLOBAL_SLOT_KEY)
-        if current is None:
-            return
-        if int(current) <= 1:
-            client.delete(_GLOBAL_SLOT_KEY)
-        else:
-            client.decr(_GLOBAL_SLOT_KEY)
+        _redis_client().eval(_DECR_OR_DEL_LUA, 1, _GLOBAL_SLOT_KEY)
     except Exception as exc:
         logger.warning("Failed to release global scrape slot: %s", exc)
 

@@ -21,13 +21,24 @@ from services import admin_service
 logger = get_logger(__name__)
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 _SUBSCRIBER_BAND = 0.10
+_LOOKALIKE_MATCH_SELECT = "id,name,niche_tags,subscriber_count"
+_LOOKALIKE_CHANNEL_SELECT = (
+    "id,platform,channel_url,name,subscriber_count,avg_views,avg_comments,"
+    "comment_tier,posts_per_week,last_active_date,niche_tags,is_active,"
+    "gate0_status,gate0_checked_at,has_been_scraped,discovery_status,"
+    "last_scrape_error,dashboard_metrics_complete,dashboard_url_valid,"
+    "dashboard_eligible,engagement_rate,view_velocity_30d,view_velocity_90d,"
+    "comment_velocity_30d,comment_velocity_90d,velocity_computed_at,"
+    "gate0_result_id,gate0_search_query,gate0_result_status,"
+    "gate0_flagged_brand,gate0_source_url,ai_summary,created_at,updated_at"
+)
 
 
 def _fetch_lookalike_candidate_channels() -> list[dict[str, object]]:
     """Use the same quality gates as dashboard table channels."""
     result = (
         supabase_admin.table("channels")
-        .select("*")
+        .select(_LOOKALIKE_MATCH_SELECT)
         .eq("is_active", True)
         .eq("dashboard_eligible", True)
         .execute()
@@ -39,7 +50,7 @@ def _fetch_seed_resolution_channels() -> list[dict[str, object]]:
     """Use all active channels for seed name resolution."""
     result = (
         supabase_admin.table("channels")
-        .select("*")
+        .select(_LOOKALIKE_MATCH_SELECT)
         .eq("is_active", True)
         .execute()
     )
@@ -169,7 +180,7 @@ def _enrich_matches_with_channels(
     channel_ids = [match["matched_channel_id"] for match in matches]
     channels_result = (
         supabase_admin.table("channels")
-        .select("*")
+        .select(_LOOKALIKE_CHANNEL_SELECT)
         .in_("id", channel_ids)
         .execute()
     )
@@ -258,7 +269,7 @@ async def get_lookalikes_for_channel(channel_id: UUID) -> ChannelLookalikeRespon
     try:
         seed_result = (
             supabase_admin.table("channels")
-            .select("*")
+            .select(_LOOKALIKE_MATCH_SELECT)
             .eq("id", str(channel_id))
             .maybe_single()
             .execute()

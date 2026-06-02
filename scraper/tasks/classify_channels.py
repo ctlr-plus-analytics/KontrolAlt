@@ -1,6 +1,5 @@
-"""Celery task for AI-powered channel category classification using Groq."""
+"""Celery task for AI-powered channel category classification using Google AI."""
 
-import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -10,11 +9,12 @@ from postgrest.exceptions import APIError
 from worker import celery_app
 from core.config import scraper_settings
 from core.supabase import get_supabase_client
+from utils.ai_response import extract_json_object, extract_response_text
 from utils.keyword_matcher import compute_channel_demographic
 
 logger = logging.getLogger(__name__)
 
-_CLASSIFY_MODEL = "llama-3.1-8b-instant"
+_CLASSIFY_MODEL = "gemini-2.5-flash"
 
 _VALID_CATEGORIES = frozenset({
     "Prepper / Survival",
@@ -25,7 +25,6 @@ _VALID_CATEGORIES = frozenset({
     "Crypto / Alternative Assets",
     "Religious / Values-Based",
     "News / Commentary",
-    "Unknown / Needs Review",
 })
 
 _SYSTEM_PROMPT = (
@@ -81,9 +80,9 @@ def _build_prompt(channel: dict[str, object]) -> str:
         f"{secondary_str}"
         f"Recent {content_type} titles:\n{titles_block}\n\n"
         "INSTRUCTIONS:\n"
-        "- Assign 1–3 categories based on the channel's PRIMARY and CONSISTENT focus.\n"
+        "- Assign 1 category only based on the channel's PRIMARY and CONSISTENT focus.\n"
         "- Do not tag a category for one isolated mention; the channel must regularly cover it.\n"
-        '- Use "Unknown / Needs Review" only as a last resort when nothing fits.\n'
+        "- Always assign at least 1 category — pick the best fit even with sparse or ambiguous data.\n"
         "- Write a 2–3 sentence plain-English summary of what this channel covers. "
         "Focus on the content niche, tone/angle, and intended audience. "
         "Do not mention the platform or subscriber count.\n"
@@ -98,17 +97,16 @@ def _build_prompt(channel: dict[str, object]) -> str:
 
 
 def _parse_response(
-    raw_text: str,
+    raw_text: str | None,
 ) -> tuple[list[str], str | None, float, list[str]]:
-    """Parse Groq JSON response into (categories, summary, confidence, signals)."""
-    try:
-        data = json.loads(raw_text)
-    except json.JSONDecodeError:
-        logger.warning("JSON parse failure in Groq response: %.200s", raw_text)
-        return ["Unknown / Needs Review"], None, 0.0, []
-
-    if not isinstance(data, dict):
-        return ["Unknown / Needs Review"], None, 0.0, []
+    """Parse AI JSON response into (categories, summary, confidence, signals)."""
+    data = extract_json_object(raw_text)
+    if data is None:
+        if not raw_text:
+            logger.warning("AI response was empty or None")
+        else:
+            logger.warning("JSON parse failure in AI response: %.200s", raw_text)
+        return [], None, 0.0, []
 
     raw_cats = data.get("categories")
     valid = (
@@ -116,7 +114,7 @@ def _parse_response(
         if isinstance(raw_cats, list)
         else []
     )
-    categories = valid if valid else ["Unknown / Needs Review"]
+    categories = valid if valid else []
 
     raw_summary = data.get("summary")
     summary = (
@@ -140,7 +138,6 @@ def _parse_response(
     )
 
     return categories, summary, confidence, signals
-
 
 def _compute_context_score(channel: dict[str, object]) -> int:
     """Score data richness available for classification (0–3).
@@ -185,55 +182,58 @@ def _needs_classification(channel: dict[str, object]) -> bool:
 def _classify_one(
     channel: dict[str, object], client
 ) -> tuple[list[str], str | None, float, list[str]]:
+    from google.genai import types
     prompt = _build_prompt(channel)
-    completion = client.chat.completions.create(
+    response = client.models.generate_content(
         model=_CLASSIFY_MODEL,
-        max_tokens=400,
-        temperature=0.1,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=_SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            max_output_tokens=700,
+            temperature=0.1,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
     )
-    return _parse_response(completion.choices[0].message.content)
+    return _parse_response(extract_response_text(response))
 
 
 def _resolve_ensemble(
-    groq_categories: list[str],
+    ai_categories: list[str],
     keyword_categories: list[str],
-    groq_confidence: float,
+    ai_confidence: float,
 ) -> tuple[list[str], bool]:
-    """Reconcile Groq and keyword-based classification.
+    """Reconcile AI and keyword-based classification.
 
-    Returns (final_categories, needs_review).
+    Returns (final_categories, needs_review). final_categories is empty only
+    when both systems have zero signal; the caller skips the DB update in that case.
     """
-    groq_set = set(groq_categories) - {"Unknown / Needs Review"}
+    ai_set = set(ai_categories) - {"Unknown / Needs Review"}
     keyword_set = set(keyword_categories) - {"Unknown / Needs Review"}
 
-    # Both systems found nothing useful.
-    if not groq_set and not keyword_set:
-        return ["Unknown / Needs Review"], False
+    # Both systems found nothing — caller will skip update and retry later.
+    if not ai_set and not keyword_set:
+        return [], False
 
     # Both agree on at least one category — strong signal.
-    if groq_set & keyword_set:
-        return groq_categories, groq_confidence < 0.55
+    if ai_set & keyword_set:
+        return [c for c in ai_categories if c in _VALID_CATEGORIES], ai_confidence < 0.55
 
-    # Groq found something, keyword-based found nothing — trust Groq if confident.
-    if groq_set and not keyword_set:
-        return groq_categories, groq_confidence < 0.70
+    # AI found something, keyword-based found nothing — trust AI, flag if low confidence.
+    if ai_set and not keyword_set:
+        return [c for c in ai_categories if c in _VALID_CATEGORIES], ai_confidence < 0.70
 
-    # Keyword-based found something, Groq returned Unknown — trust keyword result but flag.
-    if keyword_set and not groq_set:
-        return keyword_categories, True
+    # Keyword-based found something, AI had no valid signal — use keyword, flag for review.
+    if keyword_set and not ai_set:
+        return [c for c in keyword_categories if c in _VALID_CATEGORIES], True
 
-    # Both found categories but zero overlap — flag for review, prefer Groq.
-    return groq_categories, True
+    # Both found categories but zero overlap — flag for review, prefer AI.
+    return [c for c in ai_categories if c in _VALID_CATEGORIES], True
 
 
 def _record_classification_stat(channel: dict[str, object], categories: list[str]) -> None:
     """Increment the classified_known counter for the channel's discovery category."""
-    if categories == ["Unknown / Needs Review"]:
+    if not categories:
         return
     discovery_category = str(channel.get("discovery_category") or "")
     platform = str(channel.get("platform") or "")
@@ -255,7 +255,7 @@ def classify_channels(
     channel_ids: list[str] | None = None,
     reclassify: bool = False,
 ) -> dict[str, object]:
-    """Classify channel niche_tags using Groq + keyword-based ensemble.
+    """Classify channel niche_tags using AI + keyword-based ensemble.
 
     Args:
         channel_ids: Explicit list of channel UUIDs to classify.
@@ -265,35 +265,67 @@ def classify_channels(
                      have no tags, are tagged "Unknown / Needs Review", or were
                      previously classified with low context score.
     """
-    api_key = scraper_settings.groq_api_key
+    api_key = scraper_settings.google_api_key
     if not api_key:
-        logger.error("GROQ_API_KEY not configured; cannot run channel classification")
-        return {"error": "GROQ_API_KEY not set", "classified": 0}
+        logger.error("GOOGLE_API_KEY not configured; cannot run channel classification")
+        return {"error": "GOOGLE_API_KEY not set", "classified": 0}
 
     try:
-        from groq import Groq
+        from google import genai
     except ImportError:
-        logger.error("groq package not installed")
-        return {"error": "groq package not installed", "classified": 0}
+        logger.error("google-genai package not installed")
+        return {"error": "google-genai package not installed", "classified": 0}
 
-    groq_client = Groq(api_key=api_key)
+    ai_client = genai.Client(api_key=api_key)
     supabase = get_supabase_client()
 
+    _UNCLASSIFIED_FILTER = 'niche_tags.is.null,niche_tags.cs.{"Unknown / Needs Review"}'
+
     try:
-        query = (
-            supabase.table("channels")
-            .select(
-                "id,platform,name,description,subscriber_count,"
-                "niche_tags,video_titles,secondary_urls,contact_info,"
-                "classification_context_score,discovery_category,ai_summary"
-            )
-            .eq("is_active", True)
-            .eq("has_been_scraped", True)
-        )
+        fetched: list[dict] = []
         if channel_ids is not None:
-            query = query.in_("id", channel_ids)
-        result = query.execute()
-        fetched = result.data or []
+            result = (
+                supabase.table("channels")
+                .select(
+                    "id,platform,name,description,subscriber_count,"
+                    "niche_tags,video_titles,secondary_urls,contact_info,"
+                    "classification_context_score,discovery_category,ai_summary"
+                )
+                .eq("is_active", True)
+                .eq("has_been_scraped", True)
+                .eq("dashboard_metrics_complete", True)
+                .eq("dashboard_url_valid", True)
+                .eq("dashboard_eligible", True)
+                .or_(_UNCLASSIFIED_FILTER)
+                .in_("id", channel_ids)
+                .execute()
+            )
+            fetched = result.data or []
+        else:
+            page_size = 1000
+            offset = 0
+            while True:
+                result = (
+                    supabase.table("channels")
+                    .select(
+                        "id,platform,name,description,subscriber_count,"
+                        "niche_tags,video_titles,secondary_urls,contact_info,"
+                        "classification_context_score,discovery_category,ai_summary"
+                    )
+                    .eq("is_active", True)
+                    .eq("has_been_scraped", True)
+                    .eq("dashboard_metrics_complete", True)
+                    .eq("dashboard_url_valid", True)
+                    .eq("dashboard_eligible", True)
+                    .or_(_UNCLASSIFIED_FILTER)
+                    .range(offset, offset + page_size - 1)
+                    .execute()
+                )
+                page = result.data or []
+                fetched.extend(page)
+                if len(page) < page_size:
+                    break
+                offset += page_size
     except APIError as exc:
         logger.error("Failed to fetch channels for classification: %s", exc)
         return {"error": str(exc), "classified": 0}
@@ -310,6 +342,7 @@ def classify_channels(
 
     classified = 0
     errors = 0
+    skipped = 0
     needs_review_count = 0
     now = datetime.now(timezone.utc).isoformat()
 
@@ -322,8 +355,8 @@ def classify_channels(
         context_score = _compute_context_score(channel)
 
         try:
-            groq_categories, summary, groq_confidence, _signals = _classify_one(
-                channel, groq_client
+            ai_categories, summary, ai_confidence, _signals = _classify_one(
+                channel, ai_client
             )
         except Exception as exc:
             logger.warning(
@@ -341,20 +374,27 @@ def classify_channels(
         if not isinstance(video_titles, list):
             video_titles = []
         keyword_result = compute_channel_demographic(name, description, video_titles)
-        keyword_categories: list[str] = keyword_result.get("niche_tags") or [
-            "Unknown / Needs Review"
-        ]
+        keyword_categories: list[str] = keyword_result.get("niche_tags") or []
 
         final_categories, needs_review = _resolve_ensemble(
-            groq_categories, keyword_categories, groq_confidence
+            ai_categories, keyword_categories, ai_confidence
         )
+
+        if not final_categories:
+            logger.info(
+                "No classification signal for '%s' (%s); will retry when more data is available",
+                channel_name, channel_id,
+            )
+            skipped += 1
+            time.sleep(0.15)
+            continue
 
         if needs_review:
             needs_review_count += 1
 
         update_payload: dict[str, object] = {
             "niche_tags": final_categories,
-            "classification_confidence": groq_confidence,
+            "classification_confidence": ai_confidence,
             "classification_needs_review": needs_review,
             "classification_context_score": context_score,
             "updated_at": now,
@@ -367,7 +407,7 @@ def classify_channels(
             classified += 1
             logger.info(
                 "Classified '%s' → %s (conf=%.2f review=%s ctx=%d)",
-                channel_name, final_categories, groq_confidence, needs_review, context_score,
+                channel_name, final_categories, ai_confidence, needs_review, context_score,
             )
             _record_classification_stat(channel, final_categories)
         except APIError as exc:
@@ -380,11 +420,12 @@ def classify_channels(
         time.sleep(0.15)
 
     logger.info(
-        "classify_channels complete: classified=%d errors=%d needs_review=%d candidates=%d",
-        classified, errors, needs_review_count, len(channels),
+        "classify_channels complete: classified=%d skipped=%d errors=%d needs_review=%d candidates=%d",
+        classified, skipped, errors, needs_review_count, len(channels),
     )
     return {
         "classified": classified,
+        "skipped": skipped,
         "errors": errors,
         "needs_review_count": needs_review_count,
         "total_candidates": len(channels),

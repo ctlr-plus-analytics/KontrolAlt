@@ -1,5 +1,7 @@
 """Supabase JWT verification dependency for FastAPI routes."""
 
+from time import monotonic
+
 from fastapi import Depends, HTTPException, Request, status
 
 try:
@@ -10,6 +12,36 @@ except ImportError:  # pragma: no cover - defensive for gotrue version drift.
     AuthUnknownError = RuntimeError
 
 from core.supabase import supabase_anon
+
+_AUTH_CACHE_TTL_SECONDS = 60.0
+_AUTH_CACHE_MAX_SIZE = 256
+_auth_user_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _get_cached_user(token: str) -> dict | None:
+    cached = _auth_user_cache.get(token)
+    if cached is None:
+        return None
+    expires_at, user = cached
+    if expires_at <= monotonic():
+        _auth_user_cache.pop(token, None)
+        return None
+    return dict(user)
+
+
+def _cache_user(token: str, user: dict) -> None:
+    now = monotonic()
+    if len(_auth_user_cache) >= _AUTH_CACHE_MAX_SIZE:
+        expired_tokens = [
+            cached_token
+            for cached_token, (expires_at, _user) in _auth_user_cache.items()
+            if expires_at <= now
+        ]
+        for cached_token in expired_tokens:
+            _auth_user_cache.pop(cached_token, None)
+    if len(_auth_user_cache) >= _AUTH_CACHE_MAX_SIZE:
+        _auth_user_cache.pop(next(iter(_auth_user_cache)), None)
+    _auth_user_cache[token] = (now + _AUTH_CACHE_TTL_SECONDS, dict(user))
 
 
 async def get_current_user(request: Request) -> dict:
@@ -35,6 +67,9 @@ async def get_current_user(request: Request) -> dict:
         )
 
     token = auth_header.removeprefix("Bearer ").strip()
+    cached_user = _get_cached_user(token)
+    if cached_user is not None:
+        return cached_user
 
     try:
         response = supabase_anon.auth.get_user(token)
@@ -44,13 +79,15 @@ async def get_current_user(request: Request) -> dict:
                 detail="Invalid or expired token",
             )
         # Return the user object as a dict for downstream use
-        return {
+        user = {
             "id": str(response.user.id),
             "email": response.user.email,
             "role": response.user.role,
             "app_metadata": getattr(response.user, "app_metadata", {}) or {},
             "user_metadata": response.user.user_metadata,
         }
+        _cache_user(token, user)
+        return user
     except HTTPException:
         raise
     except (AuthApiError, AuthRetryableError, AuthUnknownError) as exc:

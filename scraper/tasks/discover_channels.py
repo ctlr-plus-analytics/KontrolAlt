@@ -14,11 +14,12 @@ from postgrest.exceptions import APIError
 
 from worker import celery_app
 from core.config import scraper_settings
-from core.circuit_breaker import is_open
 from core.supabase import get_supabase_client
 from core.runtime_settings import get_runtime_settings
 from tasks.scrape_rumble import scrape_rumble_channel
 from tasks.scrape_substack import scrape_substack_channel
+from tasks.task_queues import QUEUE_RUMBLE, QUEUE_SUBSTACK
+from utils.ai_response import extract_json_object, extract_response_text
 from utils.channel_urls import (
     ChannelUrlCandidate,
     canonicalize_channel_url,
@@ -86,7 +87,7 @@ _QSTAT_TTL_SECONDS = 30 * 24 * 3600
 _PRE_CLASSIFY_BATCH_SIZE = 10
 _PRE_CLASSIFY_MAX_CHANNELS = 200
 _PRE_CLASSIFY_FILTER_CONFIDENCE = 0.75
-_PRE_CLASSIFY_MODEL = "llama-3.1-8b-instant"
+_PRE_CLASSIFY_MODEL = "gemini-2.5-flash"
 
 _TARGET_NICHES = frozenset({
     "Prepper / Survival",
@@ -453,14 +454,18 @@ def _build_pre_classify_prompt(batch: list[dict[str, object]]) -> str:
 
 
 def _parse_pre_classify_response(
-    raw_text: str,
+    raw_text: str | None,
     batch: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    try:
-        data = json.loads(raw_text)
-    except json.JSONDecodeError:
+    data = extract_json_object(raw_text)
+    if data is None:
+        if raw_text:
+            logger.warning(
+                "JSON parse failure in AI pre-classification response: %.200s",
+                raw_text,
+            )
         return []
-    items = data.get("results") if isinstance(data, dict) else None
+    items = data.get("results")
     if not isinstance(items, list):
         return []
     out = []
@@ -489,21 +494,21 @@ def _parse_pre_classify_response(
         })
     return out
 
-
 def _pre_classify_new_urls(
     new_urls: list[dict[str, object]],
     api_key: str,
 ) -> list[dict[str, object]]:
-    """Batch-classify newly discovered channels using SERP data via Groq.
+    """Batch-classify newly discovered channels using SERP data via Google AI.
 
     Writes discovery_niche_hint to DB. Removes channels from the scrape queue
-    when Groq is confident they are off-topic. High-quality-tier channels skip
+    when Google AI is confident they are off-topic. High-quality-tier channels skip
     classification (already strong signal). Falls back gracefully on any error.
     """
     try:
-        from groq import Groq
+        from google import genai
+        from google.genai import types
     except ImportError:
-        logger.debug("groq package not installed; skipping pre-classification")
+        logger.debug("google-genai package not installed; skipping pre-classification")
         return new_urls
 
     # Only classify ambiguous keyword-discovered channels that have SERP text.
@@ -515,7 +520,11 @@ def _pre_classify_new_urls(
     if not candidates:
         return new_urls
 
-    groq_client = Groq(api_key=api_key)
+    _PRE_CLASSIFY_SYSTEM = (
+        "You evaluate whether alternative media channel links target "
+        "specific research niches. Respond with valid JSON only."
+    )
+    ai_client = genai.Client(api_key=api_key)
     supabase = get_supabase_client()
     hint_map: dict[str, list[str]] = {}
     off_topic: set[str] = set()
@@ -525,24 +534,19 @@ def _pre_classify_new_urls(
         batch = candidates[batch_start: batch_start + _PRE_CLASSIFY_BATCH_SIZE]
         prompt = _build_pre_classify_prompt(batch)
         try:
-            completion = groq_client.chat.completions.create(
+            response = ai_client.models.generate_content(
                 model=_PRE_CLASSIFY_MODEL,
-                max_tokens=800,
-                temperature=0.0,
-                response_format={"type": "json_object"},
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You evaluate whether alternative media channel links target "
-                            "specific research niches. Respond with valid JSON only."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=_PRE_CLASSIFY_SYSTEM,
+                    response_mime_type="application/json",
+                    max_output_tokens=800,
+                    temperature=0.0,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                ),
             )
             results = _parse_pre_classify_response(
-                completion.choices[0].message.content, batch
+                extract_response_text(response), batch
             )
         except Exception as exc:
             logger.warning("Pre-classification batch failed: %s", exc)
@@ -1299,18 +1303,17 @@ def queue_discovered_channel_scrapes(new_urls: list[dict[str, object]]) -> int:
         if not channel_url or channel_url in seen:
             continue
         seen.add(channel_url)
-        if platform in {"rumble", "substack"} and is_open(platform):
-            logger.warning(
-                "Skipping discovered %s scrape due to open circuit breaker: %s",
-                platform,
-                channel_url,
-            )
-            continue
         if platform == "rumble":
-            scrape_rumble_channel.delay(channel_url)
+            scrape_rumble_channel.apply_async(
+                args=[channel_url],
+                queue=QUEUE_RUMBLE,
+            )
             queued += 1
         elif platform == "substack":
-            scrape_substack_channel.delay(channel_url)
+            scrape_substack_channel.apply_async(
+                args=[channel_url],
+                queue=QUEUE_SUBSTACK,
+            )
             queued += 1
         else:
             continue
@@ -1425,7 +1428,7 @@ def discover_channels_now(
         *(keyword_result.get("new_urls") or []),
     ]
 
-    api_key = scraper_settings.groq_api_key
+    api_key = scraper_settings.google_api_key
     if new_urls and api_key:
         new_urls = _pre_classify_new_urls(new_urls, api_key)
 
@@ -1467,7 +1470,7 @@ def discover_channels(
             result["scrape_queued"],
         )
         return result
-    except (APIError, KeyError, TypeError, ValueError) as exc:
+    except Exception as exc:
         logger.error("Unified channel discovery failed: %s", exc, exc_info=True)
         return {
             "seed_expansion": {"error": str(exc)},

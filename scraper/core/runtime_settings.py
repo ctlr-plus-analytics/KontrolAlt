@@ -36,15 +36,11 @@ class RuntimeSettings:
     scrape_retry_jitter_max: float = 1.2
     scrape_blocked_retry_multiplier: float = 2.0
     scrape_blocked_retry_min_seconds: int = 180
-    scrape_platform_slot_limit_rumble: int = -1
-    scrape_platform_slot_limit_substack: int = -1
-    scrape_global_slot_limit: int = -1
+    scrape_platform_slot_limit_rumble: int = 4
+    scrape_platform_slot_limit_substack: int = 4
+    scrape_global_slot_limit: int = 8
     scrape_lock_ttl_seconds: int = 600
     scrape_platform_slot_ttl_seconds: int = 600
-    scrape_circuit_breaker_enabled: bool = False  # re-enable once breaker codes are validated
-    scrape_circuit_breaker_fail_threshold: int = 5
-    scrape_circuit_breaker_window_seconds: int = 1800
-    scrape_circuit_breaker_cooldown_seconds: int = 1800
     gate0_daily_queue_limit: int = 200
     gate0_clean_recheck_days: int = 7
     scraper_nav_timeout_ms: int = 25_000
@@ -64,7 +60,7 @@ class RuntimeSettings:
     discovery_serper_query_limit: int = 480
     discovery_results_per_query: int = 20
     discovery_max_pages_per_query: int = 8
-    discovery_insert_limit: int = 20000
+    discovery_insert_limit: int = 1000
     discovery_query_stagnation_limit: int = 4
     discovery_global_stop_no_new: int = 120
     discovery_max_feedback_terms: int = 36

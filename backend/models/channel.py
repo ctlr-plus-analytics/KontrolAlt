@@ -87,6 +87,7 @@ class Channel(BaseModel):
     dashboard_metrics_complete: bool = False
     dashboard_url_valid: bool = False
     dashboard_eligible: bool = False
+    engagement_rate: float | None = None
 
     # Consolidated velocity fields
     view_velocity_30d: float | None = None
