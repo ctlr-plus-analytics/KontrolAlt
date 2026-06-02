@@ -42,6 +42,16 @@ _CATEGORY_DESCRIPTIONS = """\
 - Religious / Values-Based: Christian or faith-based worldview, biblical teaching, traditional family values, pro-life, spiritual content
 - News / Commentary: Broad news analysis, current events commentary, political/cultural criticism, independent journalism"""
 
+_QA_KEYS = (
+    "creator_about",
+    "audience_relationship",
+    "age_55_appeal",
+    "acquisition_relevance",
+    "monetization_pattern",
+    "conversion_signals",
+    "risk_flags",
+)
+
 
 def _build_prompt(channel: dict[str, object]) -> str:
     platform = str(channel.get("platform") or "unknown")
@@ -96,6 +106,118 @@ def _build_prompt(channel: dict[str, object]) -> str:
     )
 
 
+def _build_qa_prompt(channel: dict[str, object]) -> str:
+    platform = str(channel.get("platform") or "unknown")
+    name = str(channel.get("name") or "")
+    channel_url = str(channel.get("channel_url") or "")
+    description = str(channel.get("description") or "")
+    subscriber_count = channel.get("subscriber_count")
+    avg_views = channel.get("avg_views")
+    avg_comments = channel.get("avg_comments")
+    engagement_rate = channel.get("engagement_rate")
+    posts_per_week = channel.get("posts_per_week")
+    last_active_date = channel.get("last_active_date")
+    gate0_flagged_brand = channel.get("gate0_flagged_brand")
+    contact_info = channel.get("contact_info") or ""
+    secondary_urls = channel.get("secondary_urls") or []
+
+    niche_tags = channel.get("niche_tags") or []
+    category_str = ", ".join(niche_tags) if isinstance(niche_tags, list) and niche_tags else "Unclassified"
+    ai_summary = str(channel.get("ai_summary") or "").strip() or "(none)"
+
+    content_type = "post" if platform == "substack" else "video"
+    subscriber_str = f"{subscriber_count:,}" if isinstance(subscriber_count, int) else "unknown"
+    views_str = f"{avg_views:,.0f}" if isinstance(avg_views, (int, float)) else "unknown"
+    comments_str = f"{avg_comments:,.1f}" if isinstance(avg_comments, (int, float)) else "unknown"
+    engagement_str = f"{engagement_rate:.3f}%" if isinstance(engagement_rate, (int, float)) else "unknown"
+    ppw_str = f"{posts_per_week:.1f}" if isinstance(posts_per_week, (int, float)) else "unknown"
+    last_active_str = str(last_active_date) if last_active_date else "unknown"
+
+    links_parts: list[str] = []
+    if isinstance(secondary_urls, list) and secondary_urls:
+        links_parts.extend(str(u) for u in secondary_urls[:5] if u)
+    if contact_info:
+        links_parts.append(str(contact_info))
+    links_str = ", ".join(links_parts) if links_parts else "(none)"
+
+    competitor_str = f"Gate0 flagged competitor brand: {gate0_flagged_brand}" if gate0_flagged_brand else "No competitor brand flagged"
+
+    recent_videos = channel.get("recent_videos") or []
+    video_lines: list[str] = []
+    if isinstance(recent_videos, list):
+        for v in recent_videos[:10]:
+            if not isinstance(v, dict):
+                continue
+            title = str(v.get("title") or "").strip()
+            if not title:
+                continue
+            v_views = v.get("views")
+            v_comments = v.get("comments")
+            pub = v.get("published_at") or ""
+            parts = [f"  • {title}"]
+            meta: list[str] = []
+            if isinstance(v_views, (int, float)):
+                meta.append(f"{v_views:,.0f} views")
+            if isinstance(v_comments, (int, float)):
+                meta.append(f"{v_comments:,.0f} comments")
+            if pub:
+                meta.append(str(pub)[:10])
+            if meta:
+                parts.append(f" ({', '.join(meta)})")
+            video_lines.append("".join(parts))
+
+    if not video_lines:
+        video_titles = channel.get("video_titles") or []
+        if isinstance(video_titles, list):
+            video_lines = [f"  • {t}" for t in video_titles[:10] if t]
+
+    videos_block = "\n".join(video_lines) if video_lines else "  (none available)"
+
+    return (
+        "CHANNEL INTELLIGENCE ANALYSIS\n\n"
+        "Context: You are conducting acquisition due diligence for a precious-metals "
+        "direct-response marketing company. The target acquisition audience is 55+ conservative "
+        "Americans who respond to financial protection, national stability, and trust-based "
+        "authority messaging.\n\n"
+        "CHANNEL DATA:\n"
+        f"Platform: {platform}\n"
+        f"Name: {name}\n"
+        f"URL: {channel_url or '(none)'}\n"
+        f"Category: {category_str}\n"
+        f"Summary: {ai_summary}\n"
+        f"Subscribers: {subscriber_str}\n"
+        f"Avg Views: {views_str}\n"
+        f"Avg Comments: {comments_str}\n"
+        f"Engagement Rate: {engagement_str}\n"
+        f"Posts Per Week: {ppw_str}\n"
+        f"Last Active: {last_active_str}\n"
+        f"Description: {description or '(none)'}\n"
+        f"External Links / Contact: {links_str}\n"
+        f"{competitor_str}\n\n"
+        f"Recent {content_type}s:\n{videos_block}\n\n"
+        "INSTRUCTIONS:\n"
+        "- Answer all 7 questions below with 3–5 sentences each.\n"
+        "- Use analytical, hedged prose: 'appears to', 'suggests', 'the available data indicates'.\n"
+        "- Never overclaim certainty when data is sparse or ambiguous.\n"
+        "- For age_55_appeal: only state confirmed 55+ fit if the content themes, tone, or "
+        "available evidence strongly support it — otherwise describe the likelihood.\n"
+        "- For monetization_pattern: if no clear pattern is visible, say it requires further "
+        "review rather than claiming none exists.\n"
+        "- For risk_flags: always consider inactivity, competitor conflicts, contactability gaps, "
+        "political polarization risk, and weak 55+ audience fit.\n"
+        "- Respond with ONLY a JSON object using exactly these 7 keys.\n\n"
+        '{\n'
+        '  "creator_about": "What is this creator/channel really about?",\n'
+        '  "audience_relationship": "What kind of audience relationship does the creator appear to have?",\n'
+        '  "age_55_appeal": "Does the channel appear to include or appeal to a 55+ retirement-age audience segment?",\n'
+        '  "acquisition_relevance": "Does the channel appear relevant for acquisition outreach?",\n'
+        '  "monetization_pattern": "What monetization pattern is visible?",\n'
+        '  "conversion_signals": "What are the main conversion signals?",\n'
+        '  "risk_flags": "What are the risk flags?"\n'
+        '}'
+    )
+
+
 def _parse_response(
     raw_text: str | None,
 ) -> tuple[list[str], str | None, float, list[str]]:
@@ -138,6 +260,28 @@ def _parse_response(
     )
 
     return categories, summary, confidence, signals
+
+
+def _parse_qa_response(raw_text: str | None) -> dict[str, str] | None:
+    """Parse AI Q&A JSON response into a dict with the 7 answer keys."""
+    data = extract_json_object(raw_text)
+    if data is None:
+        if not raw_text:
+            logger.warning("Q&A AI response was empty or None")
+        else:
+            logger.warning("Q&A JSON parse failure: %.200s", raw_text)
+        return None
+
+    report: dict[str, str] = {}
+    for key in _QA_KEYS:
+        val = data.get(key)
+        if isinstance(val, str) and val.strip():
+            report[key] = val.strip()
+
+    if not report:
+        return None
+    return report
+
 
 def _compute_context_score(channel: dict[str, object]) -> int:
     """Score data richness available for classification (0–3).
@@ -198,6 +342,23 @@ def _classify_one(
     return _parse_response(extract_response_text(response))
 
 
+def _qa_one(channel: dict[str, object], client) -> dict[str, str] | None:
+    from google.genai import types
+    prompt = _build_qa_prompt(channel)
+    response = client.models.generate_content(
+        model=_CLASSIFY_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=_SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            max_output_tokens=2000,
+            temperature=0.2,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
+    )
+    return _parse_qa_response(extract_response_text(response))
+
+
 def _resolve_ensemble(
     ai_categories: list[str],
     keyword_categories: list[str],
@@ -255,15 +416,18 @@ def classify_channels(
     channel_ids: list[str] | None = None,
     reclassify: bool = False,
 ) -> dict[str, object]:
-    """Classify channel niche_tags using AI + keyword-based ensemble.
+    """Classify channel niche_tags and generate channel intelligence Q&A reports.
+
+    Pipeline per channel:
+      - If niche_tags are missing/unknown: run classification first, inject results.
+      - If niche_tags are valid: skip classification, use existing tags + summary.
+      - Always run Q&A after, unless ai_channel_report already exists (skip if exists).
+      - reclassify=True forces both classification and Q&A to re-run on all channels.
 
     Args:
-        channel_ids: Explicit list of channel UUIDs to classify.
-                     None = auto-select based on reclassify flag.
-        reclassify:  When True with channel_ids=None, reclassify every active
-                     scraped channel. When False, only process channels that
-                     have no tags, are tagged "Unknown / Needs Review", or were
-                     previously classified with low context score.
+        channel_ids: Explicit list of channel UUIDs to process.
+                     None = auto-select all dashboard-eligible channels.
+        reclassify:  Force re-run classification and Q&A on all eligible channels.
     """
     api_key = scraper_settings.google_api_key
     if not api_key:
@@ -279,24 +443,25 @@ def classify_channels(
     ai_client = genai.Client(api_key=api_key)
     supabase = get_supabase_client()
 
-    _UNCLASSIFIED_FILTER = 'niche_tags.is.null,niche_tags.cs.{"Unknown / Needs Review"}'
+    _SELECT = (
+        "id,platform,channel_url,name,description,subscriber_count,"
+        "avg_views,avg_comments,engagement_rate,posts_per_week,last_active_date,"
+        "niche_tags,video_titles,recent_videos,secondary_urls,contact_info,"
+        "gate0_flagged_brand,classification_context_score,discovery_category,"
+        "ai_summary,ai_channel_report"
+    )
 
     try:
         fetched: list[dict] = []
         if channel_ids is not None:
             result = (
                 supabase.table("channels")
-                .select(
-                    "id,platform,name,description,subscriber_count,"
-                    "niche_tags,video_titles,secondary_urls,contact_info,"
-                    "classification_context_score,discovery_category,ai_summary"
-                )
+                .select(_SELECT)
                 .eq("is_active", True)
                 .eq("has_been_scraped", True)
                 .eq("dashboard_metrics_complete", True)
                 .eq("dashboard_url_valid", True)
                 .eq("dashboard_eligible", True)
-                .or_(_UNCLASSIFIED_FILTER)
                 .in_("id", channel_ids)
                 .execute()
             )
@@ -307,17 +472,12 @@ def classify_channels(
             while True:
                 result = (
                     supabase.table("channels")
-                    .select(
-                        "id,platform,name,description,subscriber_count,"
-                        "niche_tags,video_titles,secondary_urls,contact_info,"
-                        "classification_context_score,discovery_category,ai_summary"
-                    )
+                    .select(_SELECT)
                     .eq("is_active", True)
                     .eq("has_been_scraped", True)
                     .eq("dashboard_metrics_complete", True)
                     .eq("dashboard_url_valid", True)
                     .eq("dashboard_eligible", True)
-                    .or_(_UNCLASSIFIED_FILTER)
                     .range(offset, offset + page_size - 1)
                     .execute()
                 )
@@ -330,89 +490,138 @@ def classify_channels(
         logger.error("Failed to fetch channels for classification: %s", exc)
         return {"error": str(exc), "classified": 0}
 
-    if channel_ids is None and not reclassify:
-        channels = [ch for ch in fetched if _needs_classification(ch)]
-    else:
-        channels = fetched
-
     logger.info(
-        "classify_channels: total_fetched=%d to_process=%d reclassify=%s",
-        len(fetched), len(channels), reclassify,
+        "classify_channels: total_fetched=%d reclassify=%s",
+        len(fetched), reclassify,
     )
 
     classified = 0
     errors = 0
     skipped = 0
     needs_review_count = 0
+    qa_generated = 0
+    qa_skipped = 0
     now = datetime.now(timezone.utc).isoformat()
 
-    for channel in channels:
+    for channel in fetched:
         channel_id = str(channel.get("id") or "")
         channel_name = str(channel.get("name") or channel_id)
         if not channel_id:
             continue
 
-        context_score = _compute_context_score(channel)
+        ran_classify = False
+
+        # --- Classification branch ---
+        if reclassify or _needs_classification(channel):
+            context_score = _compute_context_score(channel)
+
+            try:
+                ai_categories, summary, ai_confidence, _signals = _classify_one(
+                    channel, ai_client
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Classification API call failed for '%s' (%s): %s",
+                    channel_name, channel_id, exc, exc_info=True,
+                )
+                errors += 1
+                time.sleep(1.0)
+                continue
+
+            name = str(channel.get("name") or "")
+            description = str(channel.get("description") or "")
+            video_titles = channel.get("video_titles") or []
+            if not isinstance(video_titles, list):
+                video_titles = []
+            keyword_result = compute_channel_demographic(name, description, video_titles)
+            keyword_categories: list[str] = keyword_result.get("niche_tags") or []
+
+            final_categories, needs_review = _resolve_ensemble(
+                ai_categories, keyword_categories, ai_confidence
+            )
+
+            if not final_categories:
+                logger.info(
+                    "No classification signal for '%s' (%s); will retry when more data is available",
+                    channel_name, channel_id,
+                )
+                skipped += 1
+                time.sleep(0.15)
+                continue
+
+            if needs_review:
+                needs_review_count += 1
+
+            # Inject fresh results into channel dict so Q&A receives them without a DB round-trip.
+            channel["niche_tags"] = final_categories
+            if summary is not None:
+                channel["ai_summary"] = summary
+
+            classify_payload: dict[str, object] = {
+                "niche_tags": final_categories,
+                "classification_confidence": ai_confidence,
+                "classification_needs_review": needs_review,
+                "classification_context_score": context_score,
+                "updated_at": now,
+            }
+            if summary is not None:
+                classify_payload["ai_summary"] = summary
+
+            try:
+                supabase.table("channels").update(classify_payload).eq("id", channel_id).execute()
+                classified += 1
+                ran_classify = True
+                logger.info(
+                    "Classified '%s' → %s (conf=%.2f review=%s ctx=%d)",
+                    channel_name, final_categories, ai_confidence, needs_review, context_score,
+                )
+                _record_classification_stat(channel, final_categories)
+            except APIError as exc:
+                logger.warning(
+                    "Failed to update classification for '%s' (%s): %s",
+                    channel_name, channel_id, exc,
+                )
+                errors += 1
+
+            time.sleep(0.15)
+
+        # --- Q&A branch ---
+        # Skip if report already exists, unless we just reclassified or reclassify=True.
+        existing_report = channel.get("ai_channel_report")
+        if existing_report and not reclassify and not ran_classify:
+            qa_skipped += 1
+            continue
 
         try:
-            ai_categories, summary, ai_confidence, _signals = _classify_one(
-                channel, ai_client
-            )
+            qa_report = _qa_one(channel, ai_client)
         except Exception as exc:
             logger.warning(
-                "Classification API call failed for '%s' (%s): %s",
+                "Q&A API call failed for '%s' (%s): %s",
                 channel_name, channel_id, exc, exc_info=True,
             )
             errors += 1
             time.sleep(1.0)
             continue
 
-        # Keyword-based ensemble pass.
-        name = str(channel.get("name") or "")
-        description = str(channel.get("description") or "")
-        video_titles = channel.get("video_titles") or []
-        if not isinstance(video_titles, list):
-            video_titles = []
-        keyword_result = compute_channel_demographic(name, description, video_titles)
-        keyword_categories: list[str] = keyword_result.get("niche_tags") or []
-
-        final_categories, needs_review = _resolve_ensemble(
-            ai_categories, keyword_categories, ai_confidence
-        )
-
-        if not final_categories:
+        if not qa_report:
             logger.info(
-                "No classification signal for '%s' (%s); will retry when more data is available",
+                "Q&A parse returned no data for '%s' (%s); skipping",
                 channel_name, channel_id,
             )
             skipped += 1
             time.sleep(0.15)
             continue
 
-        if needs_review:
-            needs_review_count += 1
-
-        update_payload: dict[str, object] = {
-            "niche_tags": final_categories,
-            "classification_confidence": ai_confidence,
-            "classification_needs_review": needs_review,
-            "classification_context_score": context_score,
-            "updated_at": now,
-        }
-        if summary is not None:
-            update_payload["ai_summary"] = summary
-
         try:
-            supabase.table("channels").update(update_payload).eq("id", channel_id).execute()
-            classified += 1
-            logger.info(
-                "Classified '%s' → %s (conf=%.2f review=%s ctx=%d)",
-                channel_name, final_categories, ai_confidence, needs_review, context_score,
-            )
-            _record_classification_stat(channel, final_categories)
+            supabase.table("channels").update({
+                "ai_channel_report": qa_report,
+                "updated_at": now,
+            }).eq("id", channel_id).execute()
+            qa_generated += 1
+            logger.info("Q&A report generated for '%s'", channel_name)
         except APIError as exc:
             logger.warning(
-                "Failed to update channel '%s' (%s): %s",
+                "Failed to save Q&A report for '%s' (%s): %s",
                 channel_name, channel_id, exc,
             )
             errors += 1
@@ -420,13 +629,16 @@ def classify_channels(
         time.sleep(0.15)
 
     logger.info(
-        "classify_channels complete: classified=%d skipped=%d errors=%d needs_review=%d candidates=%d",
-        classified, skipped, errors, needs_review_count, len(channels),
+        "classify_channels complete: classified=%d qa_generated=%d qa_skipped=%d "
+        "skipped=%d errors=%d needs_review=%d total=%d",
+        classified, qa_generated, qa_skipped, skipped, errors, needs_review_count, len(fetched),
     )
     return {
         "classified": classified,
+        "qa_generated": qa_generated,
+        "qa_skipped": qa_skipped,
         "skipped": skipped,
         "errors": errors,
         "needs_review_count": needs_review_count,
-        "total_candidates": len(channels),
+        "total_fetched": len(fetched),
     }

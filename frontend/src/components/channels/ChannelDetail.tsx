@@ -14,9 +14,11 @@ import {
   Trash2,
   FileText,
   Video,
+  Brain,
 } from "lucide-react";
 import type {
   Channel,
+  ChannelIntelligenceReport,
   RecentVideo,
   VelocityScore,
   Gate0Result,
@@ -273,6 +275,11 @@ export function ChannelDetail({
           </p>
           <p className="text-sm leading-6 text-[#1A1A2E]">{channel.ai_summary}</p>
         </div>
+      )}
+
+      {/* ─── Channel Intelligence Report ─── */}
+      {channel.ai_channel_report && (
+        <ChannelIntelligenceSection report={channel.ai_channel_report} />
       )}
 
       {/* ─── Velocity Section ─── */}
@@ -621,6 +628,56 @@ export function ChannelDetail({
           {deleteMessage && (
             <p className="mt-3 text-sm text-[#1A1A2E]">{deleteMessage}</p>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Channel Intelligence Report ─── */
+const QA_ITEMS: { key: keyof ChannelIntelligenceReport; label: string; risk?: boolean }[] = [
+  { key: "creator_about",        label: "What is this channel really about?" },
+  { key: "audience_relationship",label: "Audience relationship" },
+  { key: "age_55_appeal",        label: "55+ audience appeal" },
+  { key: "acquisition_relevance",label: "Acquisition relevance" },
+  { key: "monetization_pattern", label: "Monetization pattern" },
+  { key: "conversion_signals",   label: "Conversion signals" },
+  { key: "risk_flags",           label: "Risk flags", risk: true },
+];
+
+function ChannelIntelligenceSection({ report }: { report: ChannelIntelligenceReport }) {
+  const items = QA_ITEMS.filter(({ key }) => report[key]);
+  if (items.length === 0) return null;
+
+  return (
+    <div>
+      <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
+        <Brain size={18} className="text-[#C9A84C]" />
+        Channel Intelligence
+      </h2>
+      <div className="rounded-xl border border-[#E8E4DC] bg-[#FAF8F4] shadow-sm overflow-hidden">
+        <div className="flex items-center gap-2 border-b border-[#E8E4DC] px-5 py-3">
+          <span className="inline-flex items-center rounded bg-[#1A1A2E] px-1.5 py-0.5 text-[9px] font-bold text-white">
+            AI
+          </span>
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-[#6B6B6B]">
+            Acquisition Due Diligence
+          </span>
+        </div>
+        <div className="divide-y divide-[#E8E4DC]">
+          {items.map(({ key, label, risk }) => (
+            <div key={key} className="px-5 py-4">
+              <p
+                className={cn(
+                  "mb-1.5 text-[10px] font-semibold uppercase tracking-widest",
+                  risk ? "text-[#B22222]" : "text-[#6B6B6B]"
+                )}
+              >
+                {label}
+              </p>
+              <p className="text-sm leading-6 text-[#1A1A2E]">{report[key]}</p>
+            </div>
+          ))}
         </div>
       </div>
     </div>
