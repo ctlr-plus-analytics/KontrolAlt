@@ -92,6 +92,7 @@ export function ChannelTableView({
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasRestoredScroll = useRef(false);
+  const hasRestoredSession = useRef(false);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -106,6 +107,7 @@ export function ChannelTableView({
       if (saved.page) {
         setPage(saved.page);
       }
+      hasRestoredSession.current = true;
     }, 0);
     return () => clearTimeout(timer);
   }, []);
@@ -123,8 +125,9 @@ export function ChannelTableView({
   const totalPages = Math.max(1, Math.ceil(displayTotal / PAGE_SIZE));
   const showBlockingLoader = loading && displayChannels.length === 0;
 
-  // Persist filters + page to sessionStorage whenever they change.
+  // Persist filters + page to sessionStorage whenever they change (skip until session is restored).
   useEffect(() => {
+    if (!hasRestoredSession.current) return;
     writeStorage({ filters, page });
   }, [filters, page]);
 

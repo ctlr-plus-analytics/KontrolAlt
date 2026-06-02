@@ -1,0 +1,33 @@
+{
+  "summary": {
+    "mode": "dry_run",
+    "workbook": "scraper\\GoldCo Master Influencer List 2025-26 V1.xlsx",
+    "sheets_scanned": [
+      " Q1 HUNT ( targets) "
+    ],
+    "rows_found": 1,
+    "rows_with_excel_url": 1,
+    "rows_needing_serper": 0,
+    "resolved": 1,
+    "inserted": 0,
+    "duplicates": 0,
+    "unresolved": 0,
+    "below_threshold": 0,
+    "candidate_urls": 0,
+    "generated_at": "2026-06-02T21:28:24.748045+00:00"
+  },
+  "rows": [
+    {
+      "sheet_name": " Q1 HUNT ( targets) ",
+      "excel_row": 2,
+      "influencer_name": "Dr. Eric Berg",
+      "rumble_url_raw": "https://rumble.com/c/DrEricBerg?e9s=src_v1_cbl",
+      "resolved_url": "https://rumble.com/c/DrEricBerg",
+      "resolution_source": "excel",
+      "confidence": 1.0,
+      "error": null,
+      "candidate": null,
+      "action": "candidate"
+    }
+  ]
+}
