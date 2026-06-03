@@ -12,6 +12,7 @@ class Gate0ResultStatus(str, Enum):
     """Result status of a Gate 0 compliance check."""
 
     clean = "clean"
+    needs_review = "needs_review"
     dirty = "dirty"
 
 
@@ -25,6 +26,7 @@ class Gate0Result(BaseModel):
     result_status: Gate0ResultStatus
     flagged_brand: str | None = None
     source_url: str | None = None
+    confidence: float | None = None
 
     model_config = {"from_attributes": True}
 

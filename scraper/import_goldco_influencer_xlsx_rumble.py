@@ -47,7 +47,7 @@ SERPER_RETRY_CODES = {408, 425, 429, 500, 502, 503, 504}
 SERPER_MAX_ATTEMPTS = 3
 SERPER_RETRY_DELAY_SECONDS = 1.5
 DEFAULT_SEARCH_LIMIT = 10
-DEFAULT_MIN_CONFIDENCE = 0.88
+DEFAULT_MIN_CONFIDENCE = 0.70
 
 
 @dataclass(frozen=True)
@@ -595,7 +595,7 @@ def main() -> None:
         "--min-confidence",
         type=float,
         default=DEFAULT_MIN_CONFIDENCE,
-        help="Minimum Serper confidence required to insert a resolved row",
+        help="Minimum Serper confidence required to insert a resolved row (default: 0.70)",
     )
     parser.add_argument(
         "--write",

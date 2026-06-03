@@ -435,7 +435,7 @@ async def list_gate0_status_counts() -> list[dict[str, int | str]]:
             raw_status = row.get("gate0_status")
             if isinstance(raw_status, str) and raw_status in counts:
                 counts[raw_status] += 1
-        order = ["unchecked", "pending", "clean", "dirty"]
+        order = ["unchecked", "pending", "clean", "needs_review", "dirty"]
         return [{"status": status, "count": counts.get(status, 0)} for status in order]
     except (APIError, TypeError, ValueError) as exc:
         logger.error("Failed to list gate0 status counts: %s", exc, exc_info=True)

@@ -234,6 +234,7 @@ def status_is_terminal_code(code: str) -> bool:
     """Return True for non-recoverable codes."""
     return code in {
         "not_found_404",
+        "unsupported_rumble_url_shape",
         "channel_deleted",
         "channel_banned_or_suspended",
         "channel_unavailable",

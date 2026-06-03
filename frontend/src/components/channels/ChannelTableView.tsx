@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef, useLayoutEffect, useMemo } from "react";
 import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
-import type { CategoryTagOption, Channel, ChannelFilters, VelocityScore } from "@/types";
+import type { CategoryTagOption, Channel, ChannelFilters, Gate0StatusOption, VelocityScore } from "@/types";
 import { ChannelTable } from "@/components/channels/ChannelTable";
 import { ChannelIntakePanel } from "@/components/channels/ChannelIntakePanel";
 import { FilterSidebar, DEFAULT_FILTERS } from "@/components/filters/FilterSidebar";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { useChannels } from "@/hooks/useChannels";
 import { useAuth } from "@/hooks/useAuth";
-import { getCategoryTags } from "@/lib/api/backend";
+import { getCategoryTags, getGate0Statuses } from "@/lib/api/backend";
 
 interface ChannelTableViewProps {
   initialChannels: (Channel & { velocity?: VelocityScore | null })[];
@@ -49,6 +49,8 @@ export function ChannelTableView({
   const [categoryTagOptions, setCategoryTagOptions] = useState<CategoryTagOption[]>([]);
   const [categoryTagsLoading, setCategoryTagsLoading] = useState<boolean>(false);
   const [categoryTagsLoadedKey, setCategoryTagsLoadedKey] = useState<string | null>(null);
+  const [gate0StatusOptions, setGate0StatusOptions] = useState<Gate0StatusOption[]>([]);
+  const [gate0StatusesLoading, setGate0StatusesLoading] = useState<boolean>(false);
   const { session } = useAuth();
   const token = session?.access_token;
   const categoryTagsScopeFilters = useMemo(
@@ -111,6 +113,17 @@ export function ChannelTableView({
     }, 0);
     return () => clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!token || gate0StatusesLoading) return;
+    setGate0StatusesLoading(true);
+    getGate0Statuses(token)
+      .then(setGate0StatusOptions)
+      .catch(() => {})
+      .finally(() => setGate0StatusesLoading(false));
+    // Run once when token becomes available.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   const { channels, total, loading, refreshing, refetch } = useChannels(
     filters,
@@ -202,6 +215,8 @@ export function ChannelTableView({
         categoryTagOptions={categoryTagOptions}
         categoryTagsLoading={categoryTagsLoading}
         onCategoryMenuOpen={loadCategoryTags}
+        gate0StatusOptions={gate0StatusOptions}
+        gate0StatusesLoading={gate0StatusesLoading}
       />
 
       {/* ── Main Content ── */}

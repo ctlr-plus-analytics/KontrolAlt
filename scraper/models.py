@@ -51,6 +51,7 @@ class Gate0TaskResult(BaseModel):
     result_status: str | None = None
     flagged_brand: str | None = None
     source_url: str | None = None
+    confidence: float | None = None
 
 
 class LookalikeTaskResult(BaseModel):

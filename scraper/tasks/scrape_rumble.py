@@ -124,11 +124,21 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
     channel_url = args.channel_url
     if not _is_supported_rumble_channel_url(channel_url):
         logger.warning("Skipping unsupported Rumble URL: %s", channel_url)
-        return ScrapeTaskResult(
-            status="failed",
+        scraper = RumbleScraper()
+        return handle_classified_scrape_error(
+            platform="rumble",
+            scraper=scraper,
             channel_url=channel_url,
-            error="Unsupported Rumble URL shape; expected /c/<slug> or /user/<slug>",
-        ).model_dump(mode="json")
+            error=ScraperClassifiedError(
+                "unsupported_rumble_url_shape",
+                "Unsupported Rumble URL shape; expected /c/<slug> or /user/<slug>",
+                terminal=True,
+                retryable=False,
+            ),
+            task=self,
+            result_factory=ScrapeTaskResult,
+            logger=logger,
+        )
     logger.info("Starting Rumble scrape: %s", channel_url)
     if not acquire_scrape_lock(channel_url):
         logger.info("Skipping duplicate in-flight Rumble scrape: %s", channel_url)

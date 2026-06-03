@@ -10,7 +10,7 @@ export type Platform = "rumble" | "substack";
 export type CommentTier = "active" | "sweet_spot" | "whale";
 
 /** Gate 0 compliance check status. */
-export type Gate0Status = "clean" | "dirty" | "pending" | "unchecked";
+export type Gate0Status = "clean" | "needs_review" | "dirty" | "pending" | "unchecked";
 
 /** Manual do-not-contact status. */
 export type DoNotContactStatus = "Hired and Canceled" | "Current Partner";
@@ -98,9 +98,10 @@ export interface Gate0Result {
   channel_id: string;
   checked_at: string;
   search_query: string;
-  result_status: "clean" | "dirty";
+  result_status: "clean" | "needs_review" | "dirty";
   flagged_brand: string | null;
   source_url: string | null;
+  confidence: number | null;
 }
 
 /** Log entry for a scrape attempt. */

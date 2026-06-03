@@ -7,7 +7,7 @@
 export type Platform = "rumble" | "substack";
 
 /** Gate 0 compliance check status. */
-export type Gate0Status = "clean" | "dirty" | "pending" | "unchecked";
+export type Gate0Status = "clean" | "needs_review" | "dirty" | "pending" | "unchecked";
 
 /** Scrape log status. */
 export type ScrapeStatus = "success" | "blocked" | "retry" | "failed";

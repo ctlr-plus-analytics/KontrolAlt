@@ -16,6 +16,7 @@ const STATUS_CONFIG: Record<
   unchecked: { variant: "muted", label: "No" },
   pending: { variant: "warning", label: "No" },
   clean: { variant: "success", label: "No" },
+  needs_review: { variant: "warning", label: "Review" },
   dirty: { variant: "danger", label: "Yes — Other company" },
 };
 

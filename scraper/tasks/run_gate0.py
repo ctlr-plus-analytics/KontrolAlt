@@ -2,7 +2,9 @@
 
 import logging
 import re
+from dataclasses import dataclass, field as dc_field
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 import httpx
 from celery import Task
@@ -25,6 +27,589 @@ _URLISH_PATTERN = re.compile(
 )
 _TRAILING_PUNCTUATION = ".,;:!?)\"]}'"
 
+# Affiliate URL indicator: query/path segments that denote referral tracking.
+_AFFILIATE_PATTERN = re.compile(
+    r"[?&/](?:ref|aff|affiliate|aid|partner|source|utm_source|utm_campaign)[=/]",
+    re.IGNORECASE,
+)
+
+# Link-shortener / link-aggregator hosts whose URLs should be redirect-followed.
+_LINK_SHORTENER_HOSTS = frozenset({
+    "bit.ly", "t.co", "tinyurl.com", "ow.ly", "buff.ly",
+    "linktr.ee", "beacons.ai", "linkin.bio", "allmylinks.com",
+    "lnk.to", "smarturl.it",
+})
+
+# Words that raise confidence when found near a competitor mention.
+_PROMO_WORDS = frozenset({
+    "sponsor", "sponsored", "partner", "affiliate", "promo",
+    "code", "free", "offer", "exclusive", "discount", "kit",
+    "click", "refer", "referral", "get started", "link",
+})
+
+# Words that lower confidence when found near a competitor mention.
+_NEGATIVE_WORDS = frozenset({
+    "scam", "fraud", "avoid", "warning", "lawsuit", "sec",
+    "complaint", "versus", "vs", "compared", "switched", "left",
+    "problems", "beware", "fake", "exposed", "review", "reviews",
+})
+
+# Context window (characters each side of a match) for promo/negative detection.
+_CONTEXT_WINDOW = 120
+
+# --- Signal weights ---
+
+# High confidence — auto-dirty zone (≥ 0.95)
+_W_DOMAIN_IN_CONTACT = 0.97   # competitor domain in contact_info or secondary_urls
+_W_REDIRECT_TO_DOMAIN = 0.96  # link-shortener URL that resolves to a competitor domain
+_W_AFFILIATE_URL = 0.95       # URL with affiliate pattern pointing to a competitor
+
+# Medium confidence — needs-review zone (0.80–0.94)
+_W_DOMAIN_DESCRIPTION_PROMO = 0.90   # domain in description + promo language nearby
+_W_DOMAIN_IN_DESCRIPTION = 0.85      # domain in description, neutral context
+_W_BRAND_DESCRIPTION_PROMO = 0.82    # brand in description + promo language
+_W_MULTI_TITLE_PROMO = 0.88          # 3+ video titles: brand + promo language
+_W_TWO_TITLE_PROMO = 0.75            # 2 video titles: brand + promo language
+_W_ONE_TITLE_PROMO = 0.70            # 1 video title: brand + promo language
+
+# Low confidence — below threshold (< 0.80)
+_W_BRAND_IN_DESCRIPTION = 0.50       # brand only in description, neutral context
+_W_MULTI_TITLE_NEUTRAL = 0.60        # 3+ video titles mentioning brand, neutral
+_W_ONE_TITLE_NEUTRAL = 0.35          # 1–2 video titles mentioning brand, neutral
+
+# Serper weights
+_W_SERPER_SINGLE = 0.45   # a single Serper query produced a hit
+_W_SERPER_MULTI = 0.70    # multiple independent Serper queries hit the same competitor
+
+# Decision thresholds
+_THRESHOLD_DIRTY = 0.95
+_THRESHOLD_REVIEW = 0.80
+
+
+@dataclass
+class EvidenceSignal:
+    """A single confidence signal contributing to a Gate 0 determination."""
+
+    signal_type: str
+    matched_value: str
+    weight: float
+    source_url: str | None = None
+    context: str | None = None
+
+
+@dataclass
+class ScanResult:
+    """Aggregated Gate 0 scan outcome with compound confidence and evidence trail."""
+
+    flagged_brand: str | None = None
+    source_url: str | None = None
+    confidence: float = 0.0
+    signals: list[EvidenceSignal] = dc_field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Confidence math
+# ---------------------------------------------------------------------------
+
+def _compound_confidence(weights: list[float]) -> float:
+    """Combine independent signal weights: 1 − Π(1 − wᵢ)."""
+    if not weights:
+        return 0.0
+    complement = 1.0
+    for w in weights:
+        complement *= 1.0 - max(0.0, min(1.0, w))
+    return 1.0 - complement
+
+
+def _classify_confidence(confidence: float) -> str:
+    if confidence >= _THRESHOLD_DIRTY:
+        return "dirty"
+    if confidence >= _THRESHOLD_REVIEW:
+        return "needs_review"
+    return "clean"
+
+
+# ---------------------------------------------------------------------------
+# Context detection
+# ---------------------------------------------------------------------------
+
+def _context_window(text: str, term: str) -> str:
+    """Return the substring of text surrounding the first occurrence of term."""
+    idx = text.lower().find(term.lower())
+    if idx == -1:
+        return ""
+    start = max(0, idx - _CONTEXT_WINDOW)
+    end = min(len(text), idx + len(term) + _CONTEXT_WINDOW)
+    return text[start:end]
+
+
+def _has_promo_context(text: str, term: str) -> bool:
+    window = _context_window(text, term).lower()
+    return any(word in window for word in _PROMO_WORDS)
+
+
+def _has_negative_context(text: str, term: str) -> bool:
+    window = _context_window(text, term).lower()
+    return any(word in window for word in _NEGATIVE_WORDS)
+
+
+# ---------------------------------------------------------------------------
+# URL helpers
+# ---------------------------------------------------------------------------
+
+def _has_affiliate_pattern(url: str) -> bool:
+    return bool(_AFFILIATE_PATTERN.search(url))
+
+
+def _should_follow_redirect(url: str) -> bool:
+    """True if url is from a known link shortener worth resolving."""
+    try:
+        host = urlparse(url).hostname or ""
+        return host in _LINK_SHORTENER_HOSTS or any(
+            host.endswith(f".{s}") for s in _LINK_SHORTENER_HOSTS
+        )
+    except Exception:
+        return False
+
+
+def _follow_url_redirect(url: str) -> str | None:
+    """Follow HTTP redirects and return the final URL, or None on failure."""
+    try:
+        with httpx.Client(timeout=5.0, follow_redirects=True, max_redirects=5) as http:
+            resp = http.head(url, headers={"User-Agent": "Mozilla/5.0"})
+            return str(resp.url)
+    except Exception:
+        return None
+
+
+def _normalize_evidence_url(raw_url: str) -> str:
+    cleaned = raw_url.strip().strip(_TRAILING_PUNCTUATION)
+    if not cleaned.lower().startswith(("http://", "https://")):
+        cleaned = f"https://{cleaned}"
+    return cleaned
+
+
+def _source_url_for_domain(text: str, fallback_url: str | None, domain: str) -> str:
+    """Return the most specific URL in text that contains the competitor domain."""
+    if fallback_url and _contains_domain(fallback_url.lower(), domain):
+        return fallback_url
+    for candidate in _URLISH_PATTERN.findall(text):
+        normalized = _normalize_evidence_url(candidate)
+        if _contains_domain(normalized.lower(), domain):
+            return normalized
+    return f"https://{domain}"
+
+
+# ---------------------------------------------------------------------------
+# Pattern matching
+# ---------------------------------------------------------------------------
+
+def _contains_domain(text_lower: str, domain: str) -> bool:
+    """Match a hostname/subdomain without matching unrelated longer strings."""
+    pattern = rf"(?<![a-z0-9-]){re.escape(domain.lower())}(?![a-z0-9-])"
+    return re.search(pattern, text_lower) is not None
+
+
+def _contains_brand(text_lower: str, brand: str) -> bool:
+    """Match brand phrases on word boundaries."""
+    pattern = rf"(?<![a-z0-9]){re.escape(brand.lower())}(?![a-z0-9])"
+    return re.search(pattern, text_lower) is not None
+
+
+# ---------------------------------------------------------------------------
+# Field-level scanners (return EvidenceSignal lists)
+# ---------------------------------------------------------------------------
+
+def _scan_url_for_competitor(
+    url: str,
+    competitors: tuple[Gate0CompetitorSetting, ...],
+) -> list[EvidenceSignal]:
+    """Scan a single URL from contact_info or secondary_urls for competitor signals."""
+    url_lower = url.lower()
+
+    for competitor in competitors:
+        for domain in competitor.domains:
+            if _contains_domain(url_lower, domain):
+                weight = _W_AFFILIATE_URL if _has_affiliate_pattern(url) else _W_DOMAIN_IN_CONTACT
+                return [EvidenceSignal("domain_in_contact", domain, weight, url)]
+
+        if _contains_brand(url_lower, competitor.brand):
+            return [EvidenceSignal("brand_in_contact", competitor.brand, 0.70, url)]
+
+    # No immediate match — follow redirect if it's a known link shortener.
+    if _should_follow_redirect(url):
+        resolved = _follow_url_redirect(url)
+        if resolved:
+            resolved_lower = resolved.lower()
+            for competitor in competitors:
+                for domain in competitor.domains:
+                    if _contains_domain(resolved_lower, domain):
+                        return [EvidenceSignal("redirect_to_domain", domain, _W_REDIRECT_TO_DOMAIN, resolved)]
+
+    return []
+
+
+def _scan_text_field(
+    text: str,
+    field_type: str,
+    fallback_url: str,
+    competitors: tuple[Gate0CompetitorSetting, ...],
+) -> list[EvidenceSignal]:
+    """Scan a text blob (description, name) for competitor signals."""
+    signals: list[EvidenceSignal] = []
+    text_lower = text.lower()
+
+    for competitor in competitors:
+        domain_matched = False
+        for domain in competitor.domains:
+            if _contains_domain(text_lower, domain):
+                domain_matched = True
+                if _has_negative_context(text, domain):
+                    break  # suppress; also skip brand check for this competitor
+                has_promo = _has_promo_context(text, domain)
+                weight = _W_DOMAIN_DESCRIPTION_PROMO if has_promo else _W_DOMAIN_IN_DESCRIPTION
+                source = _source_url_for_domain(text, fallback_url, domain)
+                ctx = _context_window(text, domain)
+                signals.append(EvidenceSignal(f"domain_in_{field_type}", domain, weight, source, ctx))
+                break
+
+        if not domain_matched and _contains_brand(text_lower, competitor.brand):
+            if not _has_negative_context(text, competitor.brand):
+                has_promo = _has_promo_context(text, competitor.brand)
+                weight = _W_BRAND_DESCRIPTION_PROMO if has_promo else _W_BRAND_IN_DESCRIPTION
+                ctx = _context_window(text, competitor.brand)
+                source_label = {
+                    "description": "Channel description",
+                    "name": "Channel name",
+                }.get(field_type, f"Channel {field_type}")
+                signals.append(EvidenceSignal(
+                    f"brand_in_{field_type}", competitor.brand, weight, source_label, ctx,
+                ))
+
+    return signals
+
+
+def _scan_video_titles(
+    titles: list[str],
+    competitors: tuple[Gate0CompetitorSetting, ...],
+    fallback_url: str,
+) -> list[EvidenceSignal]:
+    """Score video title mentions per competitor, weighted by count and promo context."""
+    signals: list[EvidenceSignal] = []
+
+    for competitor in competitors:
+        promo_hits: list[str] = []
+        neutral_hits: list[str] = []
+
+        for title in titles:
+            title_lower = title.lower()
+            matched_domain = False
+            for domain in competitor.domains:
+                if _contains_domain(title_lower, domain):
+                    matched_domain = True
+                    if not _has_negative_context(title, domain):
+                        target = promo_hits if _has_promo_context(title, domain) else neutral_hits
+                        target.append(title)
+                    break
+            if not matched_domain and _contains_brand(title_lower, competitor.brand):
+                if not _has_negative_context(title, competitor.brand):
+                    target = promo_hits if _has_promo_context(title, competitor.brand) else neutral_hits
+                    target.append(title)
+
+        if promo_hits:
+            n = len(promo_hits)
+            weight = _W_MULTI_TITLE_PROMO if n >= 3 else (_W_TWO_TITLE_PROMO if n == 2 else _W_ONE_TITLE_PROMO)
+            signals.append(EvidenceSignal(
+                "title_promo", competitor.brand, weight, "Channel video titles", "; ".join(promo_hits[:3]),
+            ))
+
+        if neutral_hits:
+            n = len(neutral_hits)
+            weight = _W_MULTI_TITLE_NEUTRAL if n >= 3 else _W_ONE_TITLE_NEUTRAL
+            signals.append(EvidenceSignal(
+                "title_neutral", competitor.brand, weight, "Channel video titles", "; ".join(neutral_hits[:3]),
+            ))
+
+    return signals
+
+
+# ---------------------------------------------------------------------------
+# Channel-level local scan
+# ---------------------------------------------------------------------------
+
+def _scan_channel_local(
+    channel: dict[str, object],
+    competitors: tuple[Gate0CompetitorSetting, ...],
+) -> ScanResult:
+    """Scan all stored channel fields and return a ScanResult with accumulated signals."""
+    channel_url = str(channel.get("channel_url") or "")
+
+    contact_info = channel.get("contact_info") or []
+    secondary_urls = channel.get("secondary_urls") or []
+    if isinstance(contact_info, str):
+        contact_info = [contact_info]
+    if isinstance(secondary_urls, str):
+        secondary_urls = [secondary_urls]
+
+    video_titles = channel.get("video_titles") or []
+    if isinstance(video_titles, str):
+        video_titles = [video_titles]
+    video_titles = [str(t) for t in video_titles if t]
+
+    description = str(channel.get("description") or "")
+    name = str(channel.get("name") or "")
+
+    all_signals: list[EvidenceSignal] = []
+
+    for url in list(contact_info) + list(secondary_urls):
+        all_signals.extend(_scan_url_for_competitor(str(url), competitors))
+
+    if description:
+        all_signals.extend(_scan_text_field(description, "description", channel_url, competitors))
+
+    if name:
+        all_signals.extend(_scan_text_field(name, "name", channel_url, competitors))
+
+    if video_titles:
+        all_signals.extend(_scan_video_titles(video_titles, competitors, channel_url))
+
+    if not all_signals:
+        return ScanResult()
+
+    confidence = _compound_confidence([s.weight for s in all_signals])
+    best = max(all_signals, key=lambda s: s.weight)
+    return ScanResult(best.matched_value, best.source_url, confidence, all_signals)
+
+
+# ---------------------------------------------------------------------------
+# Serper search
+# ---------------------------------------------------------------------------
+
+def _scan_serper_results(
+    organic_results: object,
+    competitors: tuple[Gate0CompetitorSetting, ...],
+) -> tuple[str | None, str | None]:
+    """Scan top Serper organic results for competitor brands/domains.
+
+    Returns (matched_value, source_url) for the first hit found, or (None, None).
+    """
+    if not isinstance(organic_results, list):
+        return None, None
+
+    for item in organic_results[:10]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "")
+        snippet = str(item.get("snippet") or "")
+        link = str(item.get("link") or "")
+        combined = f"{title} {snippet} {link}"
+        combined_lower = combined.lower()
+
+        for competitor in competitors:
+            for domain in competitor.domains:
+                if _contains_domain(combined_lower, domain):
+                    source = _source_url_for_domain(combined, link, domain)
+                    return domain, source
+
+            if _contains_brand(combined_lower, competitor.brand):
+                # Use the result link as evidence — it's the page that mentioned the brand.
+                return competitor.brand, link or None
+
+    return None, None
+
+
+def _run_serper_search(
+    search_query: str,
+    competitors: tuple[Gate0CompetitorSetting, ...],
+) -> tuple[str | None, str | None]:
+    """Run a single Serper query and return any competitor hit."""
+    with httpx.Client(timeout=15.0) as http:
+        response = http.post(
+            _SERPER_SEARCH_URL,
+            headers={
+                "X-API-KEY": scraper_settings.serp_api_key,
+                "Content-Type": "application/json",
+            },
+            json={"q": search_query, "num": 10},
+        )
+        if response.status_code in _SERPER_QUOTA_STATUS_CODES:
+            raise RuntimeError("Serper quota exceeded for today")
+        response.raise_for_status()
+        data = response.json()
+        organic = data.get("organic", []) if isinstance(data, dict) else []
+        return _scan_serper_results(organic, competitors)
+
+
+def _build_search_queries(
+    channel_name: str,
+    channel_handle: str | None,
+    competitors: tuple[Gate0CompetitorSetting, ...],
+) -> list[str]:
+    """Return ordered Serper queries for Gate 0, most affiliation-targeted first.
+
+    Query order (early exit on hit):
+      1. Per-competitor affiliation queries (sponsor/affiliate/partner language)
+      2. Site-specific queries (channel appears on competitor domain)
+      3. Broad per-competitor name queries
+      4. Broad gold IRA query (most noise — fallback only)
+    """
+    handle_differs = bool(
+        channel_handle and channel_handle.lower() != channel_name.lower()
+    )
+    queries: list[str] = []
+
+    # 1. Affiliation-targeted (highest signal-to-noise)
+    for competitor in competitors:
+        queries.append(
+            f'"{channel_name}" "{competitor.brand}" "sponsor" OR "affiliate" OR "partner"'
+        )
+        if handle_differs:
+            queries.append(
+                f'"{channel_handle}" "{competitor.brand}" "sponsor" OR "affiliate" OR "partner"'
+            )
+
+    # 2. Site-targeted
+    for competitor in competitors:
+        for domain in competitor.domains[:1]:
+            queries.append(f'site:{domain} "{channel_name}"')
+            if handle_differs:
+                queries.append(f'site:{domain} "{channel_handle}"')
+
+    # 3. Broad per-competitor
+    for competitor in competitors:
+        queries.append(f'"{channel_name}" "{competitor.brand}"')
+        if handle_differs:
+            queries.append(f'"{channel_handle}" "{competitor.brand}"')
+
+    # 4. Broad gold IRA (last resort)
+    queries.append(f'"{channel_name}" "gold IRA"')
+    if handle_differs:
+        queries.append(f'"{channel_handle}" "gold IRA"')
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for q in queries:
+        if q not in seen:
+            seen.add(q)
+            unique.append(q)
+    return unique
+
+
+def _run_serper_search_multi(
+    queries: list[str],
+    competitors: tuple[Gate0CompetitorSetting, ...],
+) -> tuple[str | None, str | None, str, float]:
+    """Run Serper queries in order, collecting hits to compound confidence.
+
+    Returns (flagged_brand, source_url, winning_query, serper_confidence).
+    Stops early once combined confidence reaches _THRESHOLD_DIRTY.
+    """
+    first_query = queries[0] if queries else ""
+    hit_weights: list[float] = []
+    winning_brand: str | None = None
+    winning_url: str | None = None
+    winning_query = first_query
+
+    for query in queries:
+        brand, url = _run_serper_search(query, competitors)
+        if brand is not None:
+            if winning_brand is None:
+                winning_brand = brand
+                winning_url = url
+                winning_query = query
+            hit_weights.append(_W_SERPER_SINGLE)
+            if _compound_confidence(hit_weights) >= _THRESHOLD_DIRTY:
+                break
+
+    if not hit_weights:
+        return None, None, first_query, 0.0
+
+    serper_confidence = _compound_confidence(hit_weights)
+    if len(hit_weights) >= 2:
+        serper_confidence = max(serper_confidence, _W_SERPER_MULTI)
+    return winning_brand, winning_url, winning_query, serper_confidence
+
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+
+def _persist_gate0_result(
+    channel: dict[str, object],
+    search_query: str,
+    result: ScanResult,
+) -> dict[str, object]:
+    """Insert a Gate 0 result and update the channel's cached status fields."""
+    client = get_supabase_client()
+    channel_id = str(channel["id"])
+    result_status = _classify_confidence(result.confidence)
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Only store brand/url on non-clean outcomes.
+    flagged_brand = result.flagged_brand if result_status != "clean" else None
+    source_url = result.source_url if result_status != "clean" else None
+
+    evidence_payload = [
+        {
+            "type": s.signal_type,
+            "value": s.matched_value,
+            "weight": round(s.weight, 4),
+            "source_url": s.source_url,
+            "context": s.context,
+        }
+        for s in result.signals
+    ] or None
+
+    gate0_record: dict[str, object] = {
+        "channel_id": channel_id,
+        "checked_at": now,
+        "search_query": search_query,
+        "result_status": result_status,
+        "flagged_brand": flagged_brand,
+        "source_url": source_url,
+        "confidence": round(result.confidence, 4),
+        "evidence_signals": evidence_payload,
+    }
+    insert_res = client.table("gate0_results").insert(gate0_record).execute()
+    gate0_id = None
+    if insert_res.data:
+        gate0_id = insert_res.data[0].get("id")
+
+    client.table("channels").update(
+        {
+            "gate0_status": result_status,
+            "gate0_checked_at": now,
+            "gate0_result_id": gate0_id,
+            "gate0_search_query": search_query,
+            "gate0_result_status": result_status,
+            "gate0_flagged_brand": flagged_brand,
+            "gate0_source_url": source_url,
+            "updated_at": now,
+        }
+    ).eq("id", channel_id).execute()
+
+    logger.info(
+        "Gate 0 complete for %s: %s (brand=%s, confidence=%.3f)",
+        channel_id,
+        result_status,
+        flagged_brand,
+        result.confidence,
+    )
+    return gate0_record
+
+
+def _mark_gate0_unchecked(channel_id: str, reason: str) -> None:
+    """Clear a stuck pending status so the channel can be retried later."""
+    now = datetime.now(timezone.utc).isoformat()
+    get_supabase_client().table("channels").update(
+        {"gate0_status": "unchecked", "updated_at": now}
+    ).eq("id", channel_id).execute()
+    logger.warning("Gate 0 marked unchecked for %s: %s", channel_id, reason)
+
+
+# ---------------------------------------------------------------------------
+# Core orchestration
+# ---------------------------------------------------------------------------
 
 def _load_competitors() -> tuple[Gate0CompetitorSetting, ...]:
     """Read Gate 0 competitors from system_settings. Returns empty tuple on failure."""
@@ -75,8 +660,11 @@ def _should_run_gate0_check(
         return True, None
 
     status = channel.get("gate0_status")
-    if status == "dirty":
-        return False, "dirty channels are not rechecked automatically"
+
+    # dirty and needs_review are both frozen for automatic rechecks.
+    # needs_review requires human adjudication before it can transition.
+    if status in ("dirty", "needs_review"):
+        return False, f"{status} channels are not rechecked automatically"
 
     if status == "clean":
         checked_at = _parse_datetime(channel.get("gate0_checked_at"))
@@ -91,40 +679,6 @@ def _should_run_gate0_check(
     return True, None
 
 
-def _iter_scan_values(channel: dict[str, object]) -> list[str]:
-    """Return stored fields that Gate 0 local scan should inspect."""
-    contact_info = channel.get("contact_info", []) or []
-    secondary_urls = channel.get("secondary_urls", []) or []
-    video_titles = channel.get("video_titles", []) or []
-    description = str(channel.get("description") or "")
-    name = str(channel.get("name") or "")
-    channel_url = str(channel.get("channel_url") or "")
-
-    if isinstance(contact_info, str):
-        contact_values = [contact_info]
-    else:
-        contact_values = [str(value) for value in contact_info]
-
-    if isinstance(secondary_urls, str):
-        secondary_values = [secondary_urls]
-    else:
-        secondary_values = [str(value) for value in secondary_urls]
-
-    if isinstance(video_titles, str):
-        title_values = [video_titles]
-    else:
-        title_values = [str(t) for t in video_titles if t]
-
-    values = [*contact_values, *secondary_values]
-    values.append(description)
-    if name:
-        values.append(name)
-    if channel_url:
-        values.append(channel_url)
-    values.extend(title_values)
-    return values
-
-
 def _extract_channel_handle(channel_url: str) -> str | None:
     """Extract a short searchable handle from a channel URL."""
     m = re.search(r"rumble\.com/(?:c|user)/([^/?#]+)", channel_url, re.IGNORECASE)
@@ -137,248 +691,6 @@ def _extract_channel_handle(channel_url: str) -> str | None:
     if m:
         return m.group(1)
     return None
-
-
-def _scan_channel_text_for_competitors(
-    channel: dict[str, object],
-    competitors: tuple[Gate0CompetitorSetting, ...],
-) -> tuple[str | None, str | None]:
-    """Scan stored channel text and URLs for competitor references."""
-    channel_url = str(channel.get("channel_url") or "")
-
-    for text in _iter_scan_values(channel):
-        text_lower = text.lower()
-        source_url = (
-            text
-            if text_lower.startswith(("http://", "https://"))
-            else channel_url
-        )
-
-        match, matched_source_url = _scan_text_for_competitors(
-            text,
-            competitors,
-            source_url,
-        )
-        if match is not None:
-            return match, matched_source_url
-
-    return None, None
-
-
-def _contains_domain(text_lower: str, domain: str) -> bool:
-    """Match a hostname or subdomain without matching unrelated longer words."""
-    pattern = rf"(?<![a-z0-9-]){re.escape(domain.lower())}(?![a-z0-9-])"
-    return re.search(pattern, text_lower) is not None
-
-
-def _contains_brand(text_lower: str, brand: str) -> bool:
-    """Match brand phrases on word boundaries."""
-    pattern = rf"(?<![a-z0-9]){re.escape(brand.lower())}(?![a-z0-9])"
-    return re.search(pattern, text_lower) is not None
-
-
-def _normalize_evidence_url(raw_url: str) -> str:
-    cleaned = raw_url.strip().strip(_TRAILING_PUNCTUATION)
-    if not cleaned.lower().startswith(("http://", "https://")):
-        cleaned = f"https://{cleaned}"
-    return cleaned
-
-
-def _source_url_for_domain(text: str, fallback_url: str | None, domain: str) -> str:
-    """Return the most specific URL containing the matched competitor domain."""
-    if fallback_url and _contains_domain(fallback_url.lower(), domain):
-        return fallback_url
-
-    for candidate in _URLISH_PATTERN.findall(text):
-        normalized = _normalize_evidence_url(candidate)
-        if _contains_domain(normalized.lower(), domain):
-            return normalized
-
-    return f"https://{domain}"
-
-
-def _scan_text_for_competitors(
-    text: str,
-    competitors: tuple[Gate0CompetitorSetting, ...],
-    source_url: str | None,
-) -> tuple[str | None, str | None]:
-    """Return the first competitor reference in a text blob."""
-    text_lower = text.lower()
-    for competitor in competitors:
-        for domain in competitor.domains:
-            if _contains_domain(text_lower, domain):
-                return domain, _source_url_for_domain(text, source_url, domain)
-
-        if _contains_brand(text_lower, competitor.brand):
-            return competitor.brand, source_url
-
-    return None, None
-
-
-def _scan_serper_results(
-    organic_results: object,
-    competitors: tuple[Gate0CompetitorSetting, ...],
-) -> tuple[str | None, str | None]:
-    """Scan top Serper organic results for competitor brands/domains."""
-    if not isinstance(organic_results, list):
-        return None, None
-
-    for item in organic_results[:10]:
-        if not isinstance(item, dict):
-            continue
-        title = str(item.get("title") or "")
-        snippet = str(item.get("snippet") or "")
-        link = str(item.get("link") or "")
-        match, source_url = _scan_text_for_competitors(
-            f"{title} {snippet} {link}",
-            competitors,
-            link,
-        )
-        if match is not None:
-            return match, source_url
-
-    return None, None
-
-
-def _run_serper_search(
-    search_query: str,
-    competitors: tuple[Gate0CompetitorSetting, ...],
-) -> tuple[str | None, str | None]:
-    """Run the Serper portion of Gate 0 and return any competitor hit."""
-    with httpx.Client(timeout=15.0) as http:
-        response = http.post(
-            _SERPER_SEARCH_URL,
-            headers={
-                "X-API-KEY": scraper_settings.serp_api_key,
-                "Content-Type": "application/json",
-            },
-            json={
-                "q": search_query,
-                "num": 10,
-            },
-        )
-        if response.status_code in _SERPER_QUOTA_STATUS_CODES:
-            raise RuntimeError("Serper quota exceeded for today")
-
-        response.raise_for_status()
-        data = response.json()
-        organic_results = data.get("organic", []) if isinstance(data, dict) else []
-        return _scan_serper_results(organic_results, competitors)
-
-
-def _build_search_queries(
-    channel_name: str,
-    channel_handle: str | None,
-    competitors: tuple[Gate0CompetitorSetting, ...],
-) -> list[str]:
-    """Return ordered Serper queries for Gate 0, most general first.
-
-    Queries are tried with early-exit on the first hit, so per-competitor and
-    affiliate queries only fire when the broad search finds nothing.
-    """
-    handle_differs = bool(
-        channel_handle and channel_handle.lower() != channel_name.lower()
-    )
-    queries: list[str] = []
-
-    queries.append(f'"{channel_name}" "gold IRA"')
-    if handle_differs:
-        queries.append(f'"{channel_handle}" "gold IRA"')
-
-    for competitor in competitors:
-        queries.append(f'"{channel_name}" "{competitor.brand}"')
-        if handle_differs:
-            queries.append(f'"{channel_handle}" "{competitor.brand}"')
-
-    for competitor in competitors:
-        for domain in competitor.domains[:1]:
-            queries.append(f'site:{domain} "{channel_name}"')
-            if handle_differs:
-                queries.append(f'site:{domain} "{channel_handle}"')
-
-    seen: set[str] = set()
-    unique: list[str] = []
-    for q in queries:
-        if q not in seen:
-            seen.add(q)
-            unique.append(q)
-    return unique
-
-
-def _run_serper_search_multi(
-    queries: list[str],
-    competitors: tuple[Gate0CompetitorSetting, ...],
-) -> tuple[str | None, str | None, str]:
-    """Run Serper queries in order, stopping at the first competitor hit.
-
-    Returns (flagged_brand, source_url, winning_query). winning_query is the
-    first query when no hit is found.
-    """
-    first_query = queries[0] if queries else ""
-    for query in queries:
-        brand, url = _run_serper_search(query, competitors)
-        if brand is not None:
-            return brand, url, query
-    return None, None, first_query
-
-
-def _persist_gate0_result(
-    channel: dict[str, object],
-    search_query: str,
-    flagged_brand: str | None,
-    source_url: str | None,
-) -> dict[str, object]:
-    """Insert a Gate 0 result and update channel status."""
-    client = get_supabase_client()
-    channel_id = str(channel["id"])
-    result_status = "dirty" if flagged_brand else "clean"
-    now = datetime.now(timezone.utc).isoformat()
-
-    gate0_record = {
-        "channel_id": channel_id,
-        "checked_at": now,
-        "search_query": search_query,
-        "result_status": result_status,
-        "flagged_brand": flagged_brand,
-        "source_url": source_url,
-    }
-    insert_res = client.table("gate0_results").insert(gate0_record).execute()
-    gate0_id = None
-    if insert_res.data:
-        gate0_id = insert_res.data[0].get("id")
-
-    client.table("channels").update(
-        {
-            "gate0_status": result_status,
-            "gate0_checked_at": now,
-            "gate0_result_id": gate0_id,
-            "gate0_search_query": search_query,
-            "gate0_result_status": result_status,
-            "gate0_flagged_brand": flagged_brand,
-            "gate0_source_url": source_url,
-            "updated_at": now,
-        }
-    ).eq("id", channel_id).execute()
-
-    logger.info(
-        "Gate 0 complete for %s: %s (brand=%s)",
-        channel_id,
-        result_status,
-        flagged_brand,
-    )
-    return gate0_record
-
-
-def _mark_gate0_unchecked(channel_id: str, reason: str) -> None:
-    """Clear a stuck pending status so the channel can be retried later."""
-    now = datetime.now(timezone.utc).isoformat()
-    get_supabase_client().table("channels").update(
-        {
-            "gate0_status": "unchecked",
-            "updated_at": now,
-        }
-    ).eq("id", channel_id).execute()
-    logger.warning("Gate 0 marked unchecked for %s: %s", channel_id, reason)
 
 
 def _run_gate0_sync(
@@ -440,35 +752,64 @@ def _run_gate0_sync(
             reason="no_gate0_competitors_configured",
         ).model_dump(mode="json")
 
-    flagged_brand, source_url = _scan_channel_text_for_competitors(
-        channel,
-        competitors,
-    )
+    # Layer 1: local scan (zero API cost)
+    local_result = _scan_channel_local(channel, competitors)
+
     search_queries = _build_search_queries(channel_name, channel_handle, competitors)
-    primary_query = search_queries[0] if search_queries else f'"{channel_name}" "gold IRA"'
-    if flagged_brand is None:
-        flagged_brand, source_url, search_query = _run_serper_search_multi(
+    primary_query = search_queries[0] if search_queries else f'"{channel_name}" "{competitors[0].brand}"'
+
+    # Layer 2: Serper (API cost) — skip if local scan already reaches dirty threshold
+    if local_result.confidence >= _THRESHOLD_DIRTY:
+        final_result = local_result
+        search_query = primary_query
+    else:
+        serper_brand, serper_url, search_query, serper_confidence = _run_serper_search_multi(
             search_queries,
             competitors,
         )
-    else:
-        search_query = primary_query
+        if serper_confidence > 0.0:
+            combined_weights = [s.weight for s in local_result.signals] + [serper_confidence]
+            combined_confidence = _compound_confidence(combined_weights)
+            combined_signals = local_result.signals.copy()
+            combined_signals.append(
+                EvidenceSignal("serper_hit", serper_brand or "", serper_confidence, serper_url)
+            )
+            # Prefer Serper URL (external evidence page) over the channel's own URL
+            # that comes from a local brand/title match. If local source is a specific
+            # competitor URL (from a domain match in contact_info), keep it — but those
+            # cases reach dirty threshold and skip Serper entirely.
+            local_url = local_result.source_url
+            is_channel_self = bool(
+                local_url and channel_url_str and
+                local_url.rstrip("/") == channel_url_str.rstrip("/")
+            )
+            combined_url = (serper_url or local_url) if is_channel_self else (local_url or serper_url)
+            final_result = ScanResult(
+                local_result.flagged_brand or serper_brand,
+                combined_url,
+                combined_confidence,
+                combined_signals,
+            )
+        else:
+            final_result = local_result
+            if not search_query:
+                search_query = primary_query
 
-    gate0_record = _persist_gate0_result(
-        channel,
-        search_query,
-        flagged_brand,
-        source_url,
-    )
+    gate0_record = _persist_gate0_result(channel, search_query, final_result)
     return Gate0TaskResult(
         channel_id=channel_id,
         checked_at=str(gate0_record["checked_at"]),
         search_query=search_query,
         result_status=str(gate0_record["result_status"]),
-        flagged_brand=flagged_brand,
-        source_url=source_url,
+        flagged_brand=gate0_record.get("flagged_brand"),  # type: ignore[arg-type]
+        source_url=gate0_record.get("source_url"),  # type: ignore[arg-type]
+        confidence=gate0_record.get("confidence"),  # type: ignore[arg-type]
     ).model_dump(mode="json")
 
+
+# ---------------------------------------------------------------------------
+# Celery tasks
+# ---------------------------------------------------------------------------
 
 @celery_app.task(name="scraper.tasks.run_gate0_all")
 def run_gate0_all(
@@ -478,24 +819,32 @@ def run_gate0_all(
     """Fetch all eligible channels and dispatch individual run_gate0 tasks.
 
     Args:
-        recheck_clean:           When True, re-queue channels already marked clean.
-                                 By default only unchecked/pending channels are queued.
+        recheck_clean:           When True, also re-queue clean channels.
         dashboard_eligible_only: When True, restrict to dashboard_eligible=True channels.
     """
     client = get_supabase_client()
     try:
-        query = (
+        base_query = (
             client.table("channels")
             .select("id,gate0_status")
             .eq("is_active", True)
             .eq("has_been_scraped", True)
         )
         if not recheck_clean:
-            query = query.in_("gate0_status", ["unchecked", "pending"])
+            base_query = base_query.in_("gate0_status", ["unchecked", "pending"])
         if dashboard_eligible_only:
-            query = query.eq("dashboard_eligible", True)
-        result = query.execute()
-        channels = result.data or []
+            base_query = base_query.eq("dashboard_eligible", True)
+
+        # Paginate to bypass the PostgREST default 1000-row cap.
+        channels: list[dict] = []
+        batch_size = 1000
+        offset = 0
+        while True:
+            batch = base_query.range(offset, offset + batch_size - 1).execute().data or []
+            channels.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
     except APIError as exc:
         logger.error("run_gate0_all: failed to fetch channels: %s", exc)
         return {"error": str(exc), "queued": 0}
@@ -537,14 +886,9 @@ def run_gate0(
     """Run a Gate 0 compliance check for a channel."""
     logger.info("Running Gate 0 for channel %s", channel_id)
     try:
-        return _run_gate0_sync(
-            channel_id,
-            manual=manual,
-        )
+        return _run_gate0_sync(channel_id, manual=manual)
     except (APIError, httpx.HTTPError, RuntimeError, ValueError) as exc:
         logger.error("Gate 0 failed for %s: %s", channel_id, exc, exc_info=True)
-        # Retrying on quota exhaustion wastes more API credits. Give up immediately
-        # and let the next daily run re-queue the channel as unchecked.
         is_quota_error = isinstance(exc, RuntimeError) and "quota" in str(exc).lower()
         if is_quota_error or self.request.retries >= self.max_retries:
             try:

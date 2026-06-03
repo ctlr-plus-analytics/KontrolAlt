@@ -669,17 +669,23 @@ export function ChannelDetail({
               {gate0Result.source_url && (
                 <div className="sm:col-span-2">
                   <p className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-                    Source URL
+                    Evidence Found In
                   </p>
-                  <a
-                    href={gate0Result.source_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-1 flex items-center gap-1 text-sm text-[#1A1A2E] hover:text-[#C9A84C] transition-colors"
-                  >
-                    <ExternalLink size={12} />
-                    {gate0Result.source_url}
-                  </a>
+                  {gate0Result.source_url.startsWith("http") ? (
+                    <a
+                      href={gate0Result.source_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 flex items-center gap-1 break-all text-sm text-[#1A1A2E] hover:text-[#C9A84C] transition-colors"
+                    >
+                      <ExternalLink size={12} className="shrink-0" />
+                      {gate0Result.source_url}
+                    </a>
+                  ) : (
+                    <p className="mt-1 text-sm text-[#1A1A2E]">
+                      {gate0Result.source_url}
+                    </p>
+                  )}
                 </div>
               )}
             </div>

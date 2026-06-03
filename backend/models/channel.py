@@ -33,6 +33,7 @@ class Gate0Status(str, Enum):
     """Gate 0 compliance check status."""
 
     clean = "clean"
+    needs_review = "needs_review"
     dirty = "dirty"
     pending = "pending"
     unchecked = "unchecked"

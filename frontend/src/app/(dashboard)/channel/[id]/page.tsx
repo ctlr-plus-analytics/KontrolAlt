@@ -65,9 +65,10 @@ export default async function ChannelDetailPage({
         channel_id: channel.id,
         checked_at: channel.gate0_checked_at,
         search_query: channel.gate0_search_query,
-        result_status: channel.gate0_result_status as "clean" | "dirty",
+        result_status: channel.gate0_result_status as "clean" | "needs_review" | "dirty",
         flagged_brand: channel.gate0_flagged_brand,
         source_url: channel.gate0_source_url,
+        confidence: null,
       }
     : null;
 
