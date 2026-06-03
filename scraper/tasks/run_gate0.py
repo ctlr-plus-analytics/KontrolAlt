@@ -66,7 +66,7 @@ _W_AFFILIATE_URL = 0.95       # URL with affiliate pattern pointing to a competi
 
 # Medium confidence — needs-review zone (0.80–0.94)
 _W_DOMAIN_DESCRIPTION_PROMO = 0.90   # domain in description + promo language nearby
-_W_DOMAIN_IN_DESCRIPTION = 0.85      # domain in description, neutral context
+_W_DOMAIN_IN_DESCRIPTION = 0.60      # domain in description, neutral context (no promo language)
 _W_BRAND_DESCRIPTION_PROMO = 0.82    # brand in description + promo language
 _W_MULTI_TITLE_PROMO = 0.88          # 3+ video titles: brand + promo language
 _W_TWO_TITLE_PROMO = 0.75            # 2 video titles: brand + promo language
@@ -77,9 +77,13 @@ _W_BRAND_IN_DESCRIPTION = 0.50       # brand only in description, neutral contex
 _W_MULTI_TITLE_NEUTRAL = 0.60        # 3+ video titles mentioning brand, neutral
 _W_ONE_TITLE_NEUTRAL = 0.35          # 1–2 video titles mentioning brand, neutral
 
-# Serper weights
-_W_SERPER_SINGLE = 0.45   # a single Serper query produced a hit
-_W_SERPER_MULTI = 0.70    # multiple independent Serper queries hit the same competitor
+# Serper weights — kept for compound-math reference in tests
+_W_SERPER_SINGLE = 0.45
+
+# Serper match-quality weights returned by _scan_serper_results
+_W_SERPER_DOMAIN_LINK = 0.80  # channel appears on competitor's own website (site: hit)
+_W_SERPER_DOMAIN_TEXT = 0.55  # competitor domain cited in a third-party article
+_W_SERPER_BRAND_PROMO = 0.50  # brand + promo language, no domain (weakest qualifying hit)
 
 # Decision thresholds
 _THRESHOLD_DIRTY = 0.95
@@ -388,41 +392,85 @@ def _scan_channel_local(
 def _scan_serper_results(
     organic_results: object,
     competitors: tuple[Gate0CompetitorSetting, ...],
-) -> tuple[str | None, str | None]:
-    """Scan top Serper organic results for competitor brands/domains.
+    channel_identifiers: frozenset[str] = frozenset(),
+    is_site_query: bool = False,
+) -> tuple[str | None, str | None, float]:
+    """Scan top Serper organic results for competitor signals.
 
-    Returns (matched_value, source_url) for the first hit found, or (None, None).
+    Returns (matched_value, source_url, weight) for the first qualifying hit,
+    or (None, None, 0.0). Three signal tiers by quality:
+      - Domain in result link (channel on competitor's own site): _W_SERPER_DOMAIN_LINK
+        (only counted for site: queries — competitor homepage appears for any brand search)
+      - Domain in article title/snippet (third-party coverage): _W_SERPER_DOMAIN_TEXT
+      - Brand + promo language, no domain: _W_SERPER_BRAND_PROMO
+
+    Fix A — channel name gate: results that don't reference the channel being checked
+    are skipped entirely. Augusta's homepage appears for any 'Augusta' brand search but
+    its title/snippet won't mention the specific channel.
+    Fix B — site: query guard: domain-in-link is only meaningful when we explicitly
+    asked Google to find the channel on the competitor's site.
+    Fix C — negative context: domain-in-link is suppressed by negative language.
     """
     if not isinstance(organic_results, list):
-        return None, None
+        return None, None, 0.0
 
-    for item in organic_results[:10]:
+    for item in organic_results[:3]:
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "")
         snippet = str(item.get("snippet") or "")
         link = str(item.get("link") or "")
-        combined = f"{title} {snippet} {link}"
-        combined_lower = combined.lower()
+        link_lower = link.lower()
+        text = f"{title} {snippet}"
+        text_lower = text.lower()
+
+        # Fix A: skip results that don't reference the channel being checked.
+        # A result is only evidence if it co-mentions the channel and a competitor.
+        if channel_identifiers and not any(ident in text_lower for ident in channel_identifiers):
+            continue
 
         for competitor in competitors:
+            # Fix B: domain-in-link only for site: queries.
+            # For brand-name queries the competitor's own homepage appears in results
+            # as a natural SEO artefact — it is not evidence of channel affiliation.
+            if is_site_query:
+                for domain in competitor.domains:
+                    if _contains_domain(link_lower, domain):
+                        # Fix C: suppress if result title/snippet carries negative language.
+                        # The domain itself may only appear in the link URL, not the text,
+                        # so we also check the brand name as a proxy.
+                        neg = (
+                            _has_negative_context(text, domain)
+                            or _has_negative_context(text, competitor.brand)
+                        )
+                        if not neg:
+                            return domain, link, _W_SERPER_DOMAIN_LINK
+
+            # Domain cited inside article text (title or snippet).
             for domain in competitor.domains:
-                if _contains_domain(combined_lower, domain):
-                    source = _source_url_for_domain(combined, link, domain)
-                    return domain, source
+                if _contains_domain(text_lower, domain):
+                    if not _has_negative_context(text, domain):
+                        source = _source_url_for_domain(text, link, domain)
+                        return domain, source, _W_SERPER_DOMAIN_TEXT
 
-            if _contains_brand(combined_lower, competitor.brand):
-                # Use the result link as evidence — it's the page that mentioned the brand.
-                return competitor.brand, link or None
+            # Brand + explicit promo language; bare co-mentions suppressed.
+            if _contains_brand(text_lower, competitor.brand):
+                if (
+                    _has_promo_context(text, competitor.brand)
+                    and not _has_negative_context(text, competitor.brand)
+                ):
+                    return competitor.brand, link or None, _W_SERPER_BRAND_PROMO
 
-    return None, None
+    return None, None, 0.0
 
 
 def _run_serper_search(
     search_query: str,
     competitors: tuple[Gate0CompetitorSetting, ...],
-) -> tuple[str | None, str | None]:
-    """Run a single Serper query and return any competitor hit."""
+    channel_identifiers: frozenset[str] = frozenset(),
+    is_site_query: bool = False,
+) -> tuple[str | None, str | None, float]:
+    """Run a single Serper query and return any competitor hit with its quality weight."""
     with httpx.Client(timeout=15.0) as http:
         response = http.post(
             _SERPER_SEARCH_URL,
@@ -430,14 +478,14 @@ def _run_serper_search(
                 "X-API-KEY": scraper_settings.serp_api_key,
                 "Content-Type": "application/json",
             },
-            json={"q": search_query, "num": 10},
+            json={"q": search_query, "num": 3},
         )
         if response.status_code in _SERPER_QUOTA_STATUS_CODES:
             raise RuntimeError("Serper quota exceeded for today")
         response.raise_for_status()
         data = response.json()
         organic = data.get("organic", []) if isinstance(data, dict) else []
-        return _scan_serper_results(organic, competitors)
+        return _scan_serper_results(organic, competitors, channel_identifiers, is_site_query)
 
 
 def _build_search_queries(
@@ -451,7 +499,6 @@ def _build_search_queries(
       1. Per-competitor affiliation queries (sponsor/affiliate/partner language)
       2. Site-specific queries (channel appears on competitor domain)
       3. Broad per-competitor name queries
-      4. Broad gold IRA query (most noise — fallback only)
     """
     handle_differs = bool(
         channel_handle and channel_handle.lower() != channel_name.lower()
@@ -481,7 +528,7 @@ def _build_search_queries(
         if handle_differs:
             queries.append(f'"{channel_handle}" "{competitor.brand}"')
 
-    # 4. Broad gold IRA (last resort)
+    # 4. Gold IRA catch-all (last resort — no competitor name, least specific)
     queries.append(f'"{channel_name}" "gold IRA"')
     if handle_differs:
         queries.append(f'"{channel_handle}" "gold IRA"')
@@ -498,9 +545,12 @@ def _build_search_queries(
 def _run_serper_search_multi(
     queries: list[str],
     competitors: tuple[Gate0CompetitorSetting, ...],
+    channel_identifiers: frozenset[str] = frozenset(),
 ) -> tuple[str | None, str | None, str, float]:
-    """Run Serper queries in order, collecting hits to compound confidence.
+    """Run Serper queries in order, compounding confidence across independent hits.
 
+    Each unique source URL is counted once — the same article appearing across multiple
+    queries is skipped so it cannot inflate the compound confidence score.
     Returns (flagged_brand, source_url, winning_query, serper_confidence).
     Stops early once combined confidence reaches _THRESHOLD_DIRTY.
     """
@@ -509,25 +559,33 @@ def _run_serper_search_multi(
     winning_brand: str | None = None
     winning_url: str | None = None
     winning_query = first_query
+    seen_urls: set[str] = set()
 
     for query in queries:
-        brand, url = _run_serper_search(query, competitors)
+        is_site_query = query.startswith("site:")
+        brand, url, weight = _run_serper_search(
+            query, competitors,
+            channel_identifiers=channel_identifiers,
+            is_site_query=is_site_query,
+        )
         if brand is not None:
+            url_key = (url or "").rstrip("/").lower()
+            if url_key and url_key in seen_urls:
+                continue  # same source already counted, not independent evidence
+            if url_key:
+                seen_urls.add(url_key)
             if winning_brand is None:
                 winning_brand = brand
                 winning_url = url
                 winning_query = query
-            hit_weights.append(_W_SERPER_SINGLE)
+            hit_weights.append(weight)
             if _compound_confidence(hit_weights) >= _THRESHOLD_DIRTY:
                 break
 
     if not hit_weights:
         return None, None, first_query, 0.0
 
-    serper_confidence = _compound_confidence(hit_weights)
-    if len(hit_weights) >= 2:
-        serper_confidence = max(serper_confidence, _W_SERPER_MULTI)
-    return winning_brand, winning_url, winning_query, serper_confidence
+    return winning_brand, winning_url, winning_query, _compound_confidence(hit_weights)
 
 
 # ---------------------------------------------------------------------------
@@ -743,6 +801,10 @@ def _run_gate0_sync(
     channel_name = str(channel.get("name") or "")
     channel_url_str = str(channel.get("channel_url") or "")
     channel_handle = _extract_channel_handle(channel_url_str)
+    channel_identifiers: frozenset[str] = frozenset(filter(None, [
+        channel_name.lower() if channel_name else None,
+        channel_handle.lower() if channel_handle else None,
+    ]))
     competitors = _load_competitors()
     if not competitors:
         _mark_gate0_unchecked(channel_id, "no gate0 competitors configured")
@@ -766,6 +828,7 @@ def _run_gate0_sync(
         serper_brand, serper_url, search_query, serper_confidence = _run_serper_search_multi(
             search_queries,
             competitors,
+            channel_identifiers,
         )
         if serper_confidence > 0.0:
             combined_weights = [s.weight for s in local_result.signals] + [serper_confidence]
@@ -815,12 +878,16 @@ def _run_gate0_sync(
 def run_gate0_all(
     recheck_clean: bool = False,
     dashboard_eligible_only: bool = False,
+    force_all: bool = False,
 ) -> dict[str, object]:
     """Fetch all eligible channels and dispatch individual run_gate0 tasks.
 
     Args:
         recheck_clean:           When True, also re-queue clean channels.
         dashboard_eligible_only: When True, restrict to dashboard_eligible=True channels.
+        force_all:               When True, process every active+scraped channel regardless
+                                 of current gate0_status (dirty/clean/needs_review included),
+                                 overwriting all previous Gate 0 results.
     """
     client = get_supabase_client()
     try:
@@ -830,7 +897,7 @@ def run_gate0_all(
             .eq("is_active", True)
             .eq("has_been_scraped", True)
         )
-        if not recheck_clean:
+        if not force_all and not recheck_clean:
             base_query = base_query.in_("gate0_status", ["unchecked", "pending"])
         if dashboard_eligible_only:
             base_query = base_query.eq("dashboard_eligible", True)
@@ -849,6 +916,8 @@ def run_gate0_all(
         logger.error("run_gate0_all: failed to fetch channels: %s", exc)
         return {"error": str(exc), "queued": 0}
 
+    # force_all dispatches with manual=True so _should_run_gate0_check cannot block any channel.
+    manual = force_all
     queued = 0
     now_iso = datetime.now(timezone.utc).isoformat()
     for ch in channels:
@@ -861,7 +930,7 @@ def run_gate0_all(
             ).eq("id", channel_id).execute()
             celery_app.send_task(
                 "scraper.tasks.run_gate0",
-                args=[channel_id, False],
+                args=[channel_id, manual],
                 queue=QUEUE_GATE0,
             )
             queued += 1
@@ -869,8 +938,9 @@ def run_gate0_all(
             logger.warning("run_gate0_all: failed to queue %s: %s", channel_id, exc)
 
     logger.info(
-        "run_gate0_all: queued=%d total_fetched=%d recheck_clean=%s dashboard_eligible_only=%s",
-        queued, len(channels), recheck_clean, dashboard_eligible_only,
+        "run_gate0_all: queued=%d total_fetched=%d recheck_clean=%s "
+        "dashboard_eligible_only=%s force_all=%s",
+        queued, len(channels), recheck_clean, dashboard_eligible_only, force_all,
     )
     return {"queued": queued, "total_fetched": len(channels)}
 

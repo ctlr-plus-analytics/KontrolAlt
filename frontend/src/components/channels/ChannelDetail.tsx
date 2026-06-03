@@ -394,7 +394,7 @@ export function ChannelDetail({
               ) : (
                 recentVideosTop3.map((video, idx) => (
                   <tr
-                    key={video.id}
+                    key={video.id ?? idx}
                     className={idx % 2 === 0 ? "bg-white" : "bg-[#FAF8F4]"}
                   >
                     <td className="max-w-[520px] px-4 py-3 text-sm text-[#1A1A2E]">

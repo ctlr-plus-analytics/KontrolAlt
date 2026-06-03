@@ -16,8 +16,10 @@ from tasks.run_gate0 import (
     _W_DOMAIN_IN_DESCRIPTION,
     _W_ONE_TITLE_NEUTRAL,
     _W_ONE_TITLE_PROMO,
-    _W_SERPER_MULTI,
     _W_SERPER_SINGLE,
+    _W_SERPER_DOMAIN_LINK,
+    _W_SERPER_DOMAIN_TEXT,
+    _W_SERPER_BRAND_PROMO,
     _THRESHOLD_DIRTY,
     _THRESHOLD_REVIEW,
     ScanResult,
@@ -167,7 +169,9 @@ def test_local_scan_single_neutral_title_is_below_threshold() -> None:
     assert _classify_confidence(result.confidence) == "clean"
 
 
-def test_local_scan_domain_in_description_neutral_is_needs_review() -> None:
+def test_local_scan_domain_in_description_neutral_is_clean() -> None:
+    # A neutral domain mention in a description (no promo language) is informational,
+    # not an affiliation signal — should score below the needs_review threshold.
     result = _scan_channel_local(
         {
             "channel_url": "https://rumble.com/c/source",
@@ -177,9 +181,9 @@ def test_local_scan_domain_in_description_neutral_is_needs_review() -> None:
         },
         _COMPETITORS,
     )
-    assert result.confidence >= _W_DOMAIN_IN_DESCRIPTION
-    assert _classify_confidence(result.confidence) in ("needs_review", "dirty")
-    # Domain match: source_url should point to the competitor domain.
+    assert result.confidence == _W_DOMAIN_IN_DESCRIPTION
+    assert _classify_confidence(result.confidence) == "clean"
+    # Signal is recorded even if below threshold — source_url should point to the domain.
     assert result.source_url and "goldco" in result.source_url
 
 
@@ -244,17 +248,31 @@ def test_local_scan_returns_empty_result_when_no_signals() -> None:
 # _scan_serper_results
 # ---------------------------------------------------------------------------
 
-def test_serper_scan_detects_domain_in_link() -> None:
-    brand, source_url = _scan_serper_results(
+def test_serper_scan_detects_domain_in_link_for_site_query() -> None:
+    brand, source_url, weight = _scan_serper_results(
         [{"title": "Interview", "snippet": "Sponsor details", "link": "https://birchgold.com/show"}],
         _COMPETITORS,
+        is_site_query=True,
     )
     assert brand == "birchgold.com"
     assert source_url == "https://birchgold.com/show"
+    assert weight == _W_SERPER_DOMAIN_LINK
+
+
+def test_serper_scan_domain_in_link_suppressed_for_non_site_query() -> None:
+    # Competitor homepage appearing in a brand-name query is background noise, not evidence.
+    brand, source_url, weight = _scan_serper_results(
+        [{"title": "Augusta Precious Metals | Gold IRA", "snippet": "Leading gold IRA company.", "link": "https://www.augustapreciousmetals.com/"}],
+        _COMPETITORS,
+        is_site_query=False,
+    )
+    assert brand is None
+    assert source_url is None
+    assert weight == 0.0
 
 
 def test_serper_scan_returns_embedded_url_not_result_link() -> None:
-    brand, source_url = _scan_serper_results(
+    brand, source_url, weight = _scan_serper_results(
         [
             {
                 "title": "Creator sponsor notes",
@@ -266,10 +284,11 @@ def test_serper_scan_returns_embedded_url_not_result_link() -> None:
     )
     assert brand == "noblegold.com"
     assert source_url == "https://noblegold.com/creator-offer"
+    assert weight == _W_SERPER_DOMAIN_TEXT
 
 
 def test_serper_brand_only_match_uses_result_link_as_source() -> None:
-    brand, source_url = _scan_serper_results(
+    brand, source_url, weight = _scan_serper_results(
         [
             {
                 "title": "Creator talks about Noble Gold",
@@ -280,12 +299,12 @@ def test_serper_brand_only_match_uses_result_link_as_source() -> None:
         _COMPETITORS,
     )
     assert brand == "Noble Gold"
-    # Result link is the evidence page — should always be returned as source_url.
     assert source_url == "https://rumble.com/c/generic-channel"
+    assert weight == _W_SERPER_BRAND_PROMO
 
 
 def test_serper_brand_match_with_empty_link_returns_none_source() -> None:
-    brand, source_url = _scan_serper_results(
+    brand, source_url, weight = _scan_serper_results(
         [
             {
                 "title": "Creator talks about Noble Gold",
@@ -297,15 +316,104 @@ def test_serper_brand_match_with_empty_link_returns_none_source() -> None:
     )
     assert brand == "Noble Gold"
     assert source_url is None
+    assert weight == _W_SERPER_BRAND_PROMO
 
 
 def test_serper_hostname_boundary_prevents_false_match() -> None:
-    brand, source_url = _scan_serper_results(
+    brand, source_url, weight = _scan_serper_results(
         [{"title": "Not a competitor", "snippet": "notnoblegold.com only", "link": "https://example.com"}],
         (Gate0CompetitorSetting("Noble Gold", ("noblegold.com",)),),
     )
     assert brand is None
     assert source_url is None
+    assert weight == 0.0
+
+
+def test_serper_scan_channel_name_gate_suppresses_unrelated_result() -> None:
+    # Augusta's homepage appears for any 'Augusta' brand search but its snippet
+    # won't mention the specific channel — should be suppressed.
+    brand, source_url, weight = _scan_serper_results(
+        [
+            {
+                "title": "Augusta Precious Metals | Gold IRA",
+                "snippet": "Augusta Precious Metals is a leading gold IRA provider.",
+                "link": "https://www.augustapreciousmetals.com/",
+            }
+        ],
+        _COMPETITORS,
+        channel_identifiers=frozenset({"america mission inc."}),
+        is_site_query=False,
+    )
+    assert brand is None
+    assert source_url is None
+    assert weight == 0.0
+
+
+def test_serper_scan_channel_name_gate_passes_when_channel_mentioned() -> None:
+    # An article that genuinely co-mentions the channel and competitor passes the gate.
+    brand, source_url, weight = _scan_serper_results(
+        [
+            {
+                "title": "America Mission Inc. sponsored by Augusta Precious Metals",
+                "snippet": "America Mission Inc. is a partner and affiliate of Augusta.",
+                "link": "https://example.com/article",
+            }
+        ],
+        _COMPETITORS,
+        channel_identifiers=frozenset({"america mission inc."}),
+        is_site_query=False,
+    )
+    assert brand == "Augusta Precious Metals"
+    assert weight == _W_SERPER_BRAND_PROMO
+
+
+def test_serper_scan_domain_in_link_negative_context_suppressed() -> None:
+    # A site: result that carries negative language should not count as evidence.
+    brand, source_url, weight = _scan_serper_results(
+        [
+            {
+                "title": "Why We Avoid Augusta Precious Metals",
+                "snippet": "This page warns about Augusta's scam practices.",
+                "link": "https://www.augustapreciousmetals.com/warning",
+            }
+        ],
+        _COMPETITORS,
+        is_site_query=True,
+    )
+    assert brand is None
+    assert weight == 0.0
+
+
+def test_serper_scan_suppresses_brand_with_negative_context() -> None:
+    brand, source_url, weight = _scan_serper_results(
+        [
+            {
+                "title": "Goldco review — is it a scam?",
+                "snippet": "We warn you to avoid Goldco and similar companies.",
+                "link": "https://example.com/review",
+            }
+        ],
+        _COMPETITORS,
+    )
+    assert brand is None
+    assert source_url is None
+    assert weight == 0.0
+
+
+def test_serper_scan_suppresses_brand_without_promo_context() -> None:
+    brand, source_url, weight = _scan_serper_results(
+        [
+            {
+                "title": "Channel discusses Goldco",
+                "snippet": "A channel that mentions Goldco in passing",
+                "link": "https://example.com/article",
+            }
+        ],
+        _COMPETITORS,
+    )
+    assert brand is None
+    assert source_url is None
+    assert weight == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -315,10 +423,10 @@ def test_serper_hostname_boundary_prevents_false_match() -> None:
 def test_multi_query_serper_records_first_hit_as_winning(monkeypatch) -> None:
     """The winning brand/url/query come from the first query that produced a hit."""
 
-    def fake_serper(query: str, competitors):
+    def fake_serper(query, competitors, **_):
         if "Goldco" in query:
-            return "Goldco", "https://goldco.com/partner"
-        return None, None
+            return "Goldco", "https://goldco.com/partner", _W_SERPER_DOMAIN_LINK
+        return None, None, 0.0
 
     monkeypatch.setattr("tasks.run_gate0._run_serper_search", fake_serper)
 
@@ -334,7 +442,7 @@ def test_multi_query_serper_records_first_hit_as_winning(monkeypatch) -> None:
 
 
 def test_multi_query_serper_returns_zero_confidence_when_all_clean(monkeypatch) -> None:
-    monkeypatch.setattr("tasks.run_gate0._run_serper_search", lambda q, c: (None, None))
+    monkeypatch.setattr("tasks.run_gate0._run_serper_search", lambda q, c, **_: (None, None, 0.0))
 
     brand, url, winning_query, confidence = _run_serper_search_multi(
         ['"TestChannel" "gold IRA"', '"TestChannel" "Goldco"'],
@@ -346,10 +454,28 @@ def test_multi_query_serper_returns_zero_confidence_when_all_clean(monkeypatch) 
     assert confidence == 0.0
 
 
-def test_multi_query_serper_uses_multi_weight_on_two_hits(monkeypatch) -> None:
+def test_multi_query_serper_compounds_independent_hits(monkeypatch) -> None:
+    """Two hits from different source URLs compound to the correct joint confidence."""
+    responses = iter([
+        ("Goldco", "https://goldco.com/partners/creator", _W_SERPER_DOMAIN_LINK),
+        ("Goldco", "https://some-review-site.com/goldco", _W_SERPER_DOMAIN_TEXT),
+    ])
+    monkeypatch.setattr("tasks.run_gate0._run_serper_search", lambda q, c, **_: next(responses))
+
+    _, _, _, confidence = _run_serper_search_multi(
+        ['"TestChannel" "Goldco" sponsor', 'site:goldco.com "TestChannel"'],
+        _COMPETITORS,
+    )
+
+    expected = _compound_confidence([_W_SERPER_DOMAIN_LINK, _W_SERPER_DOMAIN_TEXT])
+    assert abs(confidence - expected) < 1e-9
+
+
+def test_multi_query_serper_deduplicates_same_url(monkeypatch) -> None:
+    """The same source URL returned by two different queries is only counted once."""
     monkeypatch.setattr(
         "tasks.run_gate0._run_serper_search",
-        lambda q, c: ("Goldco", "https://goldco.com"),
+        lambda q, c, **_: ("Goldco", "https://goldco.com/partners", _W_SERPER_DOMAIN_LINK),
     )
 
     _, _, _, confidence = _run_serper_search_multi(
@@ -357,7 +483,28 @@ def test_multi_query_serper_uses_multi_weight_on_two_hits(monkeypatch) -> None:
         _COMPETITORS,
     )
 
-    assert confidence >= _W_SERPER_MULTI
+    # Only one unique URL — should compound a single weight, not two.
+    assert abs(confidence - _W_SERPER_DOMAIN_LINK) < 1e-9
+
+
+def test_multi_query_site_query_flag_set_correctly(monkeypatch) -> None:
+    """site: queries must be detected and is_site_query=True passed to _run_serper_search."""
+    seen_flags: list[bool] = []
+
+    def capture_site_flag(query, competitors, *, channel_identifiers=frozenset(), is_site_query=False, **_):
+        seen_flags.append(is_site_query)
+        return None, None, 0.0
+
+    monkeypatch.setattr("tasks.run_gate0._run_serper_search", capture_site_flag)
+
+    _run_serper_search_multi(
+        ['"TestChannel" "Goldco" sponsor', 'site:goldco.com "TestChannel"', '"TestChannel" "Goldco"'],
+        _COMPETITORS,
+    )
+
+    assert seen_flags[0] is False   # affiliation query
+    assert seen_flags[1] is True    # site: query
+    assert seen_flags[2] is False   # broad query
 
 
 # ---------------------------------------------------------------------------
@@ -440,9 +587,10 @@ def test_weak_local_plus_serper_hit_stays_below_dirty() -> None:
     assert combined < _THRESHOLD_DIRTY
 
 
-def test_description_domain_plus_serper_hit_reaches_needs_review() -> None:
-    # Domain in description (0.85) + Serper hit (0.45): should reach needs_review.
-    combined = _compound_confidence([_W_DOMAIN_IN_DESCRIPTION, _W_SERPER_SINGLE])
+def test_description_domain_plus_serper_domain_text_reaches_needs_review() -> None:
+    # Neutral domain in description (0.60) + Serper domain-text hit (0.55): needs_review.
+    # Neither alone crosses the threshold; together they do.
+    combined = _compound_confidence([_W_DOMAIN_IN_DESCRIPTION, _W_SERPER_DOMAIN_TEXT])
     assert _classify_confidence(combined) in ("needs_review", "dirty")
 
 
