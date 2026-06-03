@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import type {
   Channel,
+  RecentVideo,
   VelocityScore,
   Gate0Result,
   Gate0EvidenceSignal,
@@ -49,6 +50,7 @@ interface ChannelDetailProps {
 }
 
 type DoNotContactChoice = NonNullable<Channel["do_not_contact"]>;
+type RecentVideoRow = RecentVideo & { id?: string };
 
 export function ChannelDetail({
   channel,
@@ -163,7 +165,16 @@ export function ChannelDetail({
         ? "gold"
         : "muted";
   const recentVideos = channel.recent_videos ?? [];
-  const recentVideosTop3 = recentVideos.slice(0, 3);
+  const recentVideoRows: RecentVideoRow[] =
+    recentVideos.length > 0
+      ? (recentVideos.slice(0, 3) as RecentVideoRow[])
+      : channel.video_titles.slice(0, 3).map((title) => ({
+          title,
+          views: null,
+          comments: null,
+          published_at: null,
+          url: null,
+        }));
 
   const handleDeleteHistory = async () => {
     if (!session?.access_token) {
@@ -385,16 +396,16 @@ export function ChannelDetail({
               </tr>
             </thead>
             <tbody className="divide-y divide-[#E8E4DC]">
-              {recentVideosTop3.length === 0 ? (
+              {recentVideoRows.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="px-4 py-8 text-center text-[#6B6B6B]">
                     No video data available
                   </td>
                 </tr>
               ) : (
-                recentVideosTop3.map((video, idx) => (
+                recentVideoRows.map((video, idx) => (
                   <tr
-                    key={video.id ?? idx}
+                    key={video.id ?? `${video.title}-${idx}`}
                     className={idx % 2 === 0 ? "bg-white" : "bg-[#FAF8F4]"}
                   >
                     <td className="max-w-[520px] px-4 py-3 text-sm text-[#1A1A2E]">
