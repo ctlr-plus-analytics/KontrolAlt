@@ -203,9 +203,17 @@ def compute_velocity_all(qualified_only: bool = False) -> dict[str, object]:
                 .not_.is_("avg_views", "null")
                 .not_.is_("avg_comments", "null")
             )
-        result = query.execute()
+        page_size = 1000
+        offset = 0
+        all_rows: list[dict] = []
+        while True:
+            batch = query.range(offset, offset + page_size - 1).execute().data or []
+            all_rows.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
         channel_ids = []
-        for row in result.data or []:
+        for row in all_rows:
             if qualified_only and not _is_velocity_qualified(row):
                 continue
             channel_ids.append(row["id"])

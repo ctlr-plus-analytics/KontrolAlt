@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
+import docker as docker_lib
 import redis as redis_lib
 from celery import Celery
 from celery.exceptions import CeleryError
@@ -19,6 +20,9 @@ from models.admin import (
     AdminTaskTriggerResponse,
     Gate0BatchTriggerResponse,
     PurgeQueueResponse,
+    WorkerInfo,
+    WorkerLogsResponse,
+    WorkerStatusResponse,
 )
 from workers.tasks import (
     QUEUE_CLASSIFY,
@@ -366,7 +370,7 @@ async def purge_queues(actor: dict, reason: str | None) -> PurgeQueueResponse:
     client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=False)
     stats: dict[str, object] = {}
 
-    # Step 1 — revoke active, reserved, and scheduled tasks via control channel
+    # Step 1 — SIGKILL active, reserved, and scheduled tasks in worker processes
     try:
         inspector = _celery.control.inspect(timeout=3.0)
         active_map = inspector.active() or {}
@@ -382,7 +386,7 @@ async def purge_queues(actor: dict, reason: str | None) -> PurgeQueueResponse:
                 task_ids.add(entry["request"]["id"])
 
         for task_id in task_ids:
-            _celery.control.revoke(task_id, terminate=True)
+            _celery.control.revoke(task_id, terminate=True, signal="SIGKILL")
         stats["revoked"] = len(task_ids)
     except Exception as exc:
         logger.warning("Task revocation step failed: %s", exc)
@@ -427,6 +431,14 @@ async def purge_queues(actor: dict, reason: str | None) -> PurgeQueueResponse:
         logger.warning("Result key cleanup failed: %s", exc)
         stats["result_keys_deleted"] = 0
 
+    # Step 6 — restart worker pools to flush prefetch buffers and zombie processes
+    try:
+        _celery.control.broadcast("pool_restart", wait=False)
+        stats["pool_restarted"] = True
+    except Exception as exc:
+        logger.warning("Worker pool restart broadcast failed: %s", exc)
+        stats["pool_restarted"] = False
+
     _audit(
         actor=actor,
         action="tasks.purge",
@@ -435,7 +447,7 @@ async def purge_queues(actor: dict, reason: str | None) -> PurgeQueueResponse:
     )
     logger.info("Queue purge complete: %s", stats)
     return PurgeQueueResponse(
-        message="All queued, reserved, and active tasks cleared; Redis scraper state reset.",
+        message="All tasks killed (SIGKILL); broker queue, Redis scraper state, and worker pools reset.",
         stats=stats,
         purged_at=datetime.now(timezone.utc),
     )
@@ -479,3 +491,144 @@ async def list_audit(page: int, page_size: int) -> tuple[list[dict[str, object]]
         return result.data or [], int(result.count or 0)
     except APIError as exc:
         raise SupabaseError(f"Failed to load admin audit: {exc}") from exc
+
+
+# Ordered list of compose service names and the queue each one consumes.
+# beat runs celery beat (not a worker) so queue is None.
+_WORKER_SERVICES: list[tuple[str, str | None]] = [
+    ("worker-discovery", "discovery"),
+    ("worker-classify", "classify"),
+    ("worker-gate0", "gate0"),
+    ("worker-rumble", "rumble"),
+    ("worker-substack", "substack"),
+    ("beat", None),
+]
+
+# Preferred Celery hostname (set via --hostname in docker-compose.yml).
+_SERVICE_TO_CELERY_NAME: dict[str, str] = {
+    service: f"celery@{service}"
+    for service, queue in _WORKER_SERVICES
+    if queue is not None
+}
+
+
+def _docker_client() -> docker_lib.DockerClient | None:
+    try:
+        client = docker_lib.from_env()
+        client.ping()  # eagerly test the connection
+        return client
+    except Exception as exc:
+        logger.warning("Docker client unavailable: %s", exc)
+        return None
+
+
+def _container_status(client: docker_lib.DockerClient | None, service: str) -> str:
+    if client is None:
+        return "unknown"
+    try:
+        containers = client.containers.list(
+            all=True, filters={"label": f"com.docker.compose.service={service}"}
+        )
+        return containers[0].status if containers else "not found"
+    except Exception as exc:
+        logger.warning("Container status lookup failed for %s: %s", service, exc)
+        return "unknown"
+
+
+def _build_queue_to_worker(queues_map: dict) -> dict[str, str]:
+    """Build a queue-name → celery-worker-name map from inspect().active_queues()."""
+    result: dict[str, str] = {}
+    for worker_name, queue_list in queues_map.items():
+        for q in queue_list or []:
+            name = q.get("name") if isinstance(q, dict) else None
+            if name:
+                result[name] = worker_name
+    return result
+
+
+async def get_worker_statuses() -> WorkerStatusResponse:
+    try:
+        inspector = _celery.control.inspect(timeout=3.0)
+        ping_map: dict = inspector.ping() or {}
+        stats_map: dict = inspector.stats() or {}
+        active_map: dict = inspector.active() or {}
+        reserved_map: dict = inspector.reserved() or {}
+        queues_map: dict = inspector.active_queues() or {}
+    except Exception as exc:
+        logger.warning("Celery inspect failed: %s", exc)
+        ping_map = stats_map = active_map = reserved_map = queues_map = {}
+
+    logger.debug("Celery ping_map keys: %s", list(ping_map.keys()))
+
+    # Dynamic fallback: map queue name → actual Celery worker name (handles any hostname)
+    queue_to_worker = _build_queue_to_worker(queues_map)
+
+    docker = _docker_client()
+    workers: list[WorkerInfo] = []
+
+    for service, queue in _WORKER_SERVICES:
+        container_status = _container_status(docker, service)
+
+        if queue is not None:
+            # Prefer the explicit hostname; fall back to dynamic queue-based discovery
+            preferred = _SERVICE_TO_CELERY_NAME[service]
+            celery_name: str | None = preferred if preferred in ping_map else queue_to_worker.get(queue)
+            online = celery_name is not None
+            worker_stats: dict = stats_map.get(celery_name) or {} if celery_name else {}
+            pool_info: dict = worker_stats.get("pool") or {}
+            total_info: dict = worker_stats.get("total") or {}
+            active_tasks = len(active_map.get(celery_name) or []) if celery_name else 0
+            reserved_tasks = len(reserved_map.get(celery_name) or []) if celery_name else 0
+            processed_total = sum(total_info.values()) if total_info else 0
+            concurrency: int | None = pool_info.get("max-concurrency")
+            pid: int | None = worker_stats.get("pid")
+            display_celery_name = celery_name
+        else:
+            # beat: no Celery worker, derive online from Docker container status
+            online = container_status == "running"
+            active_tasks = reserved_tasks = processed_total = 0
+            concurrency = pid = None
+            display_celery_name = None
+
+        workers.append(WorkerInfo(
+            service=service,
+            celery_name=display_celery_name,
+            online=online,
+            container_status=container_status,
+            active_tasks=active_tasks,
+            reserved_tasks=reserved_tasks,
+            processed_total=processed_total,
+            concurrency=concurrency,
+            pid=pid,
+        ))
+
+    return WorkerStatusResponse(workers=workers, checked_at=datetime.now(timezone.utc))
+
+
+async def get_worker_logs(service: str, tail: int) -> WorkerLogsResponse:
+    valid = {s for s, _ in _WORKER_SERVICES}
+    if service not in valid:
+        return WorkerLogsResponse(service=service, lines=["Unknown service."], tail=tail)
+
+    try:
+        docker_client_instance = docker_lib.from_env()
+        docker_client_instance.ping()
+    except Exception as exc:
+        logger.warning("Docker unavailable when fetching logs for %s: %s", service, exc)
+        return WorkerLogsResponse(
+            service=service,
+            lines=[f"Docker socket error: {exc}"],
+            tail=tail,
+        )
+    try:
+        containers = docker_client_instance.containers.list(
+            all=True, filters={"label": f"com.docker.compose.service={service}"}
+        )
+        if not containers:
+            return WorkerLogsResponse(service=service, lines=["Container not found."], tail=tail)
+        raw: bytes = containers[0].logs(tail=tail, timestamps=True, stream=False)
+        lines = raw.decode("utf-8", errors="replace").splitlines()
+        return WorkerLogsResponse(service=service, lines=lines, tail=tail)
+    except Exception as exc:
+        logger.warning("Failed to fetch logs for %s: %s", service, exc)
+        return WorkerLogsResponse(service=service, lines=[f"Error fetching logs: {exc}"], tail=tail)

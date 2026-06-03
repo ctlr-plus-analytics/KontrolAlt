@@ -104,15 +104,23 @@ def _queue_due_gate0_checks() -> int:
         return 0
 
     client = get_supabase_client()
-    result = (
+    base_query = (
         client.table("channels")
         .select("id,gate0_status,gate0_checked_at")
         .eq("is_active", True)
         .eq("has_been_scraped", True)
-        .execute()
     )
+    all_channels: list[dict] = []
+    _page_size = 1000
+    _offset = 0
+    while True:
+        batch = base_query.range(_offset, _offset + _page_size - 1).execute().data or []
+        all_channels.extend(batch)
+        if len(batch) < _page_size:
+            break
+        _offset += _page_size
     due_channels: list[tuple[int, str]] = []
-    for channel in result.data or []:
+    for channel in all_channels:
         priority = _gate0_priority(channel)
         if priority is None:
             continue
@@ -268,7 +276,7 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
 
     try:
         client = get_supabase_client()
-        result = (
+        base_q = (
             client.table("channels")
             .select(
                 "id,channel_url,platform,subscriber_count,avg_views,avg_comments,"
@@ -282,9 +290,17 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
             .not_.is_("subscriber_count", "null")
             .not_.is_("avg_views", "null")
             .not_.is_("avg_comments", "null")
-            .execute()
         )
-        channels = _select_weekly_velocity_channels(result.data or [])
+        all_rows: list[dict] = []
+        _page_size = 1000
+        _offset = 0
+        while True:
+            batch = base_q.range(_offset, _offset + _page_size - 1).execute().data or []
+            all_rows.extend(batch)
+            if len(batch) < _page_size:
+                break
+            _offset += _page_size
+        channels = _select_weekly_velocity_channels(all_rows)
     except APIError as exc:
         logger.error("Failed to fetch weekly velocity channels: %s", exc, exc_info=True)
         return {"queued": 0, "error": str(exc)}
@@ -339,7 +355,7 @@ def dispatch_daily_scrapes() -> dict[str, object]:
     """
     try:
         client = get_supabase_client()
-        result = (
+        base_q = (
             client.table("channels")
             .select(
                 "id,channel_url,platform,subscriber_count,avg_views,avg_comments,"
@@ -348,9 +364,17 @@ def dispatch_daily_scrapes() -> dict[str, object]:
                 "discovery_evidence_count,discovery_niche_hint"
             )
             .eq("is_active", True)
-            .execute()
         )
-        channels = _prioritize_channels_for_scrape(result.data or [])
+        all_rows = []
+        _page_size = 1000
+        _offset = 0
+        while True:
+            batch = base_q.range(_offset, _offset + _page_size - 1).execute().data or []
+            all_rows.extend(batch)
+            if len(batch) < _page_size:
+                break
+            _offset += _page_size
+        channels = _prioritize_channels_for_scrape(all_rows)
     except APIError as exc:
         logger.error("Failed to fetch active channel URLs: %s", exc, exc_info=True)
         return {"queued": 0, "error": str(exc)}

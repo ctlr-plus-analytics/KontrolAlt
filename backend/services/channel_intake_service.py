@@ -178,6 +178,8 @@ def _upsert_channel(
         "description": notes or "",
         "niche_tags": tags or [],
         "is_active": True,
+        "has_been_scraped": False,
+        "discovery_status": "new",
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "discovery_source": "manual_frontend",
         "discovery_confidence": 1.0,

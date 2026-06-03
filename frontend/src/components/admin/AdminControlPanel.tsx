@@ -7,6 +7,8 @@ import {
   getAdminKeywordTaxonomy,
   getAdminMe,
   getAdminTaskStatus,
+  getAdminWorkerLogs,
+  getAdminWorkers,
   triggerAdminClassifyChannels,
   triggerAdminDiscoveryNow,
   triggerAdminGate0Now,
@@ -18,7 +20,7 @@ import {
   purgeAdminQueue,
 } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
-import type { AdminAuditRecord, AdminTaskStatusResponse, CompetitorDef, KeywordTaxonomyDef, PurgeQueueResponse } from "@/types";
+import type { AdminAuditRecord, AdminTaskStatusResponse, CompetitorDef, KeywordTaxonomyDef, PurgeQueueResponse, WorkerInfo, WorkerLogsResponse } from "@/types";
 import { Button } from "@/components/ui/Button";
 
 const AUDIT_PAGE_SIZE = 20;
@@ -154,6 +156,13 @@ export function AdminControlPanel() {
   const [purgeResult, setPurgeResult] = useState<PurgeQueueResponse | null>(null);
   const [purgeError, setPurgeError] = useState<string | null>(null);
 
+  const [workers, setWorkers] = useState<WorkerInfo[]>([]);
+  const [workersCheckedAt, setWorkersCheckedAt] = useState<string | null>(null);
+  const [workersLoading, setWorkersLoading] = useState(false);
+  const [workersError, setWorkersError] = useState<string | null>(null);
+  const [openLogs, setOpenLogs] = useState<Record<string, WorkerLogsResponse | null>>({});
+  const [logsLoading, setLogsLoading] = useState<Record<string, boolean>>({});
+
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
@@ -231,6 +240,48 @@ export function AdminControlPanel() {
       window.clearTimeout(timer);
     };
   }, [taskRuns, token]);
+
+  const fetchWorkers = useCallback(async () => {
+    if (!token) return;
+    setWorkersLoading(true);
+    setWorkersError(null);
+    try {
+      const data = await getAdminWorkers(token);
+      setWorkers(data.workers);
+      setWorkersCheckedAt(data.checked_at);
+    } catch (error) {
+      setWorkersError(error instanceof Error ? error.message : "Failed to fetch worker status.");
+    } finally {
+      setWorkersLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (!token || !allowed) return;
+    void fetchWorkers();
+    const interval = window.setInterval(() => { void fetchWorkers(); }, 10_000);
+    return () => window.clearInterval(interval);
+  }, [token, allowed, fetchWorkers]);
+
+  const toggleLogs = useCallback(async (service: string) => {
+    if (!token) return;
+    if (openLogs[service] !== undefined) {
+      setOpenLogs((prev) => { const next = { ...prev }; delete next[service]; return next; });
+      return;
+    }
+    setLogsLoading((prev) => ({ ...prev, [service]: true }));
+    try {
+      const data = await getAdminWorkerLogs(service, 150, token);
+      setOpenLogs((prev) => ({ ...prev, [service]: data }));
+    } catch (error) {
+      setOpenLogs((prev) => ({
+        ...prev,
+        [service]: { service, lines: [error instanceof Error ? error.message : "Failed to fetch logs."], tail: 150 },
+      }));
+    } finally {
+      setLogsLoading((prev) => ({ ...prev, [service]: false }));
+    }
+  }, [token, openLogs]);
 
   const runTask = useCallback(
     async (kind: ManualTaskKind) => {
@@ -566,12 +617,103 @@ export function AdminControlPanel() {
         )}
       </section>
 
+      <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-semibold text-[#1A1A2E]">Worker Health</h2>
+            {workersCheckedAt && (
+              <p className="text-xs text-[#6B6B6B]">Last checked {new Date(workersCheckedAt).toLocaleTimeString()} · auto-refreshes every 10s</p>
+            )}
+          </div>
+          <button
+            onClick={() => void fetchWorkers()}
+            disabled={workersLoading}
+            className="rounded-lg border border-[#E8E4DC] bg-[#F7F4EE] px-3 py-1.5 text-xs font-medium text-[#1A1A2E] hover:bg-[#EDE8DE] disabled:opacity-50"
+          >
+            {workersLoading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
+
+        {workersError && <p className="mb-3 text-xs text-[#B22222]">{workersError}</p>}
+
+        {workers.length === 0 && !workersLoading && !workersError && (
+          <p className="text-xs text-[#6B6B6B]">No worker data yet.</p>
+        )}
+
+        <div className="space-y-2">
+          {workers.map((w) => {
+            const logsOpen = openLogs[w.service] !== undefined;
+            const logsFetching = logsLoading[w.service] ?? false;
+            const logsData = openLogs[w.service];
+            return (
+              <div key={w.service} className="rounded-lg border border-[#E8E4DC] bg-[#FBFAF7]">
+                <div className="flex flex-wrap items-center gap-3 px-3 py-2.5">
+                  <span
+                    className={`h-2 w-2 shrink-0 rounded-full ${w.online ? "bg-[#4F8A5B]" : "bg-[#B22222]"}`}
+                  />
+                  <span className="min-w-[140px] font-mono text-sm font-medium text-[#1A1A2E]">{w.service}</span>
+
+                  <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${w.online ? "border-[#4F8A5B] bg-[#EEF7F0] text-[#2F6B3B]" : "border-[#B22222] bg-[#FDECEC] text-[#B22222]"}`}>
+                    {w.online ? "Online" : "Offline"}
+                  </span>
+
+                  <span className="rounded-full border border-[#D8D2C8] bg-[#F7F4EE] px-2 py-0.5 text-xs text-[#6B6B6B]">
+                    {w.container_status}
+                  </span>
+
+                  {w.celery_name && (
+                    <span className="text-xs text-[#6B6B6B]">
+                      active <span className="font-semibold text-[#1A1A2E]">{w.active_tasks}</span>
+                      {" · "}reserved <span className="font-semibold text-[#1A1A2E]">{w.reserved_tasks}</span>
+                      {w.concurrency !== null && <> · concurrency <span className="font-semibold text-[#1A1A2E]">{w.concurrency}</span></>}
+                      {w.processed_total > 0 && <> · <span className="font-semibold text-[#1A1A2E]">{w.processed_total}</span> done</>}
+                    </span>
+                  )}
+
+                  <button
+                    onClick={() => void toggleLogs(w.service)}
+                    disabled={logsFetching}
+                    className="ml-auto rounded border border-[#E8E4DC] bg-white px-2 py-0.5 text-xs text-[#6B6B6B] hover:bg-[#F7F4EE] disabled:opacity-50"
+                  >
+                    {logsFetching ? "Loading…" : logsOpen ? "Hide Logs" : "View Logs"}
+                  </button>
+                </div>
+
+                {logsOpen && (
+                  <div className="border-t border-[#E8E4DC] px-3 pb-3 pt-2">
+                    <div className="max-h-64 overflow-y-auto rounded bg-[#1A1A2E] p-2">
+                      {logsData && logsData.lines.length > 0 ? (
+                        <pre className="whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed text-[#D8D2C8]">
+                          {logsData.lines.join("\n")}
+                        </pre>
+                      ) : (
+                        <p className="font-mono text-[10px] text-[#6B6B6B]">No log lines returned.</p>
+                      )}
+                    </div>
+                    <button
+                      onClick={async () => {
+                        setOpenLogs((prev) => { const next = { ...prev }; delete next[w.service]; return next; });
+                        await toggleLogs(w.service);
+                      }}
+                      className="mt-2 text-xs text-[#6B6B6B] hover:text-[#1A1A2E]"
+                    >
+                      Refresh logs
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
       <section className="rounded-xl border border-[#B22222] bg-[#FFF8F8] p-4 shadow-sm">
         <h2 className="mb-1 text-lg font-semibold text-[#B22222]">Danger Zone — Purge All Tasks</h2>
         <p className="mb-4 text-xs text-[#6B6B6B]">
-          Revokes all active, reserved, and scheduled Celery tasks, purges the broker queue,
-          and clears all Redis scraper state (platform slots, scrape locks, proxy health scores,
-          byte budget). Use this to get a clean slate before a fresh scrape run.
+          Sends SIGKILL to all active and reserved tasks in the worker containers, purges the
+          broker queue, deletes all Redis scraper state (platform slots, scrape locks, proxy
+          health scores, byte budget), and restarts the worker process pools to flush any
+          prefetch or zombie state. Use this to get a clean slate before a fresh scrape run.
         </p>
 
         {!purgeConfirming && !purgeLoading && (
@@ -587,7 +729,7 @@ export function AdminControlPanel() {
         {purgeConfirming && (
           <div className="rounded-lg border border-[#B22222] bg-white p-3">
             <p className="mb-3 text-sm font-medium text-[#B22222]">
-              This will immediately terminate all running scrapes and wipe all queue and Redis scraper state. Are you sure?
+              This will SIGKILL all running tasks in the worker containers, purge the broker queue, wipe all Redis scraper state, and restart worker pools. Are you sure?
             </p>
             <div className="flex gap-2">
               <Button variant="danger" size="sm" onClick={() => void handlePurge()}>
@@ -614,11 +756,12 @@ export function AdminControlPanel() {
             <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
               {(
                 [
-                  ["Revoked (active/reserved)", purgeResult.stats.revoked],
+                  ["Killed (SIGKILL)", purgeResult.stats.revoked],
                   ["Purged from broker queue", purgeResult.stats.broker_purged],
                   ["Direct Redis keys deleted", purgeResult.stats.direct_keys_deleted],
                   ["Scraper state keys deleted", purgeResult.stats.scraper_keys_deleted],
                   ["Result backend keys deleted", purgeResult.stats.result_keys_deleted],
+                  ["Worker pools restarted", purgeResult.stats.pool_restarted ? "Yes" : "No"],
                 ] as [string, unknown][]
               ).map(([label, value]) => (
                 <div key={label}>

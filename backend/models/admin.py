@@ -130,3 +130,26 @@ class PurgeQueueResponse(BaseModel):
     message: str
     stats: dict
     purged_at: datetime
+
+
+class WorkerInfo(BaseModel):
+    service: str
+    celery_name: str | None = None
+    online: bool
+    container_status: str
+    active_tasks: int = 0
+    reserved_tasks: int = 0
+    processed_total: int = 0
+    concurrency: int | None = None
+    pid: int | None = None
+
+
+class WorkerStatusResponse(BaseModel):
+    workers: list[WorkerInfo]
+    checked_at: datetime
+
+
+class WorkerLogsResponse(BaseModel):
+    service: str
+    lines: list[str]
+    tail: int

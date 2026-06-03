@@ -28,7 +28,7 @@ const GATE0_STATUS_CONFIG: Record<
 };
 
 const GATE0_STATUS_ORDER: Gate0Status[] = [
-  "clean", "needs_review", "dirty", "pending", "unchecked",
+  "clean", "dirty", "needs_review",
 ];
 
 export const DEFAULT_FILTERS: ChannelFilters = {
@@ -229,7 +229,7 @@ export function FilterSidebar({
         })}
       </div>
 
-      <SectionLabel>Competitor Check</SectionLabel>
+      <SectionLabel>Gold Affiliation</SectionLabel>
       <div className="flex flex-col gap-0.5 px-4 pb-4">
         {gate0StatusesLoading && gate0StatusOptions.length === 0 && (
           <p className="px-1 py-2 text-[11px] text-[#F7F4EE]/30">Loading…</p>

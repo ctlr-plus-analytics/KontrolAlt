@@ -19,8 +19,10 @@ services:
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       - redis
+    user: root
     volumes:
       - ./backend:/app
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped
 
@@ -38,7 +40,7 @@ services:
       - redis
     volumes:
       - ./scraper:/app
-    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=discovery --concurrency=2 --prefetch-multiplier=1
+    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=discovery --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-discovery
     restart: unless-stopped
 
   worker-classify:
@@ -55,7 +57,7 @@ services:
       - redis
     volumes:
       - ./scraper:/app
-    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=classify --concurrency=2 --prefetch-multiplier=1
+    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=classify --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-classify
     restart: unless-stopped
 
   worker-gate0:
@@ -72,7 +74,7 @@ services:
       - redis
     volumes:
       - ./scraper:/app
-    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=gate0 --concurrency=2 --prefetch-multiplier=1
+    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=gate0 --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-gate0
     restart: unless-stopped
 
   worker-rumble:
@@ -90,7 +92,7 @@ services:
       - redis
     volumes:
       - ./scraper:/app
-    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=rumble --concurrency=4 --prefetch-multiplier=1
+    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=rumble --concurrency=4 --prefetch-multiplier=1 --hostname=celery@worker-rumble
     restart: unless-stopped
 
   worker-substack:
@@ -108,7 +110,7 @@ services:
       - redis
     volumes:
       - ./scraper:/app
-    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=substack --concurrency=4 --prefetch-multiplier=1
+    command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=substack --concurrency=4 --prefetch-multiplier=1 --hostname=celery@worker-substack
     restart: unless-stopped
 
   beat:

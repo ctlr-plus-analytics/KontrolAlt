@@ -58,19 +58,26 @@ export default async function ChannelDetailPage({
       }
     : null;
 
-  /* Construct gate0 from cached flat columns */
-  const gate0: Gate0Result | null = channel.gate0_result_id
-    ? {
-        id: channel.gate0_result_id,
-        channel_id: channel.id,
-        checked_at: channel.gate0_checked_at,
-        search_query: channel.gate0_search_query,
-        result_status: channel.gate0_result_status as "clean" | "needs_review" | "dirty",
-        flagged_brand: channel.gate0_flagged_brand,
-        source_url: channel.gate0_source_url,
-        confidence: null,
-      }
-    : null;
+  /* Fetch full gate0 result (confidence + evidence_signals) if available */
+  let gate0: Gate0Result | null = null;
+  if (channel.gate0_result_id) {
+    const { data: gate0Row } = await supabase
+      .from("gate0_results")
+      .select("confidence, evidence_signals")
+      .eq("id", channel.gate0_result_id)
+      .single();
+    gate0 = {
+      id: channel.gate0_result_id,
+      channel_id: channel.id,
+      checked_at: channel.gate0_checked_at,
+      search_query: channel.gate0_search_query,
+      result_status: channel.gate0_result_status as "clean" | "needs_review" | "dirty",
+      flagged_brand: channel.gate0_flagged_brand,
+      source_url: channel.gate0_source_url,
+      confidence: gate0Row?.confidence ?? null,
+      evidence_signals: gate0Row?.evidence_signals ?? null,
+    };
+  }
 
   /* Fetch scrape logs */
   const { data: scrapeLogs } = await supabase

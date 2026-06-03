@@ -18,6 +18,8 @@ from models.admin import (
     PurgeQueueResponse,
     UpdateCompetitorsRequest,
     UpdateKeywordTaxonomyRequest,
+    WorkerLogsResponse,
+    WorkerStatusResponse,
 )
 from services import admin_service
 
@@ -98,6 +100,22 @@ async def purge_all_tasks(
     user: dict = Depends(require_admin_user),
 ) -> PurgeQueueResponse:
     return await admin_service.purge_queues(actor=user, reason=body.reason)
+
+
+@router.get("/workers", response_model=WorkerStatusResponse)
+async def get_workers(
+    user: dict = Depends(require_admin_user),
+) -> WorkerStatusResponse:
+    return await admin_service.get_worker_statuses()
+
+
+@router.get("/workers/{service}/logs", response_model=WorkerLogsResponse)
+async def get_worker_logs(
+    service: str,
+    tail: int = Query(100, ge=10, le=1000),
+    user: dict = Depends(require_admin_user),
+) -> WorkerLogsResponse:
+    return await admin_service.get_worker_logs(service=service, tail=tail)
 
 
 @router.get("/tasks/{task_id}", response_model=AdminTaskStatusResponse)

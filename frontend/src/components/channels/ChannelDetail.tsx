@@ -18,9 +18,9 @@ import {
 } from "lucide-react";
 import type {
   Channel,
-  RecentVideo,
   VelocityScore,
   Gate0Result,
+  Gate0EvidenceSignal,
   ScrapeLog,
   ChannelLookalikeMatch,
   LookalikeMatch,
@@ -162,11 +162,7 @@ export function ChannelDetail({
       : channel.do_not_contact === "Current Partner"
         ? "gold"
         : "muted";
-  const recentVideos = (channel.recent_videos ?? []).length
-    ? (channel.recent_videos ?? []).map((video, index) => mapRecentVideo(video, index))
-    : (channel.video_titles ?? [])
-        .map((raw, index) => parseVideoLine(raw, index))
-        .filter((video): video is ParsedVideoLine => Boolean(video));
+  const recentVideos = channel.recent_videos ?? [];
   const recentVideosTop3 = recentVideos.slice(0, 3);
 
   const handleDeleteHistory = async () => {
@@ -297,52 +293,6 @@ export function ChannelDetail({
 
           <div className="flex flex-col items-end gap-3">
             <Gate0Badge status={gate0Status} flaggedBrand={channel.gate0_flagged_brand} />
-            <div className="w-full max-w-[340px] rounded-xl border border-[#E8E4DC] bg-[#FAF8F4] p-4 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-[#6B6B6B]">
-                  Do Not Contact
-                </p>
-                <Badge variant={doNotContactBadgeVariant}>
-                  {doNotContactLabel}
-                </Badge>
-              </div>
-              <div className="mt-3 flex flex-wrap justify-end gap-2">
-                <Button
-                  variant="danger"
-                  size="sm"
-                  loading={doNotContactUpdating === "Hired and Canceled"}
-                  disabled={!session?.access_token || doNotContactUpdating !== null}
-                  onClick={() => void handleDoNotContactUpdate("Hired and Canceled")}
-                >
-                  Hired and Canceled
-                </Button>
-                <Button
-                  variant="accent"
-                  size="sm"
-                  loading={doNotContactUpdating === "Current Partner"}
-                  disabled={!session?.access_token || doNotContactUpdating !== null}
-                  onClick={() => void handleDoNotContactUpdate("Current Partner")}
-                >
-                  Current Partner
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  loading={doNotContactUpdating === "reset"}
-                  disabled={!session?.access_token || doNotContactUpdating !== null}
-                  className="border border-[#E8E4DC] bg-white hover:bg-[#FAF8F4]"
-                  onClick={() => void handleDoNotContactUpdate(null)}
-                >
-                  Reset
-                </Button>
-              </div>
-              {doNotContactError && (
-                <p className="mt-2 text-xs text-[#B22222]">{doNotContactError}</p>
-              )}
-              {doNotContactMessage && (
-                <p className="mt-2 text-xs text-[#6B6B6B]">{doNotContactMessage}</p>
-              )}
-            </div>
             <div className="flex gap-2">
               <a
                 href={channel.channel_url}
@@ -358,19 +308,6 @@ export function ChannelDetail({
           </div>
         </div>
       </div>
-
-      {/* ─── AI Summary ─── */}
-      {channel.ai_summary && (
-        <div className="rounded-xl border border-[#E8E4DC] bg-[#FAF8F4] px-6 py-4 shadow-sm">
-          <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-[#6B6B6B]">
-            <span className="inline-flex items-center rounded bg-[#1A1A2E] px-1.5 py-0.5 text-[9px] font-bold text-white">
-              AI
-            </span>
-            Channel Overview
-          </p>
-          <p className="text-sm leading-6 text-[#1A1A2E]">{channel.ai_summary}</p>
-        </div>
-      )}
 
       {/* ─── Channel Intelligence Report ─── */}
       {channel.ai_channel_report && (
@@ -436,12 +373,21 @@ export function ChannelDetail({
                 <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide">
                   Title
                 </th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide">
+                  Views
+                </th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide">
+                  Comments
+                </th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide">
+                  Uploaded Date
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#E8E4DC]">
               {recentVideosTop3.length === 0 ? (
                 <tr>
-                  <td colSpan={1} className="px-4 py-8 text-center text-[#6B6B6B]">
+                  <td colSpan={4} className="px-4 py-8 text-center text-[#6B6B6B]">
                     No video data available
                   </td>
                 </tr>
@@ -452,7 +398,28 @@ export function ChannelDetail({
                     className={idx % 2 === 0 ? "bg-white" : "bg-[#FAF8F4]"}
                   >
                     <td className="max-w-[520px] px-4 py-3 text-sm text-[#1A1A2E]">
-                      <p className="line-clamp-2">{video.title}</p>
+                      {video.url ? (
+                        <a
+                          href={video.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-start gap-1 font-medium text-[#1A1A2E] transition-colors hover:text-[#C9A84C]"
+                        >
+                          <span className="line-clamp-2">{video.title}</span>
+                          <ExternalLink size={12} className="mt-0.5 shrink-0" />
+                        </a>
+                      ) : (
+                        <p className="line-clamp-2 font-medium">{video.title}</p>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-[#1A1A2E]">
+                      {formatNumber(video.views)}
+                    </td>
+                    <td className="px-4 py-3 text-[#1A1A2E]">
+                      {formatNumber(video.comments)}
+                    </td>
+                    <td className="px-4 py-3 text-[#6B6B6B]">
+                      {formatPublishedDate(video.published_at)}
                     </td>
                   </tr>
                 ))
@@ -627,7 +594,7 @@ export function ChannelDetail({
             <Shield size={18} className="text-[#C9A84C]" />
             Previous Gold Affiliation
           </h2>
-          <div className="rounded-xl border border-[#E8E4DC] bg-white p-5 shadow-sm">
+          <div className="rounded-xl border border-[#E8E4DC] bg-white p-5 shadow-sm space-y-5">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <p className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
@@ -648,6 +615,14 @@ export function ChannelDetail({
                   />
                 </div>
               </div>
+              {gate0Result.confidence !== null && (
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+                    Confidence
+                  </p>
+                  <ConfidenceBar confidence={gate0Result.confidence} />
+                </div>
+              )}
               <div>
                 <p className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
                   Search Query
@@ -689,6 +664,10 @@ export function ChannelDetail({
                 </div>
               )}
             </div>
+
+            {gate0Result.evidence_signals && gate0Result.evidence_signals.length > 0 && (
+              <EvidenceSignalsTable signals={gate0Result.evidence_signals} />
+            )}
           </div>
         </div>
       )}
@@ -698,37 +677,86 @@ export function ChannelDetail({
           <Trash2 size={18} className="text-[#B22222]" />
           Data Cleanup
         </h2>
-        <div className="rounded-xl border border-[#E8E4DC] bg-white p-5 shadow-sm">
-          <p className="mb-4 text-sm text-[#6B6B6B]">
-            Use these actions when a channel has bad data quality and needs to be reset
-            or removed.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="danger"
-              size="sm"
-              loading={deletingHistory}
-              disabled={deletingCompletely}
-              onClick={handleDeleteHistory}
-            >
-              Delete History (Snapshot)
-            </Button>
-            <Button
-              variant="danger"
-              size="sm"
-              loading={deletingCompletely}
-              disabled={deletingHistory}
-              onClick={handleDeleteCompletely}
-            >
-              Delete Completely
-            </Button>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div className="rounded-xl border border-[#E8E4DC] bg-white p-5 shadow-sm">
+            <p className="mb-4 text-sm text-[#6B6B6B]">
+              Use these actions when a channel has bad data quality and needs to be reset
+              or removed.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="danger"
+                size="sm"
+                loading={deletingHistory}
+                disabled={deletingCompletely}
+                onClick={handleDeleteHistory}
+              >
+                Delete History (Snapshot)
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                loading={deletingCompletely}
+                disabled={deletingHistory}
+                onClick={handleDeleteCompletely}
+              >
+                Delete Completely
+              </Button>
+            </div>
+            {deleteError && (
+              <p className="mt-3 text-sm text-[#B22222]">{deleteError}</p>
+            )}
+            {deleteMessage && (
+              <p className="mt-3 text-sm text-[#1A1A2E]">{deleteMessage}</p>
+            )}
           </div>
-          {deleteError && (
-            <p className="mt-3 text-sm text-[#B22222]">{deleteError}</p>
-          )}
-          {deleteMessage && (
-            <p className="mt-3 text-sm text-[#1A1A2E]">{deleteMessage}</p>
-          )}
+
+          <div className="rounded-xl border border-[#E8E4DC] bg-[#FAF8F4] p-5 shadow-sm self-start">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-[#6B6B6B]">
+                Do Not Contact
+              </p>
+              <Badge variant={doNotContactBadgeVariant}>
+                {doNotContactLabel}
+              </Badge>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                variant="danger"
+                size="sm"
+                loading={doNotContactUpdating === "Hired and Canceled"}
+                disabled={!session?.access_token || doNotContactUpdating !== null}
+                onClick={() => void handleDoNotContactUpdate("Hired and Canceled")}
+              >
+                Hired and Canceled
+              </Button>
+              <Button
+                variant="accent"
+                size="sm"
+                loading={doNotContactUpdating === "Current Partner"}
+                disabled={!session?.access_token || doNotContactUpdating !== null}
+                onClick={() => void handleDoNotContactUpdate("Current Partner")}
+              >
+                Current Partner
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                loading={doNotContactUpdating === "reset"}
+                disabled={!session?.access_token || doNotContactUpdating !== null}
+                className="border border-[#E8E4DC] bg-white hover:bg-[#FAF8F4]"
+                onClick={() => void handleDoNotContactUpdate(null)}
+              >
+                Reset
+              </Button>
+            </div>
+            {doNotContactError && (
+              <p className="mt-3 text-xs text-[#B22222]">{doNotContactError}</p>
+            )}
+            {doNotContactMessage && (
+              <p className="mt-3 text-xs text-[#6B6B6B]">{doNotContactMessage}</p>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -760,6 +788,111 @@ function ChannelIntelligenceSection({ report }: { report: string }) {
   );
 }
 
+/* ─── Helper: Confidence Bar ─── */
+function ConfidenceBar({ confidence }: { confidence: number }) {
+  const pct = Math.round(confidence * 100);
+  const color =
+    confidence >= 0.95
+      ? "bg-[#B22222]"
+      : confidence >= 0.80
+        ? "bg-[#C9A84C]"
+        : "bg-[#2E7D32]";
+  return (
+    <div className="mt-1 flex items-center gap-2">
+      <div className="h-2 w-28 overflow-hidden rounded-full bg-[#E8E4DC]">
+        <div
+          className={cn("h-full rounded-full transition-all", color)}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="font-mono text-sm font-medium text-[#0D0D0D]">{pct}%</span>
+    </div>
+  );
+}
+
+/* ─── Helper: Signal Type Label ─── */
+function formatSignalType(type: string): string {
+  const map: Record<string, string> = {
+    domain_in_contact: "Domain in Contact Info",
+    brand_in_contact: "Brand in Contact Info",
+    redirect_to_domain: "Redirect → Competitor Domain",
+    affiliate_url: "Affiliate URL",
+    domain_in_description: "Domain in Description",
+    brand_in_description: "Brand in Description",
+    domain_in_name: "Domain in Channel Name",
+    brand_in_name: "Brand in Channel Name",
+    title_promo: "Promo Video Title",
+    title_neutral: "Video Title Mention",
+    serper_hit: "Web Search Hit",
+  };
+  return map[type] ?? type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/* ─── Helper: Evidence Signals Table ─── */
+function EvidenceSignalsTable({ signals }: { signals: Gate0EvidenceSignal[] }) {
+  return (
+    <div>
+      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
+        Evidence Signals ({signals.length})
+      </p>
+      <div className="overflow-x-auto rounded-lg border border-[#E8E4DC]">
+        <table className="w-full text-left text-xs">
+          <thead className="bg-[#1A1A2E] text-white">
+            <tr>
+              <th className="px-3 py-2 font-semibold uppercase tracking-wide">Signal</th>
+              <th className="px-3 py-2 font-semibold uppercase tracking-wide">Matched Value</th>
+              <th className="px-3 py-2 font-semibold uppercase tracking-wide">Weight</th>
+              <th className="px-3 py-2 font-semibold uppercase tracking-wide">Source / Context</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#E8E4DC]">
+            {signals.map((sig, idx) => (
+              <tr key={idx} className={idx % 2 === 0 ? "bg-white" : "bg-[#FAF8F4]"}>
+                <td className="px-3 py-2 text-[#1A1A2E]">{formatSignalType(sig.type)}</td>
+                <td className="px-3 py-2 font-mono text-[#1A1A2E]">{sig.value}</td>
+                <td className="px-3 py-2">
+                  <span
+                    className={cn(
+                      "inline-block rounded px-1.5 py-0.5 font-mono font-semibold",
+                      sig.weight >= 0.95
+                        ? "bg-[#B22222]/10 text-[#B22222]"
+                        : sig.weight >= 0.80
+                          ? "bg-[#C9A84C]/15 text-[#8B6914]"
+                          : "bg-[#E8E4DC] text-[#6B6B6B]"
+                    )}
+                  >
+                    {Math.round(sig.weight * 100)}%
+                  </span>
+                </td>
+                <td className="max-w-[280px] px-3 py-2 text-[#6B6B6B]">
+                  {sig.source_url && sig.source_url.startsWith("http") ? (
+                    <a
+                      href={sig.source_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1 break-all text-[#1A1A2E] hover:text-[#C9A84C] transition-colors"
+                    >
+                      <ExternalLink size={10} className="shrink-0" />
+                      <span className="line-clamp-1">{sig.source_url}</span>
+                    </a>
+                  ) : sig.source_url ? (
+                    <span>{sig.source_url}</span>
+                  ) : null}
+                  {sig.context && (
+                    <p className="mt-0.5 line-clamp-2 italic text-[#6B6B6B]">
+                      &ldquo;{sig.context}&rdquo;
+                    </p>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ─── Helper: Stat Pill ─── */
 function StatPill({ label, value }: { label: string; value: string }) {
   return (
@@ -772,64 +905,22 @@ function StatPill({ label, value }: { label: string; value: string }) {
   );
 }
 
-interface ParsedVideoLine {
-  id: string;
-  title: string;
-  views: number | null;
-  comments: number | null;
-  publishedLabel: string;
-}
-
-function mapRecentVideo(video: RecentVideo, index: number): ParsedVideoLine {
-  return {
-    id: `${index}-${video.title}`,
-    title: video.title,
-    views: video.views,
-    comments: video.comments,
-    publishedLabel: video.published_at ? timeAgo(video.published_at) : "N/A",
-  };
-}
-
-function parseVideoLine(raw: string, index: number): ParsedVideoLine | null {
-  const input = raw?.trim();
-  if (!input) return null;
-
-  const normalized = input.replace(/\s+/g, " ").trim();
-  const parts = normalized
-    .split(/\s+[|•-]\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const title = parts[0] ?? normalized;
-
-  let views: number | null = null;
-  let comments: number | null = null;
-  let publishedLabel = "N/A";
-
-  const viewsMatch = normalized.match(/(\d[\d,]*)\s*views?/i);
-  if (viewsMatch) {
-    views = Number(viewsMatch[1].replace(/,/g, ""));
-    if (Number.isNaN(views)) views = null;
+function formatPublishedDate(dateString: string | null): string {
+  if (!dateString) {
+    return "N/A";
   }
 
-  const commentsMatch = normalized.match(/(\d[\d,]*)\s*comments?/i);
-  if (commentsMatch) {
-    comments = Number(commentsMatch[1].replace(/,/g, ""));
-    if (Number.isNaN(comments)) comments = null;
+  const datePart = dateString.slice(0, 10);
+  const date = new Date(`${datePart}T00:00:00Z`);
+
+  if (Number.isNaN(date.getTime())) {
+    return datePart;
   }
 
-  const dateMatch = normalized.match(
-    /(\d{4}-\d{2}-\d{2}|[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}|\d+\s+(?:minute|hour|day|week|month|year)s?\s+ago|yesterday|just now)/i
-  );
-  if (dateMatch) {
-    publishedLabel = dateMatch[1];
-  }
-
-  return {
-    id: `${index}-${title}`,
-    title,
-    views,
-    comments,
-    publishedLabel,
-  };
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date);
 }
-

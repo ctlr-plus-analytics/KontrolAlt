@@ -92,6 +92,15 @@ export interface VelocityScore {
   comment_velocity_90d: number | null;
 }
 
+/** A single evidence signal from a Gate 0 compliance scan. */
+export interface Gate0EvidenceSignal {
+  type: string;
+  value: string;
+  weight: number;
+  source_url: string | null;
+  context: string | null;
+}
+
 /** Result of a Gate 0 compliance check via Serper search. */
 export interface Gate0Result {
   id: string;
@@ -102,6 +111,7 @@ export interface Gate0Result {
   flagged_brand: string | null;
   source_url: string | null;
   confidence: number | null;
+  evidence_signals: Gate0EvidenceSignal[] | null;
 }
 
 /** Log entry for a scrape attempt. */
@@ -385,4 +395,27 @@ export interface PurgeQueueResponse {
   message: string;
   stats: Record<string, unknown>;
   purged_at: string;
+}
+
+export interface WorkerInfo {
+  service: string;
+  celery_name: string | null;
+  online: boolean;
+  container_status: string;
+  active_tasks: number;
+  reserved_tasks: number;
+  processed_total: number;
+  concurrency: number | null;
+  pid: number | null;
+}
+
+export interface WorkerStatusResponse {
+  workers: WorkerInfo[];
+  checked_at: string;
+}
+
+export interface WorkerLogsResponse {
+  service: string;
+  lines: string[];
+  tail: number;
 }

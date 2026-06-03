@@ -39,6 +39,8 @@ import type {
   CategoryTagOption,
   PurgeQueueRequest,
   PurgeQueueResponse,
+  WorkerStatusResponse,
+  WorkerLogsResponse,
 } from "@/types";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -543,4 +545,21 @@ export async function purgeAdminQueue(
     body: payload,
     token,
   });
+}
+
+/** Fetch online/offline status and task counts for all worker containers. */
+export async function getAdminWorkers(token?: string): Promise<WorkerStatusResponse> {
+  return apiFetch<WorkerStatusResponse>("/api/v1/admin/workers", { token });
+}
+
+/** Fetch the last N log lines from a worker container. */
+export async function getAdminWorkerLogs(
+  service: string,
+  tail = 100,
+  token?: string
+): Promise<WorkerLogsResponse> {
+  return apiFetch<WorkerLogsResponse>(
+    `/api/v1/admin/workers/${encodeURIComponent(service)}/logs?tail=${tail}`,
+    { token }
+  );
 }
