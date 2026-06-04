@@ -50,9 +50,10 @@ export function ChannelTableView({
   const [categoryTagsLoading, setCategoryTagsLoading] = useState<boolean>(false);
   const [categoryTagsLoadedKey, setCategoryTagsLoadedKey] = useState<string | null>(null);
   const [gate0StatusOptions, setGate0StatusOptions] = useState<Gate0StatusOption[]>([]);
-  const [gate0StatusesLoading, setGate0StatusesLoading] = useState<boolean>(false);
+  const [gate0StatusesLoaded, setGate0StatusesLoaded] = useState<boolean>(false);
   const { session } = useAuth();
   const token = session?.access_token;
+  const gate0StatusesLoading = Boolean(token) && !gate0StatusesLoaded;
   const categoryTagsScopeFilters = useMemo(
     () => ({
       platform: filters.platform,
@@ -115,15 +116,22 @@ export function ChannelTableView({
   }, []);
 
   useEffect(() => {
-    if (!token || gate0StatusesLoading) return;
-    setGate0StatusesLoading(true);
-    getGate0Statuses(token)
-      .then(setGate0StatusOptions)
-      .catch(() => {})
-      .finally(() => setGate0StatusesLoading(false));
-    // Run once when token becomes available.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+    if (!token || gate0StatusesLoaded) return;
+    let cancelled = false;
+
+    void (async () => {
+      const statuses = await getGate0Statuses(token).catch(() => []);
+      if (cancelled) {
+        return;
+      }
+      setGate0StatusOptions(statuses);
+      setGate0StatusesLoaded(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gate0StatusesLoaded, token]);
 
   const { channels, total, loading, refreshing, refetch } = useChannels(
     filters,
@@ -188,6 +196,21 @@ export function ChannelTableView({
     void refetch();
     setIntakeOpen(false);
   }, [refetch]);
+
+  const commitPageInput = useCallback((rawValue: string, inputElement?: HTMLInputElement | null) => {
+    const parsed = Number.parseInt(rawValue.trim(), 10);
+    if (Number.isNaN(parsed)) {
+      if (inputElement) {
+        inputElement.value = String(page);
+      }
+      return;
+    }
+    const nextPage = Math.min(totalPages, Math.max(1, parsed));
+    setPage(nextPage);
+    if (inputElement) {
+      inputElement.value = String(nextPage);
+    }
+  }, [page, totalPages]);
 
   const loadCategoryTags = useCallback(async () => {
     if (!token || categoryTagsLoading || categoryTagsLoadedKey === categoryTagsScopeKey) {
@@ -274,19 +297,40 @@ export function ChannelTableView({
                 variant="ghost"
                 size="sm"
                 disabled={page <= 1}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                onClick={() => {
+                  setPage((p) => Math.max(1, p - 1));
+                }}
               >
                 <ChevronLeft size={16} />
                 Previous
               </Button>
-              <span className="rounded-lg border border-[#E8E4DC] bg-white px-3 py-1.5 text-sm font-medium text-[#1A1A2E]">
-                {page} / {totalPages}
-              </span>
+              <div className="flex items-center gap-2 rounded-lg border border-[#E8E4DC] bg-white px-3 py-1.5 text-sm font-medium text-[#1A1A2E]">
+                <input
+                  key={page}
+                  type="number"
+                  min={1}
+                  max={totalPages}
+                  step={1}
+                  defaultValue={page}
+                  onBlur={(event) => commitPageInput(event.currentTarget.value, event.currentTarget)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitPageInput(event.currentTarget.value, event.currentTarget);
+                    }
+                  }}
+                  aria-label="Page number"
+                  className="w-14 border-0 bg-transparent p-0 text-right text-sm font-medium text-[#1A1A2E] outline-none [appearance:textfield] focus:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                />
+                <span className="text-[#6B6B6B]">/ {totalPages}</span>
+              </div>
               <Button
                 variant="ghost"
                 size="sm"
                 disabled={page >= totalPages}
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                onClick={() => {
+                  setPage((p) => Math.min(totalPages, p + 1));
+                }}
               >
                 Next
                 <ChevronRight size={16} />
