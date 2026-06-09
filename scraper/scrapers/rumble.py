@@ -378,10 +378,14 @@ class RumbleScraper(BaseScraper):
                     page,
                     videos_url,
                     session_key=session_key,
-                    wait_until="commit",
+                    wait_until="domcontentloaded",
                     timeout=get_runtime_settings().scraper_rumble_nav_timeout_ms,
                 )
                 stage_marks.append(("goto_domcontentloaded", perf_counter() - stage_t0))
+                # With domcontentloaded the full HTML is already parsed, so
+                # wait_for_content is effectively instant for real pages.
+                # It still catches CF challenge stubs (< 5 KB) that domcontentloaded
+                # fires on before any JS challenge resolution runs.
                 content_ok = await wait_for_content(
                     page, timeout_s=self.PRIMARY_CONTENT_TIMEOUT_S
                 )
@@ -403,7 +407,7 @@ class RumbleScraper(BaseScraper):
                 if not content_ok:
                     logger.warning("Rumble: content not ready, reloading %s", channel_url)
                     await page.reload(
-                        wait_until="commit", timeout=get_runtime_settings().scraper_rumble_nav_timeout_ms
+                        wait_until="domcontentloaded", timeout=get_runtime_settings().scraper_rumble_nav_timeout_ms
                     )
                     await human_delay(0.15, 0.35)
                     content_ok = await wait_for_content(
@@ -426,7 +430,7 @@ class RumbleScraper(BaseScraper):
                     )
                     await human_delay(second_pre * 0.7, second_pre * 1.4)
                     await page.reload(
-                        wait_until="commit", timeout=get_runtime_settings().scraper_rumble_nav_timeout_ms
+                        wait_until="domcontentloaded", timeout=get_runtime_settings().scraper_rumble_nav_timeout_ms
                     )
                     await human_delay(second_post * 0.7, second_post * 1.4)
                     content_ok = await wait_for_content(
