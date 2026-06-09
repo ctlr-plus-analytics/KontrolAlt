@@ -5,9 +5,10 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { ChannelFilters } from "@/types";
-import { getChannels, type ChannelWithVelocity } from "@/lib/api/backend";
+import { getChannels, type ChannelWithVelocity, ApiError } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
 import { useRealtimeRefresh } from "@/hooks/useRealtimeRefresh";
+import { createClient } from "@/lib/supabase/client";
 
 interface UseChannelsReturn {
   channels: ChannelWithVelocity[];
@@ -81,6 +82,13 @@ export function useChannels(
     } catch (err) {
       if (requestId !== latestRequestId.current) {
         return;
+      }
+      // On 401, attempt a Supabase session refresh. If it succeeds,
+      // onAuthStateChange fires a new valid token and the next poll uses it.
+      // If it fails (refresh token expired), onAuthStateChange fires null,
+      // token goes null in useAuth, and the polling interval stops.
+      if (err instanceof ApiError && err.status === 401) {
+        void createClient().auth.refreshSession();
       }
       setError(err instanceof Error ? err.message : "Failed to fetch channels");
       if (!preserveDataOnError) {

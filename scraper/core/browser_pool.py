@@ -128,6 +128,11 @@ class WorkerBrowserPool:
                 # Containers (Docker/Render) have a small /dev/shm (64 MB default).
                 # Without this flag Chromium uses shared memory for rendering and crashes.
                 "--disable-dev-shm-usage",
+                # Render (and most container runtimes) drop the Linux SYS_ADMIN capability
+                # that Chromium's process sandbox requires. Without this flag Chromium
+                # silently fails to launch in those environments.
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
             ],
         )
         logger.info("BrowserPool: Chromium launched (headless=%s)", headless)
