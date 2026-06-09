@@ -1,0 +1,28 @@
+# Secrets
+.env
+**/.env
+
+# Virtual environments
+.venv/
+venv/
+**/.venv/
+**/venv/
+
+# Frontend — not needed in backend/scraper images
+frontend/
+
+# Python artifacts
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Celery
+celerybeat-schedule
+**/celerybeat-schedule
+
+# Scraper output / scratch
+scraper/output/
+scraper/scratch/

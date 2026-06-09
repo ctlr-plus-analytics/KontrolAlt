@@ -1,5 +1,8 @@
 """Celery task: run Gate 0 compliance check for a channel."""
 
+from __future__ import annotations
+
+import json
 import logging
 import re
 from dataclasses import dataclass, field as dc_field
@@ -7,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import httpx
+from bs4 import BeautifulSoup
 from celery import Task
 from postgrest.exceptions import APIError
 
@@ -16,6 +20,7 @@ from core.supabase import get_supabase_client
 from core.runtime_settings import Gate0CompetitorSetting, get_runtime_settings
 from models import Gate0TaskResult
 from tasks.task_queues import QUEUE_GATE0
+from utils.ai_response import extract_json_object, extract_response_text
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +59,14 @@ _NEGATIVE_WORDS = frozenset({
     "problems", "beware", "fake", "exposed", "review", "reviews",
 })
 
+# Words that signal an explicit affiliation rather than a loose mention.
+_EXPLICIT_AFFILIATION_WORDS = frozenset({
+    "sponsor", "sponsored", "partner", "partnered", "affiliate",
+    "affiliated", "referral", "referrer", "refers", "promotion",
+    "promotional", "paid", "paid partnership", "ad", "advertisement",
+    "ambassador", "collab", "collaboration", "endorsement",
+})
+
 # Context window (characters each side of a match) for promo/negative detection.
 _CONTEXT_WINDOW = 120
 
@@ -89,6 +102,22 @@ _W_SERPER_BRAND_PROMO = 0.50  # brand + promo language, no domain (weakest quali
 _THRESHOLD_DIRTY = 0.95
 _THRESHOLD_REVIEW = 0.80
 
+# AI verification settings
+_AI_MODEL = "gemini-2.5-flash"
+_AI_MAX_OUTPUT_TOKENS = 700
+_AI_EVIDENCE_DOC_LIMIT = 6
+_AI_TEXT_WINDOW = 260
+_AI_TRUSTED_SOURCE_KINDS = frozenset({
+    "channel_local",
+    "channel_page",
+    "redirected_channel_link",
+})
+_AI_ALLOWED_DIRTY_KINDS = frozenset({
+    "channel_local",
+    "channel_page",
+    "redirected_channel_link",
+})
+
 
 @dataclass
 class EvidenceSignal:
@@ -99,6 +128,10 @@ class EvidenceSignal:
     weight: float
     source_url: str | None = None
     context: str | None = None
+    source_kind: str = "channel_local"
+    explicit: bool = False
+    trusted: bool = False
+    ai_note: str | None = None
 
 
 @dataclass
@@ -109,6 +142,39 @@ class ScanResult:
     source_url: str | None = None
     confidence: float = 0.0
     signals: list[EvidenceSignal] = dc_field(default_factory=list)
+    result_status: str | None = None
+    ai_decision: str | None = None
+    ai_confidence: float | None = None
+    ai_reason: str | None = None
+    verification_source_url: str | None = None
+
+
+@dataclass
+class EvidenceDocument:
+    """A fetched or extracted evidence source used for AI verification."""
+
+    source_url: str
+    source_kind: str
+    title: str | None = None
+    text: str | None = None
+    trust: str = "low"
+    matched_value: str | None = None
+    matched_context: str | None = None
+    signal_type: str | None = None
+
+
+@dataclass
+class AIVerdict:
+    """Conservative AI verification result for borderline Gate 0 evidence."""
+
+    decision: str
+    confidence: float
+    reason: str | None = None
+    matched_brand: str | None = None
+    source_url: str | None = None
+    supporting_quotes: list[str] = dc_field(default_factory=list)
+    conflicting_quotes: list[str] = dc_field(default_factory=list)
+    raw_json: dict[str, object] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -157,12 +223,32 @@ def _has_negative_context(text: str, term: str) -> bool:
     return any(word in window for word in _NEGATIVE_WORDS)
 
 
+def _has_explicit_affiliation_context(text: str, term: str) -> bool:
+    """Return True only for direct relationship language around the term."""
+    window = _context_window(text, term).lower()
+    return any(word in window for word in _EXPLICIT_AFFILIATION_WORDS)
+
+
+def _quote_is_explicit_affiliation(quote: str) -> bool:
+    lower = quote.lower()
+    return any(word in lower for word in _EXPLICIT_AFFILIATION_WORDS)
+
+
 # ---------------------------------------------------------------------------
 # URL helpers
 # ---------------------------------------------------------------------------
 
 def _has_affiliate_pattern(url: str) -> bool:
     return bool(_AFFILIATE_PATTERN.search(url))
+
+
+def _has_explicit_affiliation_path(url: str) -> bool:
+    """True for URLs whose path/query strongly implies affiliation."""
+    lower = url.lower()
+    return any(marker in lower for marker in (
+        "/partner", "/partners", "/affiliate", "/affiliates", "/sponsor",
+        "/sponsored", "/referral", "/ref", "utm_source=", "utm_campaign=",
+    ))
 
 
 def _should_follow_redirect(url: str) -> bool:
@@ -204,6 +290,465 @@ def _source_url_for_domain(text: str, fallback_url: str | None, domain: str) -> 
     return f"https://{domain}"
 
 
+def _normalize_source_kind(source_kind: str | None) -> str:
+    if not source_kind:
+        return "channel_local"
+    return source_kind
+
+
+def _extract_visible_text(html_text: str) -> tuple[str | None, str]:
+    """Return page title and visible text from HTML."""
+    soup = BeautifulSoup(html_text, "lxml")
+    for node in soup(["script", "style", "noscript", "svg", "canvas"]):
+        node.decompose()
+
+    title = None
+    if soup.title and soup.title.string:
+        title = soup.title.string.strip() or None
+
+    text = soup.get_text(" ", strip=True)
+    text = re.sub(r"\s+", " ", text).strip()
+    return title, text
+
+
+def _extract_context_excerpt(text: str, term: str, width: int = _AI_TEXT_WINDOW) -> str:
+    """Return a compact evidence window around the first term occurrence."""
+    if not text or not term:
+        return ""
+    idx = text.lower().find(term.lower())
+    if idx == -1:
+        return text[: width * 2].strip()
+    start = max(0, idx - width)
+    end = min(len(text), idx + len(term) + width)
+    return text[start:end].strip()
+
+
+def _fetch_evidence_document(
+    url: str,
+    source_kind: str,
+    matched_value: str | None = None,
+    matched_context: str | None = None,
+    signal_type: str | None = None,
+) -> EvidenceDocument | None:
+    """Fetch a page and normalize it into an evidence document for AI review."""
+    try:
+        with httpx.Client(timeout=10.0, follow_redirects=True, max_redirects=5) as http:
+            response = http.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            response.raise_for_status()
+    except Exception:
+        return None
+
+    final_url = str(response.url)
+    content_type = (response.headers.get("content-type") or "").lower()
+    title = None
+    text = ""
+
+    if "html" in content_type:
+        try:
+            title, text = _extract_visible_text(response.text)
+        except Exception:
+            text = response.text.strip()
+    else:
+        text = response.text.strip()
+
+    if not text:
+        return None
+
+    if matched_value:
+        excerpt = _extract_context_excerpt(text, matched_value)
+    elif matched_context:
+        excerpt = _extract_context_excerpt(text, matched_context)
+    else:
+        excerpt = text[: 2 * _AI_TEXT_WINDOW]
+
+    excerpt = excerpt[: 2 * _AI_TEXT_WINDOW].strip()
+    if not excerpt:
+        excerpt = text[: 2 * _AI_TEXT_WINDOW].strip()
+
+    trust = "high" if _normalize_source_kind(source_kind) in _AI_TRUSTED_SOURCE_KINDS else "medium"
+    if _normalize_source_kind(source_kind) == "serper_result":
+        trust = "low"
+
+    return EvidenceDocument(
+        source_url=final_url,
+        source_kind=_normalize_source_kind(source_kind),
+        title=title,
+        text=excerpt or text[: 2 * _AI_TEXT_WINDOW],
+        trust=trust,
+        matched_value=matched_value,
+        matched_context=matched_context,
+        signal_type=signal_type,
+    )
+
+
+def _signal_payload(signal: EvidenceSignal) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "type": signal.signal_type,
+        "value": signal.matched_value,
+        "weight": round(signal.weight, 4),
+        "source_url": signal.source_url,
+        "context": signal.context,
+        "source_kind": signal.source_kind,
+        "explicit": signal.explicit,
+        "trusted": signal.trusted,
+    }
+    if signal.ai_note:
+        payload["ai_note"] = signal.ai_note
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _looks_explicit(signal: EvidenceSignal) -> bool:
+    """Return True when a signal is explicit enough to justify dirty status."""
+    if signal.signal_type in {"domain_in_contact", "redirect_to_domain"}:
+        return signal.explicit and signal.source_kind in _AI_ALLOWED_DIRTY_KINDS
+    if signal.signal_type in {"brand_in_description", "domain_in_description"}:
+        return signal.explicit and signal.source_kind in _AI_ALLOWED_DIRTY_KINDS
+    if signal.signal_type == "title_promo":
+        return signal.explicit and signal.source_kind in _AI_ALLOWED_DIRTY_KINDS
+    return False
+
+
+def _has_dirty_direct_evidence(signals: list[EvidenceSignal]) -> bool:
+    return any(_looks_explicit(signal) for signal in signals)
+
+
+def _has_any_positive_signal(signals: list[EvidenceSignal]) -> bool:
+    return any(signal.weight > 0.0 for signal in signals)
+
+
+def _is_valid_ai_quote(quote: str, documents: list[EvidenceDocument]) -> bool:
+    normalized = quote.strip().lower()
+    if not normalized:
+        return False
+    return any(normalized in (doc.text or "").lower() for doc in documents)
+
+
+def _parse_ai_assessment(raw_text: str | None, documents: list[EvidenceDocument]) -> AIVerdict:
+    data = extract_json_object(raw_text)
+    if data is None or not isinstance(data, dict):
+        return AIVerdict(
+            decision="needs_review",
+            confidence=0.0,
+            reason="AI response did not include valid JSON.",
+            raw_json=None,
+        )
+
+    decision = str(data.get("decision") or "needs_review").strip().lower()
+    if decision not in {"clean", "needs_review", "dirty"}:
+        decision = "needs_review"
+
+    try:
+        confidence = float(data.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = max(0.0, min(1.0, confidence))
+
+    matched_brand = data.get("matched_brand")
+    if not isinstance(matched_brand, str) or not matched_brand.strip():
+        matched_brand = None
+    else:
+        matched_brand = matched_brand.strip()
+
+    source_url = data.get("matched_source_url")
+    if not isinstance(source_url, str) or not source_url.strip():
+        source_url = None
+    else:
+        source_url = source_url.strip()
+
+    reason = data.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        reason = None
+    else:
+        reason = reason.strip()
+
+    quotes: list[str] = []
+    raw_quotes = data.get("supporting_quotes")
+    if isinstance(raw_quotes, list):
+        for quote in raw_quotes:
+            if isinstance(quote, str) and _is_valid_ai_quote(quote, documents):
+                quotes.append(quote.strip())
+            elif isinstance(quote, dict):
+                raw_quote = quote.get("quote")
+                if isinstance(raw_quote, str) and _is_valid_ai_quote(raw_quote, documents):
+                    quotes.append(raw_quote.strip())
+
+    conflicts: list[str] = []
+    raw_conflicts = data.get("conflicting_quotes")
+    if isinstance(raw_conflicts, list):
+        for quote in raw_conflicts:
+            if isinstance(quote, str) and quote.strip():
+                conflicts.append(quote.strip())
+
+    if decision == "dirty" and not quotes:
+        decision = "needs_review"
+        reason = "AI requested dirty but did not provide a verifiable supporting quote."
+
+    if decision == "dirty" and quotes and not any(_quote_is_explicit_affiliation(quote) for quote in quotes):
+        decision = "needs_review"
+        reason = "AI requested dirty but the supporting quotes were not explicit enough."
+
+    if decision == "dirty" and confidence < 0.95:
+        decision = "needs_review"
+        reason = "AI confidence was below the dirty threshold."
+
+    if decision == "dirty" and source_url is None and documents:
+        source_url = documents[0].source_url
+
+    return AIVerdict(
+        decision=decision,
+        confidence=confidence,
+        reason=reason,
+        matched_brand=matched_brand,
+        source_url=source_url,
+        supporting_quotes=quotes,
+        conflicting_quotes=conflicts,
+        raw_json=data,
+    )
+
+
+def _build_ai_prompt(
+    channel: dict[str, object],
+    competitors: tuple[Gate0CompetitorSetting, ...],
+    evidence_documents: list[EvidenceDocument],
+) -> str:
+    """Build a conservative verification prompt for the AI verifier."""
+    channel_name = str(channel.get("name") or "")
+    channel_url = str(channel.get("channel_url") or "")
+    description = str(channel.get("description") or "")
+    recent_titles = channel.get("video_titles") or []
+    if isinstance(recent_titles, str):
+        recent_titles = [recent_titles]
+    titles = [str(title) for title in recent_titles[:10] if title]
+
+    competitors_block = [
+        {
+            "brand": competitor.brand,
+            "domains": list(competitor.domains),
+        }
+        for competitor in competitors
+    ]
+
+    evidence_block: list[dict[str, object]] = []
+    for idx, document in enumerate(evidence_documents, start=1):
+        evidence_block.append(
+            {
+                "id": idx,
+                "source_url": document.source_url,
+                "source_kind": document.source_kind,
+                "trust": document.trust,
+                "title": document.title,
+                "matched_value": document.matched_value,
+                "matched_context": document.matched_context,
+                "signal_type": document.signal_type,
+                "text": document.text[:1200] if document.text else None,
+            }
+        )
+
+    prompt = {
+        "task": "Verify whether the channel has an explicit affiliation with any competitor brand.",
+        "rules": [
+            "Only mark dirty when the evidence explicitly shows sponsor, sponsored, partner, affiliate, referral, paid placement, ambassador, or equivalent relationship.",
+            "Do not infer dirty from a bare brand mention, a bare domain mention, or a generic third-party search result.",
+            "If evidence is indirect or ambiguous, return needs_review.",
+            "If there is no explicit affiliation evidence, return clean.",
+            "Use only the provided evidence documents. Do not invent facts or quotes.",
+            "Every supporting quote must be copied verbatim from one of the evidence documents.",
+            "Prefer precision over recall. False dirty must be avoided.",
+        ],
+        "channel": {
+            "name": channel_name,
+            "url": channel_url,
+            "description": description,
+            "recent_titles": titles,
+        },
+        "competitors": competitors_block,
+        "evidence_documents": evidence_block,
+        "required_output": {
+            "decision": "clean | needs_review | dirty",
+            "confidence": 0.0,
+            "matched_brand": "string or null",
+            "matched_source_url": "string or null",
+            "supporting_quotes": ["verbatim quote strings"],
+            "conflicting_quotes": ["optional conflicting quote strings"],
+            "reason": "short explanation",
+        },
+    }
+    return json.dumps(prompt, ensure_ascii=False)
+
+
+def _run_gate0_ai_verification(
+    channel: dict[str, object],
+    competitors: tuple[Gate0CompetitorSetting, ...],
+    evidence_documents: list[EvidenceDocument],
+) -> AIVerdict | None:
+    api_key = scraper_settings.google_api_key
+    if not api_key or not evidence_documents:
+        return None
+
+    try:
+        from google import genai
+        from google.genai import types
+    except Exception:
+        logger.warning("google-genai is unavailable; skipping Gate 0 AI verification")
+        return None
+
+    client = genai.Client(api_key=api_key)
+    prompt = _build_ai_prompt(channel, competitors, evidence_documents)
+
+    try:
+        response = client.models.generate_content(
+            model=_AI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "You are a conservative evidence verifier for a compliance screen. "
+                    "Return JSON only. Never mark dirty unless the evidence explicitly shows "
+                    "a direct affiliation. Prefer needs_review over dirty whenever uncertain."
+                ),
+                response_mime_type="application/json",
+                max_output_tokens=_AI_MAX_OUTPUT_TOKENS,
+                temperature=0.0,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+    except Exception as exc:
+        logger.warning("Gate 0 AI verification failed: %s", exc, exc_info=True)
+        return None
+
+    raw_text = extract_response_text(response)
+    verdict = _parse_ai_assessment(raw_text, evidence_documents)
+
+    if verdict.decision == "dirty":
+        allowed_kinds = _AI_ALLOWED_DIRTY_KINDS
+        if not any(doc.source_kind in allowed_kinds for doc in evidence_documents):
+            verdict = AIVerdict(
+                decision="needs_review",
+                confidence=min(verdict.confidence, 0.94),
+                reason="AI identified a suspicious relationship, but the evidence source was not trusted enough for dirty.",
+                matched_brand=verdict.matched_brand,
+                source_url=verdict.source_url,
+                supporting_quotes=verdict.supporting_quotes,
+                conflicting_quotes=verdict.conflicting_quotes,
+                raw_json=verdict.raw_json,
+            )
+
+    return verdict
+
+
+def _build_evidence_documents(
+    channel: dict[str, object],
+    local_result: ScanResult,
+    serper_brand: str | None,
+    serper_url: str | None,
+) -> list[EvidenceDocument]:
+    """Build the compact evidence packet sent to the AI verifier."""
+    documents: list[EvidenceDocument] = []
+    seen: set[str] = set()
+    channel_url = str(channel.get("channel_url") or "")
+
+    def add_document(document: EvidenceDocument | None) -> None:
+        if document is None:
+            return
+        key = document.source_url.rstrip("/").lower()
+        if key in seen:
+            return
+        seen.add(key)
+        documents.append(document)
+
+    for signal in local_result.signals:
+        source_url = signal.source_url or channel_url or "channel-local"
+        if source_url.startswith(("http://", "https://")):
+            add_document(
+                _fetch_evidence_document(
+                    source_url,
+                    signal.source_kind,
+                    matched_value=signal.matched_value,
+                    matched_context=signal.context,
+                    signal_type=signal.signal_type,
+                )
+            )
+        else:
+            text = signal.context or signal.matched_value
+            if not text:
+                continue
+            add_document(EvidenceDocument(
+                source_url=source_url,
+                source_kind=signal.source_kind,
+                title=str(signal.source_url or "Channel local evidence"),
+                text=text,
+                trust="high" if signal.trusted else "medium",
+                matched_value=signal.matched_value,
+                matched_context=signal.context,
+                signal_type=signal.signal_type,
+            ))
+
+    if serper_url and serper_url.startswith(("http://", "https://")):
+        add_document(
+            _fetch_evidence_document(
+                serper_url,
+                "serper_result",
+                matched_value=serper_brand,
+                matched_context=serper_brand,
+                signal_type="serper_hit",
+            )
+        )
+
+    if not documents and serper_brand and serper_url:
+        add_document(EvidenceDocument(
+            source_url=serper_url,
+            source_kind="serper_result",
+            title="Serper hit",
+            text=f"{serper_brand} {serper_url}",
+            trust="low",
+            matched_value=serper_brand,
+            matched_context=serper_brand,
+            signal_type="serper_hit",
+        ))
+
+    return documents[:_AI_EVIDENCE_DOC_LIMIT]
+
+
+def _normalize_gate0_status(
+    local_result: ScanResult,
+    ai_verdict: AIVerdict | None,
+    evidence_documents: list[EvidenceDocument],
+) -> tuple[str, float, str | None]:
+    """Return (result_status, confidence, source_url) using conservative rules."""
+    has_dirty_signal = _has_dirty_direct_evidence(local_result.signals)
+    has_positive_signal = _has_any_positive_signal(local_result.signals)
+
+    if ai_verdict and ai_verdict.decision == "dirty":
+        has_dirty_signal = has_dirty_signal or any(
+            doc.source_kind in _AI_ALLOWED_DIRTY_KINDS for doc in evidence_documents
+        )
+
+    if has_dirty_signal:
+        status = "dirty"
+    elif has_positive_signal or (ai_verdict is not None and ai_verdict.decision in {"needs_review", "dirty"}):
+        status = "needs_review"
+    else:
+        status = "clean"
+
+    confidence = local_result.confidence
+    if ai_verdict is not None:
+        confidence = max(confidence, ai_verdict.confidence)
+
+    if status == "clean":
+        confidence = min(confidence, 0.79)
+    elif status == "needs_review":
+        confidence = min(max(confidence, 0.80), 0.94)
+    else:
+        confidence = max(confidence, 0.95)
+
+    source_url = local_result.source_url
+    if ai_verdict and ai_verdict.source_url:
+        source_url = ai_verdict.source_url
+    elif not source_url and evidence_documents:
+        source_url = evidence_documents[0].source_url
+
+    return status, confidence, source_url
+
+
 # ---------------------------------------------------------------------------
 # Pattern matching
 # ---------------------------------------------------------------------------
@@ -235,10 +780,30 @@ def _scan_url_for_competitor(
         for domain in competitor.domains:
             if _contains_domain(url_lower, domain):
                 weight = _W_AFFILIATE_URL if _has_affiliate_pattern(url) else _W_DOMAIN_IN_CONTACT
-                return [EvidenceSignal("domain_in_contact", domain, weight, url)]
+                explicit = _has_affiliate_pattern(url) or _has_explicit_affiliation_path(url)
+                return [EvidenceSignal(
+                    "domain_in_contact",
+                    domain,
+                    weight,
+                    url,
+                    None,
+                    "channel_local",
+                    explicit,
+                    True,
+                )]
 
         if _contains_brand(url_lower, competitor.brand):
-            return [EvidenceSignal("brand_in_contact", competitor.brand, 0.70, url)]
+            explicit = _has_explicit_affiliation_path(url)
+            return [EvidenceSignal(
+                "brand_in_contact",
+                competitor.brand,
+                0.70,
+                url,
+                None,
+                "channel_local",
+                explicit,
+                True,
+            )]
 
     # No immediate match — follow redirect if it's a known link shortener.
     if _should_follow_redirect(url):
@@ -248,7 +813,17 @@ def _scan_url_for_competitor(
             for competitor in competitors:
                 for domain in competitor.domains:
                     if _contains_domain(resolved_lower, domain):
-                        return [EvidenceSignal("redirect_to_domain", domain, _W_REDIRECT_TO_DOMAIN, resolved)]
+                        explicit = _has_explicit_affiliation_path(resolved)
+                        return [EvidenceSignal(
+                            "redirect_to_domain",
+                            domain,
+                            _W_REDIRECT_TO_DOMAIN,
+                            resolved,
+                            None,
+                            "redirected_channel_link",
+                            explicit,
+                            True,
+                        )]
 
     return []
 
@@ -271,15 +846,26 @@ def _scan_text_field(
                 if _has_negative_context(text, domain):
                     break  # suppress; also skip brand check for this competitor
                 has_promo = _has_promo_context(text, domain)
+                is_explicit = _has_explicit_affiliation_context(text, domain)
                 weight = _W_DOMAIN_DESCRIPTION_PROMO if has_promo else _W_DOMAIN_IN_DESCRIPTION
                 source = _source_url_for_domain(text, fallback_url, domain)
                 ctx = _context_window(text, domain)
-                signals.append(EvidenceSignal(f"domain_in_{field_type}", domain, weight, source, ctx))
+                signals.append(EvidenceSignal(
+                    f"domain_in_{field_type}",
+                    domain,
+                    weight,
+                    source,
+                    ctx,
+                    "channel_text",
+                    is_explicit,
+                    True,
+                ))
                 break
 
         if not domain_matched and _contains_brand(text_lower, competitor.brand):
             if not _has_negative_context(text, competitor.brand):
                 has_promo = _has_promo_context(text, competitor.brand)
+                is_explicit = _has_explicit_affiliation_context(text, competitor.brand)
                 weight = _W_BRAND_DESCRIPTION_PROMO if has_promo else _W_BRAND_IN_DESCRIPTION
                 ctx = _context_window(text, competitor.brand)
                 source_label = {
@@ -287,7 +873,14 @@ def _scan_text_field(
                     "name": "Channel name",
                 }.get(field_type, f"Channel {field_type}")
                 signals.append(EvidenceSignal(
-                    f"brand_in_{field_type}", competitor.brand, weight, source_label, ctx,
+                    f"brand_in_{field_type}",
+                    competitor.brand,
+                    weight,
+                    source_label,
+                    ctx,
+                    "channel_text",
+                    is_explicit,
+                    True,
                 ))
 
     return signals
@@ -323,15 +916,31 @@ def _scan_video_titles(
         if promo_hits:
             n = len(promo_hits)
             weight = _W_MULTI_TITLE_PROMO if n >= 3 else (_W_TWO_TITLE_PROMO if n == 2 else _W_ONE_TITLE_PROMO)
+            explicit = any(_has_explicit_affiliation_context(title, competitor.brand) or _has_explicit_affiliation_context(title, domain)
+                           for title in promo_hits for domain in competitor.domains)
             signals.append(EvidenceSignal(
-                "title_promo", competitor.brand, weight, "Channel video titles", "; ".join(promo_hits[:3]),
+                "title_promo",
+                competitor.brand,
+                weight,
+                "Channel video titles",
+                "; ".join(promo_hits[:3]),
+                "channel_video_titles",
+                explicit,
+                True,
             ))
 
         if neutral_hits:
             n = len(neutral_hits)
             weight = _W_MULTI_TITLE_NEUTRAL if n >= 3 else _W_ONE_TITLE_NEUTRAL
             signals.append(EvidenceSignal(
-                "title_neutral", competitor.brand, weight, "Channel video titles", "; ".join(neutral_hits[:3]),
+                "title_neutral",
+                competitor.brand,
+                weight,
+                "Channel video titles",
+                "; ".join(neutral_hits[:3]),
+                "channel_video_titles",
+                False,
+                True,
             ))
 
     return signals
@@ -414,7 +1023,7 @@ def _scan_serper_results(
     if not isinstance(organic_results, list):
         return None, None, 0.0
 
-    for item in organic_results[:3]:
+    for item in organic_results[:10]:
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "")
@@ -478,7 +1087,7 @@ def _run_serper_search(
                 "X-API-KEY": scraper_settings.serp_api_key,
                 "Content-Type": "application/json",
             },
-            json={"q": search_query, "num": 3},
+            json={"q": search_query, "num": 10},
         )
         if response.status_code in _SERPER_QUOTA_STATUS_CODES:
             raise RuntimeError("Serper quota exceeded for today")
@@ -600,7 +1209,7 @@ def _persist_gate0_result(
     """Insert a Gate 0 result and update the channel's cached status fields."""
     client = get_supabase_client()
     channel_id = str(channel["id"])
-    result_status = _classify_confidence(result.confidence)
+    result_status = result.result_status or _classify_confidence(result.confidence)
     now = datetime.now(timezone.utc).isoformat()
 
     # Only store brand/url on non-clean outcomes.
@@ -608,15 +1217,21 @@ def _persist_gate0_result(
     source_url = result.source_url if result_status != "clean" else None
 
     evidence_payload = [
-        {
-            "type": s.signal_type,
-            "value": s.matched_value,
-            "weight": round(s.weight, 4),
-            "source_url": s.source_url,
-            "context": s.context,
-        }
+        _signal_payload(s)
         for s in result.signals
     ] or None
+
+    if result.ai_decision:
+        evidence_payload = (evidence_payload or []) + [
+            {
+                "type": "ai_verification",
+                "value": result.ai_decision,
+                "weight": round(result.ai_confidence or 0.0, 4),
+                "source_url": result.verification_source_url,
+                "context": result.ai_reason,
+                "ai_decision": result.ai_decision,
+            }
+        ]
 
     gate0_record: dict[str, object] = {
         "channel_id": channel_id,
@@ -814,17 +1429,19 @@ def _run_gate0_sync(
             reason="no_gate0_competitors_configured",
         ).model_dump(mode="json")
 
-    # Layer 1: local scan (zero API cost)
     local_result = _scan_channel_local(channel, competitors)
-
     search_queries = _build_search_queries(channel_name, channel_handle, competitors)
     primary_query = search_queries[0] if search_queries else f'"{channel_name}" "{competitors[0].brand}"'
 
-    # Layer 2: Serper (API cost) — skip if local scan already reaches dirty threshold
-    if local_result.confidence >= _THRESHOLD_DIRTY:
-        final_result = local_result
-        search_query = primary_query
-    else:
+    serper_brand: str | None = None
+    serper_url: str | None = None
+    search_query = primary_query
+    serper_confidence = 0.0
+    combined_result = local_result
+
+    # If the local scan already found explicit direct affiliation evidence, keep the
+    # path cheap: no search and no AI round-trip are needed.
+    if not _has_dirty_direct_evidence(local_result.signals):
         serper_brand, serper_url, search_query, serper_confidence = _run_serper_search_multi(
             search_queries,
             competitors,
@@ -835,28 +1452,70 @@ def _run_gate0_sync(
             combined_confidence = _compound_confidence(combined_weights)
             combined_signals = local_result.signals.copy()
             combined_signals.append(
-                EvidenceSignal("serper_hit", serper_brand or "", serper_confidence, serper_url)
+                EvidenceSignal(
+                    "serper_hit",
+                    serper_brand or "",
+                    serper_confidence,
+                    serper_url,
+                    None,
+                    "serper_result",
+                    False,
+                    False,
+                )
             )
-            # Prefer Serper URL (external evidence page) over the channel's own URL
-            # that comes from a local brand/title match. If local source is a specific
-            # competitor URL (from a domain match in contact_info), keep it — but those
-            # cases reach dirty threshold and skip Serper entirely.
             local_url = local_result.source_url
             is_channel_self = bool(
                 local_url and channel_url_str and
                 local_url.rstrip("/") == channel_url_str.rstrip("/")
             )
             combined_url = (serper_url or local_url) if is_channel_self else (local_url or serper_url)
-            final_result = ScanResult(
+            combined_result = ScanResult(
                 local_result.flagged_brand or serper_brand,
                 combined_url,
                 combined_confidence,
                 combined_signals,
             )
         else:
-            final_result = local_result
-            if not search_query:
-                search_query = primary_query
+            combined_result = local_result
+
+    evidence_documents: list[EvidenceDocument] = []
+    ai_verdict: AIVerdict | None = None
+
+    if _has_dirty_direct_evidence(combined_result.signals):
+        result_status = "dirty"
+        normalized_confidence = max(combined_result.confidence, 0.95)
+        normalized_source_url = combined_result.source_url or serper_url or channel_url_str
+    else:
+        evidence_documents = _build_evidence_documents(
+            channel,
+            combined_result,
+            serper_brand,
+            serper_url,
+        )
+        ai_verdict = _run_gate0_ai_verification(channel, competitors, evidence_documents)
+
+        result_status, normalized_confidence, normalized_source_url = _normalize_gate0_status(
+            combined_result,
+            ai_verdict,
+            evidence_documents,
+        )
+
+        # Final safety net: if no direct evidence exists, never persist dirty.
+        if result_status == "dirty":
+            result_status = "needs_review"
+            normalized_confidence = min(normalized_confidence, 0.94)
+
+    final_result = ScanResult(
+        combined_result.flagged_brand,
+        normalized_source_url,
+        normalized_confidence,
+        combined_result.signals,
+        result_status=result_status,
+        ai_decision=ai_verdict.decision if ai_verdict else None,
+        ai_confidence=ai_verdict.confidence if ai_verdict else None,
+        ai_reason=ai_verdict.reason if ai_verdict else None,
+        verification_source_url=ai_verdict.source_url if ai_verdict else None,
+    )
 
     gate0_record = _persist_gate0_result(channel, search_query, final_result)
     return Gate0TaskResult(

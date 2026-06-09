@@ -5,7 +5,8 @@
 import type { Metadata } from "next";
 import { createClient } from "@/lib/supabase/server";
 import { ChannelDetail } from "@/components/channels/ChannelDetail";
-import type { Channel, VelocityScore, Gate0Result, ScrapeLog } from "@/types";
+import type { Channel } from "@/types";
+import { getChannel, type ChannelDetail as ChannelDetailResponse } from "@/lib/api/backend";
 
 export const metadata: Metadata = {
   title: "Channel Detail — Kontrol_Alt",
@@ -23,14 +24,18 @@ export default async function ChannelDetailPage({
   const { id } = await params;
   const supabase = await createClient();
 
-  /* Fetch channel */
-  const { data: channel } = await supabase
-    .from("channels")
-    .select("*")
-    .eq("id", id)
-    .single();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
 
-  if (!channel) {
+  let channelDetail: ChannelDetailResponse | null = null;
+  try {
+    channelDetail = await getChannel(id, session?.access_token);
+  } catch {
+    channelDetail = null;
+  }
+
+  if (!channelDetail) {
     return (
       <div className="h-full overflow-y-auto p-6 scrollbar-thin">
         <div className="flex flex-col items-center justify-center py-20">
@@ -45,55 +50,14 @@ export default async function ChannelDetailPage({
     );
   }
 
-  /* Construct velocity from cached flat columns */
-  const velocity: VelocityScore | null = channel.velocity_computed_at
-    ? {
-        id: channel.id,
-        channel_id: channel.id,
-        computed_at: channel.velocity_computed_at,
-        view_velocity_30d: channel.view_velocity_30d,
-        view_velocity_90d: channel.view_velocity_90d,
-        comment_velocity_30d: channel.comment_velocity_30d,
-        comment_velocity_90d: channel.comment_velocity_90d,
-      }
-    : null;
-
-  /* Fetch full gate0 result (confidence + evidence_signals) if available */
-  let gate0: Gate0Result | null = null;
-  if (channel.gate0_result_id) {
-    const { data: gate0Row } = await supabase
-      .from("gate0_results")
-      .select("confidence, evidence_signals")
-      .eq("id", channel.gate0_result_id)
-      .single();
-    gate0 = {
-      id: channel.gate0_result_id,
-      channel_id: channel.id,
-      checked_at: channel.gate0_checked_at,
-      search_query: channel.gate0_search_query,
-      result_status: channel.gate0_result_status as "clean" | "needs_review" | "dirty",
-      flagged_brand: channel.gate0_flagged_brand,
-      source_url: channel.gate0_source_url,
-      confidence: gate0Row?.confidence ?? null,
-      evidence_signals: gate0Row?.evidence_signals ?? null,
-    };
-  }
-
-  /* Fetch scrape logs */
-  const { data: scrapeLogs } = await supabase
-    .from("scrape_logs")
-    .select("*")
-    .eq("channel_id", id)
-    .order("attempted_at", { ascending: false })
-    .limit(10);
+  const { velocity, scrape_logs: scrapeLogs, ...channel } = channelDetail;
 
   return (
     <div className="h-full overflow-y-auto p-6 scrollbar-thin">
       <ChannelDetail
-        channel={channel as unknown as Channel}
-        velocity={velocity}
-        gate0={gate0}
-        scrapeLogs={(scrapeLogs as unknown as ScrapeLog[]) ?? []}
+        channel={channel as Channel}
+        velocity={velocity ?? null}
+        scrapeLogs={scrapeLogs ?? []}
       />
     </div>
   );

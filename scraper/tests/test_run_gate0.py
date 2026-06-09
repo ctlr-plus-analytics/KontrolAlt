@@ -32,7 +32,11 @@ from tasks.run_gate0 import (
     _run_serper_search_multi,
     _scan_channel_local,
     _scan_serper_results,
+    _has_dirty_direct_evidence,
+    _parse_ai_assessment,
+    _quote_is_explicit_affiliation,
     _should_run_gate0_check,
+    EvidenceDocument,
 )
 from core.runtime_settings import Gate0CompetitorSetting
 
@@ -134,6 +138,11 @@ def test_has_negative_context_false_when_no_negative_words() -> None:
     assert not _has_negative_context("I use Goldco for my IRA", "Goldco")
 
 
+def test_quote_explicit_affiliation_detects_direct_language() -> None:
+    assert _quote_is_explicit_affiliation("This episode is sponsored by Goldco today")
+    assert not _quote_is_explicit_affiliation("This episode mentions Goldco today")
+
+
 # ---------------------------------------------------------------------------
 # _scan_channel_local
 # ---------------------------------------------------------------------------
@@ -227,6 +236,21 @@ def test_local_scan_promo_title_raises_confidence_above_neutral() -> None:
     # Video title matches should report "Channel video titles" as source.
     assert result_promo.source_url == "Channel video titles"
     assert result_neutral.source_url == "Channel video titles"
+
+
+def test_local_scan_explicit_sponsored_title_stays_review_only() -> None:
+    result = _scan_channel_local(
+        {
+            "channel_url": "https://rumble.com/c/source",
+            "contact_info": [],
+            "secondary_urls": [],
+            "description": "",
+            "video_titles": ["Sponsored by Goldco today"],
+        },
+        _COMPETITORS,
+    )
+    assert not _has_dirty_direct_evidence(result.signals)
+    assert _classify_confidence(result.confidence) == "clean"
 
 
 def test_local_scan_returns_empty_result_when_no_signals() -> None:
@@ -414,6 +438,55 @@ def test_serper_scan_suppresses_brand_without_promo_context() -> None:
     assert brand is None
     assert source_url is None
     assert weight == 0.0
+
+
+# ---------------------------------------------------------------------------
+# AI verification parsing
+# ---------------------------------------------------------------------------
+
+def test_ai_verdict_requires_verifiable_quote_for_dirty() -> None:
+    docs = [
+        EvidenceDocument(
+            source_url="https://example.com/article",
+            source_kind="channel_text",
+            title="Example",
+            text="This episode is sponsored by Goldco today.",
+            trust="high",
+        )
+    ]
+    verdict = _parse_ai_assessment(
+        (
+            '{"decision":"dirty","confidence":0.99,"matched_brand":"Goldco",'
+            '"matched_source_url":"https://example.com/article",'
+            '"supporting_quotes":["This episode is sponsored by Goldco today."],'
+            '"reason":"explicit sponsorship"}'
+        ),
+        docs,
+    )
+    assert verdict.decision == "dirty"
+    assert verdict.source_url == "https://example.com/article"
+
+
+def test_ai_verdict_downgrades_unverifiable_dirty_claim() -> None:
+    docs = [
+        EvidenceDocument(
+            source_url="https://example.com/article",
+            source_kind="channel_text",
+            title="Example",
+            text="Goldco is mentioned here without any relationship claim.",
+            trust="high",
+        )
+    ]
+    verdict = _parse_ai_assessment(
+        (
+            '{"decision":"dirty","confidence":0.99,"matched_brand":"Goldco",'
+            '"matched_source_url":"https://example.com/article",'
+            '"supporting_quotes":["Goldco"],'
+            '"reason":"hallucinated relationship"}'
+        ),
+        docs,
+    )
+    assert verdict.decision == "needs_review"
 
 
 # ---------------------------------------------------------------------------

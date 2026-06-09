@@ -6,13 +6,14 @@
 import type {
   Channel,
   VelocityScore,
-  Gate0Result,
+  AffiliationStatus,
+  AffiliationResult,
   ScrapeLog,
   LookalikeMatch,
   ChannelFilters,
   PaginatedResponse,
   ApiErrorResponse,
-  Gate0CheckResponse,
+  AffiliationCheckResponse,
   LookalikeSearchResponse,
   ChannelLookalikeResponse,
   ManualChannelIntakeRequest,
@@ -24,16 +25,19 @@ import type {
   UpdateChannelDoNotContactRequest,
   ScrapeTaskResponse,
   AdminMeResponse,
+  AdminTaskKind,
   AdminTaskTriggerRequest,
   AdminTaskTriggerResponse,
   ClassifyChannelsTriggerRequest,
-  Gate0BatchTriggerRequest,
-  Gate0BatchTriggerResponse,
+  AffiliationBatchTriggerRequest,
+  AffiliationBatchTriggerResponse,
   AdminTaskStatusResponse,
   PaginatedAdminAuditResponse,
   CompetitorDef,
   CompetitorListResponse,
-  Gate0StatusOption,
+  WorkerPreflightRequest,
+  WorkerPreflightResponse,
+  AffiliationStatusOption,
   KeywordTaxonomyDef,
   KeywordTaxonomyListResponse,
   CategoryTagOption,
@@ -101,19 +105,48 @@ async function apiFetch<T>(
   return response.json() as Promise<T>;
 }
 
+function toBackendTaskKind(kind: AdminTaskKind): AdminTaskKind | "gate0" {
+  return kind === "affiliation" ? "gate0" : kind;
+}
+
 /** Channel with optional joined velocity data. */
 export type ChannelWithVelocity = Channel & { velocity?: VelocityScore | null };
 
 /** Channel detail with full joined data. */
 export type ChannelDetail = Channel & {
   velocity?: VelocityScore | null;
-  gate0?: Gate0Result | null;
+  affiliation?: AffiliationResult | null;
   scrape_logs?: ScrapeLog[];
 };
 
 export interface ChannelDeleteResponse {
   message: string;
   channel_id: string;
+}
+
+function normalizeChannel(raw: Record<string, unknown>): ChannelWithVelocity {
+  return {
+    ...raw,
+    affiliation_status: raw["gate0_status"] as AffiliationStatus,
+    affiliation_checked_at: raw["gate0_checked_at"] as string | null,
+    affiliation_result_id: raw["gate0_result_id"] as string | null,
+    affiliation_search_query: raw["gate0_search_query"] as string | null,
+    affiliation_result_status: raw["gate0_result_status"] as string | null,
+    affiliation_flagged_brand: raw["gate0_flagged_brand"] as string | null,
+    affiliation_source_url: raw["gate0_source_url"] as string | null,
+  } as ChannelWithVelocity;
+}
+
+function normalizeChannelDetail(raw: Record<string, unknown>): ChannelDetail {
+  const channel = normalizeChannel(raw) as ChannelDetail;
+  const gate0Result = raw["gate0"] as Record<string, unknown> | undefined;
+  if (gate0Result) {
+    channel.affiliation = {
+      ...(gate0Result as Record<string, unknown>),
+      evidence_signals: gate0Result["evidence_signals"] as AffiliationResult["evidence_signals"],
+    } as AffiliationResult;
+  }
+  return channel;
 }
 
 /** Fetch paginated channels with filters. */
@@ -133,8 +166,8 @@ export async function getChannels(
   if (filters.comment_tier && filters.comment_tier !== "all") {
     params.set("comment_tier", filters.comment_tier);
   }
-  if (filters.gate0_statuses && filters.gate0_statuses.length > 0) {
-    filters.gate0_statuses.forEach((status) => params.append("gate0_statuses", status));
+  if (filters.affiliation_statuses && filters.affiliation_statuses.length > 0) {
+    filters.affiliation_statuses.forEach((status) => params.append("gate0_statuses", status));
   }
   const categoryTags = filters.category_tags ?? filters.niche_tags;
   if (categoryTags && categoryTags.length > 0) {
@@ -180,10 +213,14 @@ export async function getChannels(
     params.set("sort_order", filters.sort_order);
   }
 
-  return apiFetch<PaginatedResponse<ChannelWithVelocity>>(
+  const response = await apiFetch<PaginatedResponse<Record<string, unknown>>>(
     `/api/v1/channels?${params.toString()}`,
     { token }
   );
+  return {
+    ...response,
+    data: response.data.map(normalizeChannel),
+  };
 }
 
 /** Fetch distinct category tags and counts for dropdown filters, scoped to active filters (excluding category_tags). */
@@ -195,8 +232,8 @@ export async function getCategoryTags(
   if (filters) {
     if (filters.platform && filters.platform !== "all") params.set("platform", filters.platform);
     if (filters.comment_tier && filters.comment_tier !== "all") params.set("comment_tier", filters.comment_tier);
-    if (filters.gate0_statuses && filters.gate0_statuses.length > 0) {
-      filters.gate0_statuses.forEach((s) => params.append("gate0_statuses", s));
+    if (filters.affiliation_statuses && filters.affiliation_statuses.length > 0) {
+      filters.affiliation_statuses.forEach((s) => params.append("gate0_statuses", s));
     }
     if (filters.search_query && filters.search_query.trim().length > 0) {
       params.set("search_query", filters.search_query.trim());
@@ -226,9 +263,9 @@ export async function getCategoryTags(
 /** @deprecated Use getCategoryTags */
 export const getNicheTags = getCategoryTags;
 
-/** Fetch Gate 0 statuses and counts for dropdown filters. */
-export async function getGate0Statuses(token?: string): Promise<Gate0StatusOption[]> {
-  const response = await apiFetch<{ status_counts?: Gate0StatusOption[] }>(
+/** Fetch affiliation statuses and counts for dropdown filters. */
+export async function getAffiliationStatuses(token?: string): Promise<AffiliationStatusOption[]> {
+  const response = await apiFetch<{ status_counts?: AffiliationStatusOption[] }>(
     "/api/v1/channels/gate0-statuses",
     { token }
   );
@@ -240,7 +277,8 @@ export async function getChannel(
   id: string,
   token?: string
 ): Promise<ChannelDetail> {
-  return apiFetch<ChannelDetail>(`/api/v1/channels/${id}`, { token });
+  const response = await apiFetch<Record<string, unknown>>(`/api/v1/channels/${id}`, { token });
+  return normalizeChannelDetail(response);
 }
 
 /** Delete channel snapshots/history while keeping the channel record. */
@@ -286,12 +324,12 @@ export async function getVelocity(
   return apiFetch<VelocityScore>(`/api/v1/velocity/${channelId}`, { token });
 }
 
-/** Trigger a Gate 0 compliance check for a channel. */
-export async function triggerGate0Check(
+/** Trigger an affiliation compliance check for a channel. */
+export async function triggerAffiliationCheck(
   channelId: string,
   token?: string
-): Promise<Gate0CheckResponse> {
-  return apiFetch<Gate0CheckResponse>(`/api/v1/gate0/check/${channelId}`, {
+): Promise<AffiliationCheckResponse> {
+  return apiFetch<AffiliationCheckResponse>(`/api/v1/gate0/check/${channelId}`, {
     method: "POST",
     token,
   });
@@ -400,6 +438,18 @@ export async function getAdminMe(token?: string): Promise<AdminMeResponse> {
   return apiFetch<AdminMeResponse>("/api/v1/admin/me", { token });
 }
 
+/** Check whether the workers required for an admin task are online. */
+export async function preflightAdminTask(
+  payload: WorkerPreflightRequest,
+  token?: string
+): Promise<WorkerPreflightResponse> {
+  return apiFetch<WorkerPreflightResponse>("/api/v1/admin/workers/preflight", {
+    method: "POST",
+    body: { ...payload, task_kind: toBackendTaskKind(payload.task_kind) },
+    token,
+  });
+}
+
 /** Trigger full scrape workflow as admin. */
 export async function triggerAdminScrapeNow(
   payload: AdminTaskTriggerRequest,
@@ -448,12 +498,12 @@ export async function triggerAdminNeverScrapedBootstrapNow(
   });
 }
 
-/** Trigger Gate 0 checks for explicit channels as admin. */
-export async function triggerAdminGate0Now(
-  payload: Gate0BatchTriggerRequest,
+/** Trigger affiliation checks for explicit channels as admin. */
+export async function triggerAdminAffiliationNow(
+  payload: AffiliationBatchTriggerRequest,
   token?: string
-): Promise<Gate0BatchTriggerResponse> {
-  return apiFetch<Gate0BatchTriggerResponse>("/api/v1/admin/tasks/gate0-now", {
+): Promise<AffiliationBatchTriggerResponse> {
+  return apiFetch<AffiliationBatchTriggerResponse>("/api/v1/admin/tasks/gate0-now", {
     method: "POST",
     body: payload,
     token,
@@ -485,14 +535,14 @@ export async function getAdminAudit(
   );
 }
 
-/** Fetch the current Gate 0 competitor list. */
+/** Fetch the current affiliation competitor list. */
 export async function getAdminCompetitors(
   token?: string
 ): Promise<CompetitorListResponse> {
   return apiFetch<CompetitorListResponse>("/api/v1/admin/competitors", { token });
 }
 
-/** Replace the Gate 0 competitor list. */
+/** Replace the affiliation competitor list. */
 export async function updateAdminCompetitors(
   competitors: CompetitorDef[],
   token?: string

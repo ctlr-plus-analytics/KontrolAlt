@@ -1,8 +1,9 @@
 """Admin control-plane endpoints."""
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from core.security import require_admin_user
+from core.exceptions import WorkerUnavailableError
 from models.admin import (
     AdminMeResponse,
     AdminTaskStatusResponse,
@@ -16,6 +17,8 @@ from models.admin import (
     PaginatedAdminAuditResponse,
     PurgeQueueRequest,
     PurgeQueueResponse,
+    WorkerPreflightRequest,
+    WorkerPreflightResponse,
     UpdateCompetitorsRequest,
     UpdateKeywordTaxonomyRequest,
     WorkerLogsResponse,
@@ -24,6 +27,10 @@ from models.admin import (
 from services import admin_service
 
 router = APIRouter()
+
+
+def _worker_unavailable(exc: WorkerUnavailableError) -> HTTPException:
+    return HTTPException(status_code=409, detail=str(exc))
 
 
 @router.get("/me", response_model=AdminMeResponse)
@@ -45,7 +52,10 @@ async def trigger_scrape_now(
     body: AdminTaskTriggerRequest,
     user: dict = Depends(require_admin_user),
 ) -> AdminTaskTriggerResponse:
-    return await admin_service.trigger_full_scrape(actor=user, reason=body.reason)
+    try:
+        return await admin_service.trigger_full_scrape(actor=user, reason=body.reason)
+    except WorkerUnavailableError as exc:
+        raise _worker_unavailable(exc) from exc
 
 
 @router.post("/tasks/discovery-now", response_model=AdminTaskTriggerResponse)
@@ -53,7 +63,10 @@ async def trigger_discovery_now(
     body: AdminTaskTriggerRequest,
     user: dict = Depends(require_admin_user),
 ) -> AdminTaskTriggerResponse:
-    return await admin_service.trigger_discovery(actor=user, reason=body.reason)
+    try:
+        return await admin_service.trigger_discovery(actor=user, reason=body.reason)
+    except WorkerUnavailableError as exc:
+        raise _worker_unavailable(exc) from exc
 
 
 @router.post("/tasks/weekly-velocity-now", response_model=AdminTaskTriggerResponse)
@@ -61,7 +74,10 @@ async def trigger_weekly_velocity_now(
     body: AdminTaskTriggerRequest,
     user: dict = Depends(require_admin_user),
 ) -> AdminTaskTriggerResponse:
-    return await admin_service.trigger_weekly_velocity(actor=user, reason=body.reason)
+    try:
+        return await admin_service.trigger_weekly_velocity(actor=user, reason=body.reason)
+    except WorkerUnavailableError as exc:
+        raise _worker_unavailable(exc) from exc
 
 
 @router.post("/tasks/never-scraped-bootstrap-now", response_model=AdminTaskTriggerResponse)
@@ -69,9 +85,12 @@ async def trigger_never_scraped_bootstrap_now(
     body: AdminTaskTriggerRequest,
     user: dict = Depends(require_admin_user),
 ) -> AdminTaskTriggerResponse:
-    return await admin_service.trigger_never_scraped_bootstrap(
-        actor=user, reason=body.reason
-    )
+    try:
+        return await admin_service.trigger_never_scraped_bootstrap(
+            actor=user, reason=body.reason
+        )
+    except WorkerUnavailableError as exc:
+        raise _worker_unavailable(exc) from exc
 
 
 @router.post("/tasks/gate0-now", response_model=Gate0BatchTriggerResponse)
@@ -79,9 +98,12 @@ async def trigger_gate0_now(
     body: Gate0BatchTriggerRequest,
     user: dict = Depends(require_admin_user),
 ) -> Gate0BatchTriggerResponse:
-    return await admin_service.trigger_gate0_batch(
-        actor=user, channel_ids=body.channel_ids, reason=body.reason
-    )
+    try:
+        return await admin_service.trigger_gate0_batch(
+            actor=user, channel_ids=body.channel_ids, reason=body.reason
+        )
+    except WorkerUnavailableError as exc:
+        raise _worker_unavailable(exc) from exc
 
 
 @router.post("/tasks/classify-channels-now", response_model=AdminTaskTriggerResponse)
@@ -89,9 +111,12 @@ async def trigger_classify_channels_now(
     body: ClassifyChannelsTriggerRequest,
     user: dict = Depends(require_admin_user),
 ) -> AdminTaskTriggerResponse:
-    return await admin_service.trigger_classify_channels(
-        actor=user, reclassify=body.reclassify, reason=body.reason
-    )
+    try:
+        return await admin_service.trigger_classify_channels(
+            actor=user, reclassify=body.reclassify, reason=body.reason
+        )
+    except WorkerUnavailableError as exc:
+        raise _worker_unavailable(exc) from exc
 
 
 @router.post("/tasks/purge-all", response_model=PurgeQueueResponse)
@@ -107,6 +132,14 @@ async def get_workers(
     user: dict = Depends(require_admin_user),
 ) -> WorkerStatusResponse:
     return await admin_service.get_worker_statuses()
+
+
+@router.post("/workers/preflight", response_model=WorkerPreflightResponse)
+async def preflight_worker_task(
+    body: WorkerPreflightRequest,
+    user: dict = Depends(require_admin_user),
+) -> WorkerPreflightResponse:
+    return await admin_service.get_worker_preflight(body.task_kind)
 
 
 @router.get("/workers/{service}/logs", response_model=WorkerLogsResponse)

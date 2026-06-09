@@ -8,6 +8,18 @@ from uuid import UUID
 from pydantic import BaseModel
 
 
+class Gate0EvidenceSignal(BaseModel):
+    """A single evidence signal from a Gate 0 compliance scan."""
+
+    type: str
+    value: str
+    weight: float
+    source_url: str | None = None
+    context: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class Gate0ResultStatus(str, Enum):
     """Result status of a Gate 0 compliance check."""
 
@@ -27,6 +39,7 @@ class Gate0Result(BaseModel):
     flagged_brand: str | None = None
     source_url: str | None = None
     confidence: float | None = None
+    evidence_signals: list[Gate0EvidenceSignal] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -37,5 +50,5 @@ class Gate0CheckResponse(BaseModel):
     channel_id: UUID
     message: str
     task_id: str
-    status: Literal["pending"]
+    status: Literal["pending", "unchecked"]
     triggered_at: datetime

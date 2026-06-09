@@ -41,4 +41,10 @@
 - Treat Supabase service-role keys as server-only (`backend`/`scraper`), never expose them in frontend code.
 - Validate migration order and run migrations consistently across both migration directories before release.
 
+RTK usage preference for this repo:
+- Prefer RTK-native inspection commands for file and context work: `rtk read`, `rtk ls`, `rtk tree`, `rtk find`, `rtk grep`, `rtk diff`, `rtk json`, `rtk smart`, `rtk deps`, and `rtk env`.
+- Prefer `rtk git diff`, `rtk git status`, and `rtk git log` for git inspection.
+- Use `rtk proxy` only when a raw shell or PowerShell cmdlet is required, such as `Get-Content`.
+- Do not use plain PowerShell file-read cmdlets by default when an RTK-native command exists.
+
 @RTK.md

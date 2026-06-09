@@ -133,9 +133,6 @@ def _canonicalize_rumble(parts: list[str]) -> str | None:
     if first in _RUMBLE_SYSTEM_PATHS:
         return None
 
-    if len(parts) >= 1 and _is_valid_rumble_root_slug(parts[0]):
-        return f"/{parts[0]}"
-
     return None
 
 
@@ -204,14 +201,6 @@ def extract_supported_channel_urls(text: str) -> list[ChannelUrlCandidate]:
 
     for match in RUMBLE_PATH_MENTION_PATTERN.finditer(text):
         raw_urls.add(f"https://rumble.com/{match.group(1).lower()}/{match.group(2)}")
-    for match in RUMBLE_HANDLE_PATTERN.finditer(text):
-        slug = match.group(1)
-        if _is_valid_rumble_root_slug(slug):
-            raw_urls.add(f"https://rumble.com/{slug}")
-    for match in RUMBLE_CONTEXT_HANDLE_PATTERN.finditer(text):
-        slug = match.group(1)
-        if _is_valid_rumble_root_slug(slug):
-            raw_urls.add(f"https://rumble.com/{slug}")
     for match in SUBSTACK_PATH_MENTION_PATTERN.finditer(text):
         raw_urls.add(f"https://substack.com/@{match.group(1)}")
     for match in SUBSTACK_HANDLE_PATTERN.finditer(text):

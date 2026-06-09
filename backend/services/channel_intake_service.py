@@ -116,6 +116,20 @@ def _dispatch_scrape_task(channel_url: str, platform: Platform) -> str:
     return task.id
 
 
+def _safe_dispatch_scrape(channel_url: str, platform: Platform) -> str | None:
+    """Dispatch a scrape task, returning None (not raising) if the broker is unavailable."""
+    try:
+        return _dispatch_scrape_task(channel_url, platform)
+    except Exception as exc:
+        logger.warning(
+            "Scrape dispatch failed for %s (%s): %s — channel was still inserted",
+            channel_url,
+            platform.value,
+            exc,
+        )
+        return None
+
+
 def _dispatch_gate0_after_scrape(channel_id: str) -> str | None:
     """Queue a manual Gate 0 check after immediate scrape intake dispatch."""
     if not admin_service.is_feature_enabled("gate0"):
@@ -154,22 +168,35 @@ def _dispatch_gate0_after_scrape(channel_id: str) -> str | None:
         return None
 
 
+def _query_existing_channel(channel_url: str) -> str | None:
+    """Return the existing channel id for the given URL, or None if not found."""
+    try:
+        result = (
+            supabase_admin.table("channels")
+            .select("id")
+            .eq("channel_url", channel_url)
+            .maybe_single()
+            .execute()
+        )
+        data = getattr(result, "data", None)
+        if isinstance(data, dict):
+            return str(data["id"]) if data.get("id") else None
+        return None
+    except APIError:
+        # maybe_single() raises when multiple rows match — duplicate rows already exist.
+        logger.warning("Multiple rows found for channel_url=%s; treating as duplicate", channel_url)
+        return None
+
+
 def _upsert_channel(
     channel_url: str,
     platform: Platform,
     tags: list[str] | None,
     notes: str | None,
 ) -> tuple[IntakeStatus, str | None]:
-    existing_result = (
-        supabase_admin.table("channels")
-        .select("id")
-        .eq("channel_url", channel_url)
-        .maybe_single()
-        .execute()
-    )
-    existing_data = getattr(existing_result, "data", None)
-    if isinstance(existing_data, dict) and existing_data.get("id") is not None:
-        return IntakeStatus.duplicate, str(existing_data["id"])
+    existing_id = _query_existing_channel(channel_url)
+    if existing_id is not None:
+        return IntakeStatus.duplicate, existing_id
 
     payload: dict[str, object] = {
         "platform": platform.value,
@@ -185,11 +212,19 @@ def _upsert_channel(
         "discovery_confidence": 1.0,
         "discovered_at": datetime.now(timezone.utc).isoformat(),
     }
-    result = (
-        supabase_admin.table("channels")
-        .insert(payload)
-        .execute()
-    )
+    try:
+        result = supabase_admin.table("channels").insert(payload).execute()
+    except APIError as exc:
+        exc_str = str(exc)
+        # Unique constraint violation — concurrent request won the race; treat as duplicate.
+        if "23505" in exc_str or "duplicate key" in exc_str.lower():
+            logger.info(
+                "Concurrent insert race for %s — re-querying for existing id", channel_url
+            )
+            existing_id = _query_existing_channel(channel_url)
+            return IntakeStatus.duplicate, existing_id
+        raise
+
     result_data = getattr(result, "data", None)
     if not isinstance(result_data, list) or not result_data:
         return IntakeStatus.invalid, None
@@ -242,7 +277,7 @@ async def add_manual_channel(body: ManualChannelIntakeRequest) -> IntakeSummaryR
             IntakeStatus.inserted,
             IntakeStatus.duplicate,
         }:
-            scrape_task_id = _dispatch_scrape_task(canonical_url, platform)
+            scrape_task_id = _safe_dispatch_scrape(canonical_url, platform)
             if channel_id is not None:
                 _dispatch_gate0_after_scrape(channel_id)
         return _build_summary(
@@ -266,7 +301,7 @@ async def add_manual_channel(body: ManualChannelIntakeRequest) -> IntakeSummaryR
                 IntakeRecordResult(
                     input_value=body.channel_url,
                     status=IntakeStatus.invalid,
-                    reason=str(exc),
+                    reason="Database error — see server logs for details.",
                 )
             ],
         )
@@ -299,7 +334,7 @@ async def add_bulk_channels(body: BulkChannelIntakeRequest) -> IntakeSummaryResp
                 IntakeStatus.inserted,
                 IntakeStatus.duplicate,
             }:
-                scrape_task_id = _dispatch_scrape_task(canonical_url, platform)
+                scrape_task_id = _safe_dispatch_scrape(canonical_url, platform)
                 if channel_id is not None:
                     _dispatch_gate0_after_scrape(channel_id)
             records.append(
@@ -318,7 +353,7 @@ async def add_bulk_channels(body: BulkChannelIntakeRequest) -> IntakeSummaryResp
                 IntakeRecordResult(
                     input_value=raw_url,
                     status=IntakeStatus.invalid,
-                    reason=str(exc),
+                    reason="Database error — see server logs for details.",
                 )
             )
 
@@ -452,7 +487,7 @@ async def confirm_resolver_selections(
                 IntakeStatus.inserted,
                 IntakeStatus.duplicate,
             }:
-                scrape_task_id = _dispatch_scrape_task(canonical_url, platform)
+                scrape_task_id = _safe_dispatch_scrape(canonical_url, platform)
                 if channel_id is not None:
                     _dispatch_gate0_after_scrape(channel_id)
             records.append(
@@ -476,7 +511,7 @@ async def confirm_resolver_selections(
                 IntakeRecordResult(
                     input_value=selection.channel_url,
                     status=IntakeStatus.invalid,
-                    reason=str(exc),
+                    reason="Database error — see server logs for details.",
                 )
             )
 

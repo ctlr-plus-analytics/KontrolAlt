@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY scraper/requirements.txt .
 RUN python -m venv "$VIRTUAL_ENV" && \
     pip install --no-cache-dir -r requirements.txt && \
     python -m playwright install --with-deps chromium && \
@@ -20,7 +20,8 @@ RUN groupadd --system app && \
     useradd --system --gid app --create-home app && \
     chown -R app:app /app /home/app /opt/venv
 
-COPY --chown=app:app . .
+COPY --chown=app:app scraper/ .
+COPY --chown=app:app shared/ ./shared/
 
 USER app
 

@@ -85,7 +85,7 @@ class RuntimeSettings:
     cf_bypass_origin_check_enabled: bool = False
     cf_bypass_fingerprint_strict_mode: bool = False
     cf_bypass_captcha_skip_enabled: bool = True
-    scraper_substack_use_proxy: bool = False
+    scraper_substack_use_proxy: bool = True
 
 
 _RUNTIME_SETTINGS = RuntimeSettings()

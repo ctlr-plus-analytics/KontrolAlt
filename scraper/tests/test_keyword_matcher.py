@@ -3,11 +3,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import utils.runtime_taxonomy as runtime_taxonomy
 from utils.keyword_matcher import (
     compute_channel_demographic,
     compute_comment_tier,
     match_keywords,
 )
+from utils.runtime_taxonomy import get_runtime_keyword_taxonomy
 
 _SAMPLE_TAXONOMY = {
     "Financial / Macro": ["gold", "retirement", "social security", "fixed income", "recession"],
@@ -127,3 +129,36 @@ def test_demographic_uses_runtime_taxonomy(monkeypatch) -> None:
         [],
     )
     assert result["niche_tags"] == ["News / Commentary"]
+
+
+def test_runtime_taxonomy_falls_back_to_baked_default(monkeypatch) -> None:
+    monkeypatch.setattr(
+        runtime_taxonomy,
+        "_load_runtime_keyword_taxonomy_from_db",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        runtime_taxonomy,
+        "_taxonomy_cache",
+        {"loaded_at": 0.0, "taxonomy": None},
+    )
+
+    taxonomy = get_runtime_keyword_taxonomy(force_refresh=True)
+
+    assert "Financial / Macro" in taxonomy
+    assert taxonomy["Financial / Macro"]
+
+
+def test_match_keywords_uses_baked_default_when_db_is_empty(monkeypatch) -> None:
+    monkeypatch.setattr(
+        runtime_taxonomy,
+        "_load_runtime_keyword_taxonomy_from_db",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        runtime_taxonomy,
+        "_taxonomy_cache",
+        {"loaded_at": 0.0, "taxonomy": None},
+    )
+
+    assert match_keywords("gold and retirement planning") == ["Financial / Macro"]

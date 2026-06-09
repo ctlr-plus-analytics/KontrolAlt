@@ -125,6 +125,9 @@ class WorkerBrowserPool:
                 # Without this flag, their MITM certificate causes ERR_SSL_PROTOCOL_ERROR
                 # and the scrape fails entirely. Acceptable for a read-only scraping context.
                 "--ignore-certificate-errors",
+                # Containers (Docker/Render) have a small /dev/shm (64 MB default).
+                # Without this flag Chromium uses shared memory for rendering and crashes.
+                "--disable-dev-shm-usage",
             ],
         )
         logger.info("BrowserPool: Chromium launched (headless=%s)", headless)

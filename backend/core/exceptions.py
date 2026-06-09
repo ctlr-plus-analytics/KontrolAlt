@@ -17,3 +17,9 @@ class SupabaseError(Exception):
     """Raised when a Supabase query fails unexpectedly."""
 
     pass
+
+
+class WorkerUnavailableError(Exception):
+    """Raised when a manual task is blocked by offline worker containers."""
+
+    pass

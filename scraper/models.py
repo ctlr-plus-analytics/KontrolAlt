@@ -52,10 +52,3 @@ class Gate0TaskResult(BaseModel):
     flagged_brand: str | None = None
     source_url: str | None = None
     confidence: float | None = None
-
-
-class LookalikeTaskResult(BaseModel):
-    """Response payload for lookalike discovery tasks."""
-
-    matches_found: int
-    error: str | None = None

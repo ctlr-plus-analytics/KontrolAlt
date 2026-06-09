@@ -2,6 +2,7 @@
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from postgrest.exceptions import APIError
@@ -13,6 +14,10 @@ from utils.ai_response import extract_json_object, extract_response_text
 from utils.keyword_matcher import compute_channel_demographic
 
 logger = logging.getLogger(__name__)
+
+# Channels processed concurrently within a single classify_channels task.
+# AI calls are I/O-bound (HTTP to Google), so threading scales well here.
+_CLASSIFY_WORKERS = 4
 
 _CLASSIFY_MODEL = "gemini-2.5-flash"
 
@@ -84,16 +89,12 @@ def _build_prompt(channel: dict[str, object]) -> str:
         "- Assign 1 category only based on the channel's PRIMARY and CONSISTENT focus.\n"
         "- Do not tag a category for one isolated mention; the channel must regularly cover it.\n"
         "- Always assign at least 1 category — pick the best fit even with sparse or ambiguous data.\n"
-        "- Write a 2–3 sentence plain-English summary of what this channel covers. "
-        "Focus on the content niche, tone/angle, and intended audience. "
-        "Do not mention the platform or subscriber count.\n"
         "- Rate your confidence from 0.0 to 1.0: high when name/description/titles strongly "
         "align; low when data is sparse or ambiguous.\n"
         "- List the key evidence signals that drove the classification "
         "(e.g. name_match, description_match, titles_confirm, subscriber_count_known).\n"
         "- Respond with ONLY a JSON object.\n\n"
-        '{"categories": ["Category Name"], "summary": "2-3 sentence description.", '
-        '"confidence": 0.85, "signals": ["name_match", "description_match"]}'
+        '{"categories": ["Category Name"], "confidence": 0.85, "signals": ["name_match", "description_match"]}'
     )
 
 
@@ -245,15 +246,15 @@ def _build_qa_prompt(channel: dict[str, object]) -> str:
 
 def _parse_response(
     raw_text: str | None,
-) -> tuple[list[str], str | None, float, list[str]]:
-    """Parse AI JSON response into (categories, summary, confidence, signals)."""
+) -> tuple[list[str], float, list[str]]:
+    """Parse AI JSON response into (categories, confidence, signals)."""
     data = extract_json_object(raw_text)
     if data is None:
         if not raw_text:
             logger.warning("AI response was empty or None")
         else:
             logger.warning("JSON parse failure in AI response: %.200s", raw_text)
-        return [], None, 0.0, []
+        return [], 0.0, []
 
     raw_cats = data.get("categories")
     valid = (
@@ -262,13 +263,6 @@ def _parse_response(
         else []
     )
     categories = valid if valid else []
-
-    raw_summary = data.get("summary")
-    summary = (
-        str(raw_summary).strip()
-        if isinstance(raw_summary, str) and raw_summary.strip()
-        else None
-    )
 
     raw_confidence = data.get("confidence")
     try:
@@ -284,7 +278,7 @@ def _parse_response(
         else []
     )
 
-    return categories, summary, confidence, signals
+    return categories, confidence, signals
 
 
 def _parse_qa_response(raw_text: str | None) -> str | None:
@@ -322,9 +316,6 @@ def _needs_classification(channel: dict[str, object]) -> bool:
         return True
     if tags == ["Unknown / Needs Review"]:
         return True
-    ai_summary = channel.get("ai_summary")
-    if not ai_summary or not str(ai_summary).strip():
-        return True
     # Re-classify if previously tagged with low context score and more data is now available.
     ctx_score = channel.get("classification_context_score")
     if isinstance(ctx_score, int) and ctx_score < 2:
@@ -337,7 +328,7 @@ def _needs_classification(channel: dict[str, object]) -> bool:
 
 def _classify_one(
     channel: dict[str, object], client
-) -> tuple[list[str], str | None, float, list[str]]:
+) -> tuple[list[str], float, list[str]]:
     from google.genai import types
     prompt = _build_prompt(channel)
     response = client.models.generate_content(
@@ -420,6 +411,140 @@ def _record_classification_stat(channel: dict[str, object], categories: list[str
         client.expire(key, 30 * 24 * 3600)
     except Exception as exc:
         logger.debug("Failed to record classification stat: %s", exc)
+
+
+def _process_channel(
+    channel: dict[str, object],
+    ai_client,
+    supabase,
+    *,
+    reclassify: bool,
+    now: str,
+) -> dict[str, int]:
+    """Classify + Q&A one channel. Thread-safe; returns per-channel stat increments."""
+    stats: dict[str, int] = {
+        "classified": 0,
+        "errors": 0,
+        "skipped": 0,
+        "needs_review": 0,
+        "qa_generated": 0,
+        "qa_skipped": 0,
+    }
+    channel_id = str(channel.get("id") or "")
+    channel_name = str(channel.get("name") or channel_id)
+    if not channel_id:
+        return stats
+
+    ran_classify = False
+
+    # --- Classification branch ---
+    if reclassify or _needs_classification(channel):
+        context_score = _compute_context_score(channel)
+        try:
+            ai_categories, ai_confidence, _signals = _classify_one(channel, ai_client)
+        except Exception as exc:
+            logger.warning(
+                "Classification API call failed for '%s' (%s): %s",
+                channel_name, channel_id, exc, exc_info=True,
+            )
+            stats["errors"] += 1
+            time.sleep(1.0)
+            return stats
+
+        name = str(channel.get("name") or "")
+        description = str(channel.get("description") or "")
+        video_titles = channel.get("video_titles") or []
+        if not isinstance(video_titles, list):
+            video_titles = []
+        keyword_result = compute_channel_demographic(name, description, video_titles)
+        keyword_categories: list[str] = keyword_result.get("niche_tags") or []
+
+        final_categories, needs_review = _resolve_ensemble(
+            ai_categories, keyword_categories, ai_confidence
+        )
+
+        if not final_categories:
+            logger.info(
+                "No classification signal for '%s' (%s); will retry when more data is available",
+                channel_name, channel_id,
+            )
+            stats["skipped"] += 1
+            time.sleep(0.15)
+            return stats
+
+        if needs_review:
+            stats["needs_review"] += 1
+
+        channel["niche_tags"] = final_categories
+
+        classify_payload: dict[str, object] = {
+            "niche_tags": final_categories,
+            "classification_confidence": ai_confidence,
+            "classification_needs_review": needs_review,
+            "classification_context_score": context_score,
+            "updated_at": now,
+        }
+
+        try:
+            supabase.table("channels").update(classify_payload).eq("id", channel_id).execute()
+            stats["classified"] += 1
+            ran_classify = True
+            logger.info(
+                "Classified '%s' → %s (conf=%.2f review=%s ctx=%d)",
+                channel_name, final_categories, ai_confidence, needs_review, context_score,
+            )
+            _record_classification_stat(channel, final_categories)
+        except APIError as exc:
+            logger.warning(
+                "Failed to update classification for '%s' (%s): %s",
+                channel_name, channel_id, exc,
+            )
+            stats["errors"] += 1
+
+        time.sleep(0.15)
+
+    # --- Q&A branch ---
+    existing_report = channel.get("ai_channel_report")
+    if existing_report and not reclassify and not ran_classify:
+        stats["qa_skipped"] += 1
+        return stats
+
+    try:
+        qa_report = _qa_one(channel, ai_client)
+    except Exception as exc:
+        logger.warning(
+            "Q&A API call failed for '%s' (%s): %s",
+            channel_name, channel_id, exc, exc_info=True,
+        )
+        stats["errors"] += 1
+        time.sleep(1.0)
+        return stats
+
+    if not qa_report:
+        logger.info(
+            "Q&A parse returned no data for '%s' (%s); skipping",
+            channel_name, channel_id,
+        )
+        stats["skipped"] += 1
+        time.sleep(0.15)
+        return stats
+
+    try:
+        supabase.table("channels").update({
+            "ai_channel_report": qa_report,
+            "updated_at": now,
+        }).eq("id", channel_id).execute()
+        stats["qa_generated"] += 1
+        logger.info("Q&A report generated for '%s'", channel_name)
+    except APIError as exc:
+        logger.warning(
+            "Failed to save Q&A report for '%s' (%s): %s",
+            channel_name, channel_id, exc,
+        )
+        stats["errors"] += 1
+
+    time.sleep(0.15)
+    return stats
 
 
 @celery_app.task(name="scraper.tasks.classify_channels", bind=True)
@@ -516,130 +641,31 @@ def classify_channels(
     qa_skipped = 0
     now = datetime.now(timezone.utc).isoformat()
 
-    for channel in fetched:
-        channel_id = str(channel.get("id") or "")
-        channel_name = str(channel.get("name") or channel_id)
-        if not channel_id:
-            continue
-
-        ran_classify = False
-
-        # --- Classification branch ---
-        if reclassify or _needs_classification(channel):
-            context_score = _compute_context_score(channel)
-
+    with ThreadPoolExecutor(max_workers=_CLASSIFY_WORKERS) as pool:
+        futures = {
+            pool.submit(
+                _process_channel,
+                channel,
+                ai_client,
+                supabase,
+                reclassify=reclassify,
+                now=now,
+            ): channel
+            for channel in fetched
+        }
+        for future in as_completed(futures):
             try:
-                ai_categories, summary, ai_confidence, _signals = _classify_one(
-                    channel, ai_client
-                )
+                ch_stats = future.result()
             except Exception as exc:
-                logger.warning(
-                    "Classification API call failed for '%s' (%s): %s",
-                    channel_name, channel_id, exc, exc_info=True,
-                )
+                logger.warning("Unexpected error in channel processing thread: %s", exc, exc_info=True)
                 errors += 1
-                time.sleep(1.0)
                 continue
-
-            name = str(channel.get("name") or "")
-            description = str(channel.get("description") or "")
-            video_titles = channel.get("video_titles") or []
-            if not isinstance(video_titles, list):
-                video_titles = []
-            keyword_result = compute_channel_demographic(name, description, video_titles)
-            keyword_categories: list[str] = keyword_result.get("niche_tags") or []
-
-            final_categories, needs_review = _resolve_ensemble(
-                ai_categories, keyword_categories, ai_confidence
-            )
-
-            if not final_categories:
-                logger.info(
-                    "No classification signal for '%s' (%s); will retry when more data is available",
-                    channel_name, channel_id,
-                )
-                skipped += 1
-                time.sleep(0.15)
-                continue
-
-            if needs_review:
-                needs_review_count += 1
-
-            # Inject fresh results into channel dict so Q&A receives them without a DB round-trip.
-            channel["niche_tags"] = final_categories
-            if summary is not None:
-                channel["ai_summary"] = summary
-
-            classify_payload: dict[str, object] = {
-                "niche_tags": final_categories,
-                "classification_confidence": ai_confidence,
-                "classification_needs_review": needs_review,
-                "classification_context_score": context_score,
-                "updated_at": now,
-            }
-            if summary is not None:
-                classify_payload["ai_summary"] = summary
-
-            try:
-                supabase.table("channels").update(classify_payload).eq("id", channel_id).execute()
-                classified += 1
-                ran_classify = True
-                logger.info(
-                    "Classified '%s' → %s (conf=%.2f review=%s ctx=%d)",
-                    channel_name, final_categories, ai_confidence, needs_review, context_score,
-                )
-                _record_classification_stat(channel, final_categories)
-            except APIError as exc:
-                logger.warning(
-                    "Failed to update classification for '%s' (%s): %s",
-                    channel_name, channel_id, exc,
-                )
-                errors += 1
-
-            time.sleep(0.15)
-
-        # --- Q&A branch ---
-        # Skip if report already exists, unless we just reclassified or reclassify=True.
-        existing_report = channel.get("ai_channel_report")
-        if existing_report and not reclassify and not ran_classify:
-            qa_skipped += 1
-            continue
-
-        try:
-            qa_report = _qa_one(channel, ai_client)
-        except Exception as exc:
-            logger.warning(
-                "Q&A API call failed for '%s' (%s): %s",
-                channel_name, channel_id, exc, exc_info=True,
-            )
-            errors += 1
-            time.sleep(1.0)
-            continue
-
-        if not qa_report:
-            logger.info(
-                "Q&A parse returned no data for '%s' (%s); skipping",
-                channel_name, channel_id,
-            )
-            skipped += 1
-            time.sleep(0.15)
-            continue
-
-        try:
-            supabase.table("channels").update({
-                "ai_channel_report": qa_report,
-                "updated_at": now,
-            }).eq("id", channel_id).execute()
-            qa_generated += 1
-            logger.info("Q&A report generated for '%s'", channel_name)
-        except APIError as exc:
-            logger.warning(
-                "Failed to save Q&A report for '%s' (%s): %s",
-                channel_name, channel_id, exc,
-            )
-            errors += 1
-
-        time.sleep(0.15)
+            classified += ch_stats["classified"]
+            qa_generated += ch_stats["qa_generated"]
+            qa_skipped += ch_stats["qa_skipped"]
+            skipped += ch_stats["skipped"]
+            errors += ch_stats["errors"]
+            needs_review_count += ch_stats["needs_review"]
 
     logger.info(
         "classify_channels complete: classified=%d qa_generated=%d qa_skipped=%d "

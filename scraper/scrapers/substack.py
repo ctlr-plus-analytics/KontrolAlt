@@ -213,6 +213,7 @@ class SubstackScraper(BaseScraper):
                 session_key=session_key,
                 telemetry=telemetry,
                 use_proxy=get_runtime_settings().scraper_substack_use_proxy,
+                platform="substack",
             ) as context:
                 page = await context.new_page()
 

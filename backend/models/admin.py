@@ -1,6 +1,7 @@
 """Pydantic models for admin control-plane actions."""
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
@@ -16,6 +17,16 @@ BROAD_TAXONOMY_CATEGORIES = {
     "News / Commentary",
     "Unknown / Needs Review",
 }
+
+AdminTaskKind = Literal[
+    "scrape",
+    "discovery",
+    "never-scraped-bootstrap",
+    "weekly-velocity",
+    "gate0",
+    "classify-channels",
+    "classify-channels-all",
+]
 
 
 class AdminMeResponse(BaseModel):
@@ -122,6 +133,21 @@ class ClassifyChannelsTriggerRequest(BaseModel):
     reason: str | None = None
 
 
+class WorkerPreflightRequest(BaseModel):
+    task_kind: AdminTaskKind
+
+
+class WorkerPreflightResponse(BaseModel):
+    task_kind: AdminTaskKind
+    ready: bool
+    message: str
+    required_services: list[str] = Field(default_factory=list)
+    blocking_services: list[str] = Field(default_factory=list)
+    warning_services: list[str] = Field(default_factory=list)
+    workers: list["WorkerInfo"] = Field(default_factory=list)
+    checked_at: datetime
+
+
 class PurgeQueueRequest(BaseModel):
     reason: str | None = None
 
@@ -153,3 +179,6 @@ class WorkerLogsResponse(BaseModel):
     service: str
     lines: list[str]
     tail: int
+
+
+WorkerPreflightResponse.model_rebuild()

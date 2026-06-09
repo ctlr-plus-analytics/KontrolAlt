@@ -6,7 +6,6 @@
 import { useMemo, useState } from "react";
 import {
   ExternalLink,
-  Shield,
   Link as LinkIcon,
   Tag,
   History,
@@ -20,15 +19,12 @@ import type {
   Channel,
   RecentVideo,
   VelocityScore,
-  Gate0Result,
-  Gate0EvidenceSignal,
   ScrapeLog,
   ChannelLookalikeMatch,
   LookalikeMatch,
 } from "@/types";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { Gate0Badge } from "@/components/channels/Gate0Badge";
 import { VelocityBadge } from "@/components/channels/VelocityBadge";
 import { formatEngagementRate, formatNumber, timeAgo, cn } from "@/lib/utils";
 import {
@@ -45,7 +41,6 @@ import { LookalikeMatchCard } from "@/components/lookalike/LookalikeMatchCard";
 interface ChannelDetailProps {
   channel: Channel;
   velocity: VelocityScore | null;
-  gate0: Gate0Result | null;
   scrapeLogs: ScrapeLog[];
 }
 
@@ -55,7 +50,6 @@ type RecentVideoRow = RecentVideo & { id?: string };
 export function ChannelDetail({
   channel,
   velocity: initialVelocity,
-  gate0: initialGate0,
   scrapeLogs,
 }: ChannelDetailProps) {
   const router = useRouter();
@@ -77,13 +71,10 @@ export function ChannelDetail({
   const [deleteMessage, setDeleteMessage] = useState<string | null>(null);
 
   const velocity = initialVelocity;
-  const gate0Result = initialGate0;
-  const gate0Status = channel.gate0_status;
   const categoryTags = channel.category_tags ?? channel.niche_tags;
   const realtimeTables = useMemo(
     () => [
       { table: "channels", filter: `id=eq.${channel.id}` },
-      { table: "gate0_results", filter: `channel_id=eq.${channel.id}` },
       { table: "scrape_logs", filter: `channel_id=eq.${channel.id}` },
     ],
     [channel.id]
@@ -303,7 +294,6 @@ export function ChannelDetail({
           </div>
 
           <div className="flex flex-col items-end gap-3">
-            <Gate0Badge status={gate0Status} flaggedBrand={channel.gate0_flagged_brand} />
             <div className="flex gap-2">
               <a
                 href={channel.channel_url}
@@ -598,91 +588,6 @@ export function ChannelDetail({
         </div>
       </div>
 
-      {/* ─── Previous Gold Affiliation History ─── */}
-      {gate0Result && (
-        <div>
-          <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
-            <Shield size={18} className="text-[#C9A84C]" />
-            Previous Gold Affiliation
-          </h2>
-          <div className="rounded-xl border border-[#E8E4DC] bg-white p-5 shadow-sm space-y-5">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-                  Checked At
-                </p>
-                <p className="mt-1 text-sm text-[#0D0D0D]">
-                  {timeAgo(gate0Result.checked_at)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-                  Status
-                </p>
-                <div className="mt-1">
-                  <Gate0Badge
-                    status={gate0Result.result_status}
-                    flaggedBrand={gate0Result.flagged_brand}
-                  />
-                </div>
-              </div>
-              {gate0Result.confidence !== null && (
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-                    Confidence
-                  </p>
-                  <ConfidenceBar confidence={gate0Result.confidence} />
-                </div>
-              )}
-              <div>
-                <p className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-                  Search Query
-                </p>
-                <p className="mt-1 font-mono text-sm text-[#0D0D0D]">
-                  {gate0Result.search_query}
-                </p>
-              </div>
-              {gate0Result.flagged_brand && (
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-                    Flagged Brand
-                  </p>
-                  <p className="mt-1 text-sm font-medium text-[#B22222]">
-                    {gate0Result.flagged_brand}
-                  </p>
-                </div>
-              )}
-              {gate0Result.source_url && (
-                <div className="sm:col-span-2">
-                  <p className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-                    Evidence Found In
-                  </p>
-                  {gate0Result.source_url.startsWith("http") ? (
-                    <a
-                      href={gate0Result.source_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mt-1 flex items-center gap-1 break-all text-sm text-[#1A1A2E] hover:text-[#C9A84C] transition-colors"
-                    >
-                      <ExternalLink size={12} className="shrink-0" />
-                      {gate0Result.source_url}
-                    </a>
-                  ) : (
-                    <p className="mt-1 text-sm text-[#1A1A2E]">
-                      {gate0Result.source_url}
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {gate0Result.evidence_signals && gate0Result.evidence_signals.length > 0 && (
-              <EvidenceSignalsTable signals={gate0Result.evidence_signals} />
-            )}
-          </div>
-        </div>
-      )}
-
       <div>
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
           <Trash2 size={18} className="text-[#B22222]" />
@@ -780,125 +685,22 @@ function ChannelIntelligenceSection({ report }: { report: string }) {
     <div>
       <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
         <Brain size={18} className="text-[#C9A84C]" />
-        Channel Intelligence
+        Channel Intelligence Report
       </h2>
-      <div className="rounded-xl border border-[#E8E4DC] bg-[#FAF8F4] shadow-sm overflow-hidden">
+      <div className="overflow-hidden rounded-xl border border-[#E8E4DC] bg-[#FAF8F4] shadow-sm">
         <div className="flex items-center gap-2 border-b border-[#E8E4DC] px-5 py-3">
           <span className="inline-flex items-center rounded bg-[#1A1A2E] px-1.5 py-0.5 text-[9px] font-bold text-white">
             AI
           </span>
           <span className="text-[10px] font-semibold uppercase tracking-widest text-[#6B6B6B]">
-            Analyst Report
+            Report
           </span>
         </div>
         <div className="px-5 py-5">
-          <p className="whitespace-pre-wrap text-sm leading-7 text-[#1A1A2E]">{report}</p>
+          <p className="whitespace-pre-wrap text-sm leading-7 text-[#1A1A2E]">
+            {report}
+          </p>
         </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Helper: Confidence Bar ─── */
-function ConfidenceBar({ confidence }: { confidence: number }) {
-  const pct = Math.round(confidence * 100);
-  const color =
-    confidence >= 0.95
-      ? "bg-[#B22222]"
-      : confidence >= 0.80
-        ? "bg-[#C9A84C]"
-        : "bg-[#2E7D32]";
-  return (
-    <div className="mt-1 flex items-center gap-2">
-      <div className="h-2 w-28 overflow-hidden rounded-full bg-[#E8E4DC]">
-        <div
-          className={cn("h-full rounded-full transition-all", color)}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <span className="font-mono text-sm font-medium text-[#0D0D0D]">{pct}%</span>
-    </div>
-  );
-}
-
-/* ─── Helper: Signal Type Label ─── */
-function formatSignalType(type: string): string {
-  const map: Record<string, string> = {
-    domain_in_contact: "Domain in Contact Info",
-    brand_in_contact: "Brand in Contact Info",
-    redirect_to_domain: "Redirect → Competitor Domain",
-    affiliate_url: "Affiliate URL",
-    domain_in_description: "Domain in Description",
-    brand_in_description: "Brand in Description",
-    domain_in_name: "Domain in Channel Name",
-    brand_in_name: "Brand in Channel Name",
-    title_promo: "Promo Video Title",
-    title_neutral: "Video Title Mention",
-    serper_hit: "Web Search Hit",
-  };
-  return map[type] ?? type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-/* ─── Helper: Evidence Signals Table ─── */
-function EvidenceSignalsTable({ signals }: { signals: Gate0EvidenceSignal[] }) {
-  return (
-    <div>
-      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-        Evidence Signals ({signals.length})
-      </p>
-      <div className="overflow-x-auto rounded-lg border border-[#E8E4DC]">
-        <table className="w-full text-left text-xs">
-          <thead className="bg-[#1A1A2E] text-white">
-            <tr>
-              <th className="px-3 py-2 font-semibold uppercase tracking-wide">Signal</th>
-              <th className="px-3 py-2 font-semibold uppercase tracking-wide">Matched Value</th>
-              <th className="px-3 py-2 font-semibold uppercase tracking-wide">Weight</th>
-              <th className="px-3 py-2 font-semibold uppercase tracking-wide">Source / Context</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[#E8E4DC]">
-            {signals.map((sig, idx) => (
-              <tr key={idx} className={idx % 2 === 0 ? "bg-white" : "bg-[#FAF8F4]"}>
-                <td className="px-3 py-2 text-[#1A1A2E]">{formatSignalType(sig.type)}</td>
-                <td className="px-3 py-2 font-mono text-[#1A1A2E]">{sig.value}</td>
-                <td className="px-3 py-2">
-                  <span
-                    className={cn(
-                      "inline-block rounded px-1.5 py-0.5 font-mono font-semibold",
-                      sig.weight >= 0.95
-                        ? "bg-[#B22222]/10 text-[#B22222]"
-                        : sig.weight >= 0.80
-                          ? "bg-[#C9A84C]/15 text-[#8B6914]"
-                          : "bg-[#E8E4DC] text-[#6B6B6B]"
-                    )}
-                  >
-                    {Math.round(sig.weight * 100)}%
-                  </span>
-                </td>
-                <td className="max-w-[280px] px-3 py-2 text-[#6B6B6B]">
-                  {sig.source_url && sig.source_url.startsWith("http") ? (
-                    <a
-                      href={sig.source_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1 break-all text-[#1A1A2E] hover:text-[#C9A84C] transition-colors"
-                    >
-                      <ExternalLink size={10} className="shrink-0" />
-                      <span className="line-clamp-1">{sig.source_url}</span>
-                    </a>
-                  ) : sig.source_url ? (
-                    <span>{sig.source_url}</span>
-                  ) : null}
-                  {sig.context && (
-                    <p className="mt-0.5 line-clamp-2 italic text-[#6B6B6B]">
-                      &ldquo;{sig.context}&rdquo;
-                    </p>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </div>
     </div>
   );

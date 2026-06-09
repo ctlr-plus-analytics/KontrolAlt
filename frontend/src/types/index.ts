@@ -9,8 +9,8 @@ export type Platform = "rumble" | "substack";
 /** Comment engagement tier. */
 export type CommentTier = "active" | "sweet_spot" | "whale";
 
-/** Gate 0 compliance check status. */
-export type Gate0Status = "clean" | "needs_review" | "dirty" | "pending" | "unchecked";
+/** Affiliation compliance check status. */
+export type AffiliationStatus = "clean" | "needs_review" | "dirty" | "pending" | "unchecked";
 
 /** Manual do-not-contact status. */
 export type DoNotContactStatus = "Hired and Canceled" | "Current Partner";
@@ -48,8 +48,8 @@ export interface Channel {
   video_titles: string[];
   recent_videos: RecentVideo[];
   is_active: boolean;
-  gate0_status: Gate0Status;
-  gate0_checked_at: string | null;
+  affiliation_status: AffiliationStatus;
+  affiliation_checked_at: string | null;
   secondary_urls: string[];
   do_not_contact: DoNotContactStatus | null;
   has_been_scraped: boolean;
@@ -67,12 +67,12 @@ export interface Channel {
   comment_velocity_90d: number | null;
   velocity_computed_at: string | null;
 
-  // Consolidated Gate 0 cache fields
-  gate0_result_id: string | null;
-  gate0_search_query: string | null;
-  gate0_result_status: string | null;
-  gate0_flagged_brand: string | null;
-  gate0_source_url: string | null;
+  // Consolidated affiliation cache fields
+  affiliation_result_id: string | null;
+  affiliation_search_query: string | null;
+  affiliation_result_status: string | null;
+  affiliation_flagged_brand: string | null;
+  affiliation_source_url: string | null;
 
   ai_summary: string | null;
   ai_channel_report: string | null;
@@ -92,8 +92,8 @@ export interface VelocityScore {
   comment_velocity_90d: number | null;
 }
 
-/** A single evidence signal from a Gate 0 compliance scan. */
-export interface Gate0EvidenceSignal {
+/** A single evidence signal from an affiliation compliance scan. */
+export interface AffiliationEvidenceSignal {
   type: string;
   value: string;
   weight: number;
@@ -101,8 +101,8 @@ export interface Gate0EvidenceSignal {
   context: string | null;
 }
 
-/** Result of a Gate 0 compliance check via Serper search. */
-export interface Gate0Result {
+/** Result of an affiliation compliance check via Serper search. */
+export interface AffiliationResult {
   id: string;
   channel_id: string;
   checked_at: string;
@@ -111,7 +111,7 @@ export interface Gate0Result {
   flagged_brand: string | null;
   source_url: string | null;
   confidence: number | null;
-  evidence_signals: Gate0EvidenceSignal[] | null;
+  evidence_signals: AffiliationEvidenceSignal[] | null;
 }
 
 /** Log entry for a scrape attempt. */
@@ -150,12 +150,12 @@ export interface ApiErrorResponse {
   timestamp: string;
 }
 
-/** Response returned when a Gate 0 check is queued. */
-export interface Gate0CheckResponse {
+/** Response returned when an affiliation check is queued. */
+export interface AffiliationCheckResponse {
   channel_id: string;
   message: string;
   task_id: string;
-  status: Gate0Status;
+  status: AffiliationStatus;
   triggered_at: string;
 }
 
@@ -264,7 +264,7 @@ export interface UpdateChannelDoNotContactRequest {
 export interface ChannelFilters {
   platform: "all" | Platform;
   comment_tier: "all" | CommentTier;
-  gate0_statuses: Gate0Status[];
+  affiliation_statuses: AffiliationStatus[];
   category_tags: string[];
   niche_tags?: string[];
   search_query?: string | null;
@@ -308,6 +308,15 @@ export interface AdminTaskTriggerRequest {
   reason?: string | null;
 }
 
+export type AdminTaskKind =
+  | "scrape"
+  | "discovery"
+  | "never-scraped-bootstrap"
+  | "weekly-velocity"
+  | "affiliation"
+  | "classify-channels"
+  | "classify-channels-all";
+
 export interface ClassifyChannelsTriggerRequest {
   reclassify?: boolean;
   reason?: string | null;
@@ -320,15 +329,30 @@ export interface AdminTaskTriggerResponse {
   triggered_at: string;
 }
 
-export interface Gate0BatchTriggerRequest {
+export interface AffiliationBatchTriggerRequest {
   channel_ids: string[];
   reason?: string | null;
 }
 
-export interface Gate0BatchTriggerResponse {
+export interface AffiliationBatchTriggerResponse {
   queued: number;
   task_ids: string[];
   triggered_at: string;
+}
+
+export interface WorkerPreflightRequest {
+  task_kind: AdminTaskKind;
+}
+
+export interface WorkerPreflightResponse {
+  task_kind: AdminTaskKind;
+  ready: boolean;
+  message: string;
+  required_services: string[];
+  blocking_services: string[];
+  warning_services: string[];
+  workers: WorkerInfo[];
+  checked_at: string;
 }
 
 export interface AdminTaskStatusResponse {
@@ -382,8 +406,8 @@ export interface CategoryTagOption {
 
 export type NicheTagOption = CategoryTagOption;
 
-export interface Gate0StatusOption {
-  status: Gate0Status;
+export interface AffiliationStatusOption {
+  status: AffiliationStatus;
   count: number;
 }
 

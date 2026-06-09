@@ -1,6 +1,7 @@
 """Rumble scraper with resilient channel-card extraction."""
 
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime, timedelta
@@ -21,7 +22,7 @@ from core.browser import (
     pre_warm_homepage,
     wait_for_content,
 )
-from core.cf_bypass import human_scroll
+from core.cf_bypass import check_for_cf_challenge, human_scroll
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
 from core.runtime_settings import get_runtime_settings
 from scrapers.base import BaseScraper
@@ -367,7 +368,7 @@ class RumbleScraper(BaseScraper):
             videos_url = self._channel_tab_url(channel_base_url, "videos")
             about_url = self._channel_tab_url(channel_base_url, "about")
             session_key = self._session_key or channel_base_url
-            async with launch_browser(session_key=session_key, telemetry=telemetry) as context:
+            async with launch_browser(session_key=session_key, telemetry=telemetry, platform="rumble") as context:
                 page = await context.new_page()
                 if await is_cold_session(context):
                     await pre_warm_homepage(
@@ -384,6 +385,21 @@ class RumbleScraper(BaseScraper):
                 content_ok = await wait_for_content(
                     page, timeout_s=self.PRIMARY_CONTENT_TIMEOUT_S
                 )
+                # CF managed challenge pages are > 5 KB (passing the byte check) but
+                # block real content behind a JS fingerprint verification that auto-
+                # resolves in 2–3 s for browsers that pass. Poll until the challenge
+                # clears or the timeout expires before handing off to the parser.
+                if content_ok and await check_for_cf_challenge(page):
+                    logger.info(
+                        "Rumble: CF managed challenge on %s — waiting for auto-resolution",
+                        channel_url,
+                    )
+                    for _ in range(30):  # up to 15 s in 0.5 s steps
+                        await asyncio.sleep(0.5)
+                        if not await check_for_cf_challenge(page):
+                            break
+                    else:
+                        content_ok = False
                 if not content_ok:
                     logger.warning("Rumble: content not ready, reloading %s", channel_url)
                     await page.reload(
@@ -798,36 +814,110 @@ class RumbleScraper(BaseScraper):
         return description, socials, about_soup, error_reasons
 
     def _extract_name(self, soup: BeautifulSoup, channel_url: str, page_title: str) -> str:
-        """Extract channel name from the channel-home header selector."""
+        """Extract channel name — JSON by.name first, DOM fallback, then page title."""
+        _, _, channel_name = self._parse_video_json_items(soup)
+        if channel_name:
+            return channel_name
         node = soup.select_one(self.CHANNEL_NAME_SELECTOR)
         if node is not None:
             name = node.get_text(" ", strip=True)
             if name:
                 return name
-
         title = re.sub(r"\s*[-|]\s*Rumble\s*$", "", page_title).strip()
         if title:
             return title
         return channel_url.rstrip("/").split("/")[-1]
 
     def _extract_subscribers(self, soup: BeautifulSoup) -> int | None:
-        """Extract follower count from the channel-home follower selector."""
+        """Extract follower count — JSON by.followers first, DOM fallback."""
+        _, followers, _ = self._parse_video_json_items(soup)
+        if followers is not None:
+            return followers
         node = soup.select_one(self.CHANNEL_FOLLOWERS_SELECTOR)
         if node is not None:
             return parse_follower_count(node.get_text(" ", strip=True))
         return None
 
-    def _extract_videos(self, soup: BeautifulSoup) -> dict[str, dict[str, object]]:
-        """Extract recent videos from the videos tab using the supplied card selectors."""
-        video_map: dict[str, dict[str, object]] = {}
-        cards = soup.select(self.VIDEO_CARD_SELECTOR)
+    def _parse_video_json_items(
+        self, soup: BeautifulSoup
+    ) -> tuple[list[dict], int | None, str | None]:
+        """Parse Rumble's inline JSON script tag (current page format).
 
+        Returns (video_items, channel_followers, channel_name).
+        video_items contains only items where object_type == "video".
+        channel_followers and channel_name are taken from the first video's
+        by field and may be None if the JSON is absent or malformed.
+        """
+        for script in soup.find_all("script"):
+            text = script.string or ""
+            if '"object_type"' not in text:
+                continue
+            try:
+                data = json.loads(text)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            items = data.get("items")
+            if not isinstance(items, list):
+                continue
+            followers: int | None = None
+            channel_name: str | None = None
+            for item in items:
+                if isinstance(item, dict) and isinstance(item.get("by"), dict):
+                    by = item["by"]
+                    raw = by.get("followers")
+                    if isinstance(raw, (int, float)):
+                        followers = int(raw)
+                    name = str(by.get("name") or "").strip()
+                    if name:
+                        channel_name = name
+                    break
+            video_items = [
+                item for item in items
+                if isinstance(item, dict) and item.get("object_type") == "video"
+            ]
+            return video_items, followers, channel_name
+        return [], None, None
+
+    def _extract_videos(self, soup: BeautifulSoup) -> dict[str, dict[str, object]]:
+        """Extract recent videos — JSON script tag first, legacy DOM selectors as fallback."""
+        video_map: dict[str, dict[str, object]] = {}
+
+        # Current Rumble format: video grid data is embedded as inline JSON.
+        json_items, _, _ = self._parse_video_json_items(soup)
+        for item in json_items:
+            if len(video_map) >= self.VIDEO_COLLECTION_LIMIT:
+                break
+            video_url = str(item.get("url") or "").strip()
+            if not video_url or not self._is_video_href(video_url):
+                continue
+            video_id = urlsplit(video_url).path.rstrip("/").split("/")[-1]
+            if not video_id or video_id in video_map:
+                continue
+            title = str(item.get("title") or "").strip() or "Unknown Title"
+            views_raw = item.get("views")
+            views = int(views_raw) if isinstance(views_raw, (int, float)) else None
+            comments_data = item.get("comments")
+            comments_raw = comments_data.get("count") if isinstance(comments_data, dict) else None
+            comments = int(comments_raw) if isinstance(comments_raw, (int, float)) else None
+            upload_date_str = str(item.get("upload_date") or "").strip()
+            date_val = parse_rumble_datetime(upload_date_str) if upload_date_str else None
+            video_map[video_id] = {
+                "title": title,
+                "views": views,
+                "comments": comments,
+                "date": date_val,
+                "url": video_url,
+            }
+        if video_map:
+            return video_map
+
+        # Legacy DOM fallback for older Rumble page layouts.
+        cards = soup.select(self.VIDEO_CARD_SELECTOR)
         for card in cards:
             if len(video_map) >= self.VIDEO_COLLECTION_LIMIT or not isinstance(card, Tag):
                 break
-            # Skip the featured banner card — it duplicates the first grid card but
-            # lacks the h3 title element, so processing it first would store a
-            # malformed title and then silently skip the well-formed grid duplicate.
             if "videostream--featured" in (card.get("class") or []):
                 continue
             link = card.select_one(self.VIDEO_LINK_SELECTOR)
@@ -840,12 +930,10 @@ class RumbleScraper(BaseScraper):
             video_id = urlsplit(video_url).path.rstrip("/").split("/")[-1]
             if not video_id or video_id in video_map:
                 continue
-
             title = self._extract_video_title(card, link)
             views = self._extract_card_views(card)
             comments = self._extract_card_comments(card)
             date_val = self._extract_card_date(card)
-
             video_map[video_id] = {
                 "title": title or "Unknown Title",
                 "views": views,

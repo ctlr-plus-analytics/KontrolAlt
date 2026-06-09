@@ -1,11 +1,14 @@
 """Lookalike service - seed persistence, synchronous matching, and result reads."""
 
-from datetime import datetime, timezone
-import re
-from uuid import uuid4
 from uuid import UUID
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+from uuid import uuid4
 
 from postgrest.exceptions import APIError
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.exceptions import SupabaseError
 from core.logging import get_logger
@@ -17,10 +20,15 @@ from models.lookalike import (
     LookalikeSearchResponse,
 )
 from services import admin_service
+from shared.lookalike_matching import (
+    build_niche_subscriber_matches_for_seed as _build_niche_subscriber_matches_for_seed,
+    dedupe_matches as _dedupe_matches,
+    find_seed_channel as _find_seed_channel,
+    stamp_matches as _stamp_matches,
+    is_similar_subscribers as _shared_is_similar_subscribers,
+)
 
 logger = get_logger(__name__)
-_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
-_SUBSCRIBER_BAND = 0.10
 _LOOKALIKE_MATCH_SELECT = "id,name,niche_tags,subscriber_count"
 _LOOKALIKE_CHANNEL_SELECT = (
     "id,platform,channel_url,name,subscriber_count,avg_views,avg_comments,"
@@ -34,6 +42,14 @@ _LOOKALIKE_CHANNEL_SELECT = (
     "gate0_flagged_brand,gate0_source_url,ai_summary,created_at,updated_at"
 )
 
+
+def _is_similar_subscribers(
+    seed_count: object,
+    candidate_count: object,
+    band: float = 0.10,
+) -> bool:
+    """Compatibility wrapper kept for existing unit tests."""
+    return _shared_is_similar_subscribers(seed_count, candidate_count, band)
 
 def _fetch_lookalike_candidate_channels() -> list[dict[str, object]]:
     """Use the same quality gates as dashboard table channels."""
@@ -56,120 +72,6 @@ def _fetch_seed_resolution_channels() -> list[dict[str, object]]:
         .execute()
     )
     return result.data or []
-
-
-def _normalize_name(value: str) -> str:
-    return _NON_ALNUM_RE.sub(" ", value.lower()).strip()
-
-
-def _tokenize(value: str) -> set[str]:
-    normalized = _normalize_name(value)
-    return {token for token in normalized.split() if len(token) >= 2}
-
-
-def _as_string_list(value: object) -> list[str]:
-    if isinstance(value, list):
-        return [str(item) for item in value]
-    if isinstance(value, str):
-        return [value]
-    return []
-
-
-def _find_seed_channel(
-    seed_name: str,
-    channels: list[dict[str, object]],
-) -> dict[str, object] | None:
-    normalized_seed = _normalize_name(seed_name)
-    seed_tokens = _tokenize(seed_name)
-
-    for channel in channels:
-        channel_name = str(channel.get("name") or "")
-        if _normalize_name(channel_name) == normalized_seed:
-            return channel
-
-    best_channel: dict[str, object] | None = None
-    best_score = 0.0
-    for channel in channels:
-        channel_name = str(channel.get("name") or "")
-        channel_tokens = _tokenize(channel_name)
-        if not channel_tokens or not seed_tokens:
-            continue
-        overlap = len(seed_tokens & channel_tokens)
-        if overlap == 0:
-            continue
-        token_ratio = overlap / max(len(seed_tokens), 1)
-        score = overlap + token_ratio
-        if score > best_score:
-            best_score = score
-            best_channel = channel
-
-    if best_channel is not None and (
-        best_score >= 2.0 or (best_score >= 1.5 and len(seed_tokens) <= 2)
-    ):
-        return best_channel
-    return None
-
-
-def _is_similar_subscribers(
-    seed_count: object,
-    candidate_count: object,
-    band: float = _SUBSCRIBER_BAND,
-) -> bool:
-    if not isinstance(seed_count, (int, float)) or not isinstance(
-        candidate_count, (int, float)
-    ):
-        return False
-    if seed_count <= 0 or candidate_count <= 0:
-        return False
-    lower = seed_count * (1 - band)
-    upper = seed_count * (1 + band)
-    return lower <= candidate_count <= upper
-
-
-def _build_niche_subscriber_matches_for_seed(
-    seed_id: str,
-    seed_channel: dict[str, object],
-    channels: list[dict[str, object]],
-) -> list[dict[str, object]]:
-    matches: list[dict[str, object]] = []
-    seed_channel_id = seed_channel["id"]
-    seed_tags = set(_as_string_list(seed_channel.get("niche_tags")))
-    seed_subscribers = seed_channel.get("subscriber_count")
-    if not seed_tags:
-        return matches
-
-    for channel in channels:
-        if channel["id"] == seed_channel_id:
-            continue
-
-        channel_tags = set(_as_string_list(channel.get("niche_tags")))
-        overlap = seed_tags & channel_tags
-        if len(overlap) < 1:
-            continue
-
-        candidate_subscribers = channel.get("subscriber_count")
-        if not _is_similar_subscribers(seed_subscribers, candidate_subscribers):
-            continue
-
-        if not isinstance(seed_subscribers, (int, float)) or not isinstance(
-            candidate_subscribers, (int, float)
-        ):
-            continue
-        pct_delta = ((candidate_subscribers - seed_subscribers) / seed_subscribers) * 100
-        detail = (
-            f"Shared tags: {', '.join(sorted(overlap))} | "
-            f"Subscribers: {int(seed_subscribers)} vs {int(candidate_subscribers)} "
-            f"({pct_delta:+.2f}%)"
-        )
-        matches.append(
-            {
-                "seed_id": seed_id,
-                "matched_channel_id": channel["id"],
-                "match_type": "niche_overlap",
-                "match_detail": detail,
-            }
-        )
-    return matches
 
 
 def _enrich_matches_with_channels(
@@ -230,23 +132,8 @@ async def queue_lookalike_search(
                 )
             )
 
-        unique_matches: dict[tuple[str, str, str], dict[str, object]] = {}
-        for match in all_matches:
-            key = (
-                str(match["seed_id"]),
-                str(match["matched_channel_id"]),
-                str(match["match_type"]),
-            )
-            if key not in unique_matches:
-                unique_matches[key] = match
-
-        ephemeral_matches: list[dict[str, object]] = []
-        for match in unique_matches.values():
-            row = dict(match)
-            row["id"] = str(uuid4())
-            row["found_at"] = datetime.now(timezone.utc).isoformat()
-            ephemeral_matches.append(row)
-
+        unique_matches = _dedupe_matches(all_matches)
+        ephemeral_matches = _stamp_matches(unique_matches)
         enriched = _enrich_matches_with_channels(ephemeral_matches, seed_map=None)
     except APIError as exc:
         logger.error("Failed synchronous lookalike compute: %s", exc, exc_info=True)

@@ -22,7 +22,7 @@ export default async function DashboardPage() {
     const token = session?.access_token;
 
     const result = await getChannels(
-      { sort_by: "avg_comments", sort_order: "desc" },
+      { min_subscriber_count: 10, inactive_filter: true, sort_by: "avg_comments", sort_order: "desc" },
       1,
       25,
       token

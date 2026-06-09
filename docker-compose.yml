@@ -9,8 +9,8 @@ services:
 
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./backend/Dockerfile
     ports:
       - "8000:8000"
     env_file:
@@ -22,14 +22,15 @@ services:
     user: root
     volumes:
       - ./backend:/app
+      - ./shared:/app/shared
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped
 
   worker-discovery:
     build:
-      context: ./scraper
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./scraper/Dockerfile
     env_file:
       - .env
     environment:
@@ -40,13 +41,14 @@ services:
       - redis
     volumes:
       - ./scraper:/app
+      - ./shared:/app/shared
     command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=discovery --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-discovery
     restart: unless-stopped
 
   worker-classify:
     build:
-      context: ./scraper
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./scraper/Dockerfile
     env_file:
       - .env
     environment:
@@ -57,13 +59,14 @@ services:
       - redis
     volumes:
       - ./scraper:/app
+      - ./shared:/app/shared
     command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=classify --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-classify
     restart: unless-stopped
 
   worker-gate0:
     build:
-      context: ./scraper
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./scraper/Dockerfile
     env_file:
       - .env
     environment:
@@ -74,13 +77,14 @@ services:
       - redis
     volumes:
       - ./scraper:/app
+      - ./shared:/app/shared
     command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=gate0 --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-gate0
     restart: unless-stopped
 
   worker-rumble:
     build:
-      context: ./scraper
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./scraper/Dockerfile
     env_file:
       - .env
     environment:
@@ -92,13 +96,14 @@ services:
       - redis
     volumes:
       - ./scraper:/app
+      - ./shared:/app/shared
     command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=rumble --concurrency=4 --prefetch-multiplier=1 --hostname=celery@worker-rumble
     restart: unless-stopped
 
   worker-substack:
     build:
-      context: ./scraper
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./scraper/Dockerfile
     env_file:
       - .env
     environment:
@@ -110,13 +115,14 @@ services:
       - redis
     volumes:
       - ./scraper:/app
+      - ./shared:/app/shared
     command: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=substack --concurrency=4 --prefetch-multiplier=1 --hostname=celery@worker-substack
     restart: unless-stopped
 
   beat:
     build:
-      context: ./scraper
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./scraper/Dockerfile
     env_file:
       - .env
     environment:
@@ -127,6 +133,7 @@ services:
       - redis
     volumes:
       - ./scraper:/app
+      - ./shared:/app/shared
     command: /opt/venv/bin/celery -A worker.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
     restart: unless-stopped
 

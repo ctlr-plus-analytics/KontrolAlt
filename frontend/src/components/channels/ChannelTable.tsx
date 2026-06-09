@@ -33,7 +33,6 @@ const COLUMNS: SortableColumn[] = [
   { key: null, label: "Likes", align: "right" },
   { key: "avg_comments", label: "Avg Comments", align: "right" },
   { key: "engagement_rate", label: "Engagement Rate %", align: "right" },
-  { key: null, label: "Previous Gold Affiliation" },
   { key: null, label: "Last Active" },
 ];
 

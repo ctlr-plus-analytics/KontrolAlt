@@ -55,8 +55,7 @@ celery_app.conf.update(
         "scraper.tasks.discover_channels": {"queue": "discovery"},
         "scraper.tasks.discover_keyword_expansion": {"queue": "discovery"},
         "scraper.tasks.discover_seed_expansion": {"queue": "discovery"},
-        "scraper.tasks.find_lookalikes": {"queue": "discovery"},
-        "scraper.tasks.scrape_never_scraped_rumble_substack": {"queue": "discovery"},
+"scraper.tasks.scrape_never_scraped_rumble_substack": {"queue": "discovery"},
         "scraper.tasks.run_daily_scrape": {"queue": "discovery"},
         "scraper.tasks.run_scrape_new_channels": {"queue": "discovery"},
         "scraper.tasks.dispatch_daily_scrapes": {"queue": "discovery"},
@@ -103,8 +102,7 @@ celery_app.conf.update(
         "tasks.discover_keyword_expansion",
         "tasks.discover_seed_expansion",
         "tasks.run_gate0",
-        "tasks.find_lookalikes",
-        "tasks.run_daily_scrape",
+"tasks.run_daily_scrape",
         "tasks.run_scrape_new_channels",
         "tasks.classify_channels",
     ],
@@ -117,29 +115,30 @@ celery_app.conf.update(
 
 @worker_process_init.connect
 def _on_worker_process_init(**kwargs):
-    """Validate proxies and pre-warm the browser pool inside each forked worker.
+    """Validate proxies and pre-warm the browser pool for browser-backed workers.
+
+    Only runs for workers consuming the rumble or substack queues.  Discovery,
+    classify, and gate0 workers skip this entirely — they never use a browser
+    or the proxy pool, so importing those modules would be wasted overhead.
 
     worker_process_init fires in the child process after Celery's fork, so
-    there are no inherited broken event-loop or browser-websocket handles.
     reset() discards anything that leaked across the fork boundary before
     any async work starts.
 
     Non-fatal: any failure is caught so the worker always starts.
     """
+    if not _should_manage_browser_pool():
+        logger.info("Worker startup: browser management skipped (non-browser queue)")
+        return
     try:
         from core.proxy import (
             proxy_rotator,
             proxy_health_tracker,
             validate_proxy_pool_on_startup,
         )
+        from core.browser_pool import worker_pool
 
-        should_prewarm_browser = _should_manage_browser_pool()
-        worker_pool = None
-        if should_prewarm_browser:
-            from core.browser_pool import worker_pool as browser_worker_pool
-
-            worker_pool = browser_worker_pool
-            worker_pool.reset()
+        worker_pool.reset()
 
         async def _startup():
             await validate_proxy_pool_on_startup(
@@ -148,15 +147,10 @@ def _on_worker_process_init(**kwargs):
                 timeout=12.0,
                 concurrency=4,
             )
-            if worker_pool is not None:
-                await worker_pool.ensure_browser()
+            await worker_pool.ensure_browser()
 
-        if worker_pool is not None:
-            worker_pool.run(_startup())
-            logger.info("Worker process startup complete: proxies checked, browser pre-warmed")
-        else:
-            asyncio.run(_startup())
-            logger.info("Worker process startup complete: proxies checked, browser prewarm skipped")
+        worker_pool.run(_startup())
+        logger.info("Worker startup complete: proxies checked, browser pre-warmed")
     except Exception as exc:
         logger.warning(
             "Worker startup tasks failed (worker will continue): %s", exc

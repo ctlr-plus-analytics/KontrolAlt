@@ -1,16 +1,15 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef, useLayoutEffect, useMemo } from "react";
-import { ChevronLeft, ChevronRight, Plus, RefreshCw, X } from "lucide-react";
-import type { CategoryTagOption, Channel, ChannelFilters, Gate0StatusOption, VelocityScore } from "@/types";
+import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import type { CategoryTagOption, Channel, ChannelFilters, VelocityScore } from "@/types";
 import { ChannelTable } from "@/components/channels/ChannelTable";
-import { ChannelIntakePanel } from "@/components/channels/ChannelIntakePanel";
 import { FilterSidebar, DEFAULT_FILTERS } from "@/components/filters/FilterSidebar";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { useChannels } from "@/hooks/useChannels";
 import { useAuth } from "@/hooks/useAuth";
-import { getCategoryTags, getGate0Statuses } from "@/lib/api/backend";
+import { getCategoryTags } from "@/lib/api/backend";
 
 interface ChannelTableViewProps {
   initialChannels: (Channel & { velocity?: VelocityScore | null })[];
@@ -45,20 +44,16 @@ export function ChannelTableView({
   // Keep initial render SSR-stable; restore session state after mount.
   const [filters, setFilters] = useState<ChannelFilters>(DEFAULT_FILTERS);
   const [page, setPage] = useState<number>(1);
-  const [intakeOpen, setIntakeOpen] = useState<boolean>(false);
   const [categoryTagOptions, setCategoryTagOptions] = useState<CategoryTagOption[]>([]);
   const [categoryTagsLoading, setCategoryTagsLoading] = useState<boolean>(false);
   const [categoryTagsLoadedKey, setCategoryTagsLoadedKey] = useState<string | null>(null);
-  const [gate0StatusOptions, setGate0StatusOptions] = useState<Gate0StatusOption[]>([]);
-  const [gate0StatusesLoaded, setGate0StatusesLoaded] = useState<boolean>(false);
   const { session } = useAuth();
   const token = session?.access_token;
-  const gate0StatusesLoading = Boolean(token) && !gate0StatusesLoaded;
   const categoryTagsScopeFilters = useMemo(
     () => ({
       platform: filters.platform,
       comment_tier: filters.comment_tier,
-      gate0_statuses: filters.gate0_statuses,
+      affiliation_statuses: filters.affiliation_statuses,
       search_query: filters.search_query,
       min_subscriber_count: filters.min_subscriber_count,
       max_subscriber_count: filters.max_subscriber_count,
@@ -74,7 +69,7 @@ export function ChannelTableView({
     [
       filters.platform,
       filters.comment_tier,
-      filters.gate0_statuses,
+      filters.affiliation_statuses,
       filters.search_query,
       filters.min_subscriber_count,
       filters.max_subscriber_count,
@@ -102,8 +97,10 @@ export function ChannelTableView({
       const saved = readStorage();
       if (saved.filters) {
         const normalizedFilters: ChannelFilters = {
+          ...DEFAULT_FILTERS,
           ...saved.filters,
           category_tags: saved.filters.category_tags ?? saved.filters.niche_tags ?? [],
+          affiliation_statuses: [],
         };
         setFilters(normalizedFilters);
       }
@@ -114,24 +111,6 @@ export function ChannelTableView({
     }, 0);
     return () => clearTimeout(timer);
   }, []);
-
-  useEffect(() => {
-    if (!token || gate0StatusesLoaded) return;
-    let cancelled = false;
-
-    void (async () => {
-      const statuses = await getGate0Statuses(token).catch(() => []);
-      if (cancelled) {
-        return;
-      }
-      setGate0StatusOptions(statuses);
-      setGate0StatusesLoaded(true);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [gate0StatusesLoaded, token]);
 
   const { channels, total, loading, refreshing, refetch } = useChannels(
     filters,
@@ -191,12 +170,6 @@ export function ChannelTableView({
     writeStorage({ scrollTop: 0 });
   }, []);
 
-  const handleIntakeComplete = useCallback(() => {
-    setPage(1);
-    void refetch();
-    setIntakeOpen(false);
-  }, [refetch]);
-
   const commitPageInput = useCallback((rawValue: string, inputElement?: HTMLInputElement | null) => {
     const parsed = Number.parseInt(rawValue.trim(), 10);
     if (Number.isNaN(parsed)) {
@@ -238,8 +211,6 @@ export function ChannelTableView({
         categoryTagOptions={categoryTagOptions}
         categoryTagsLoading={categoryTagsLoading}
         onCategoryMenuOpen={loadCategoryTags}
-        gate0StatusOptions={gate0StatusOptions}
-        gate0StatusesLoading={gate0StatusesLoading}
       />
 
       {/* ── Main Content ── */}
@@ -263,10 +234,6 @@ export function ChannelTableView({
             >
               <RefreshCw size={14} />
               Refresh
-            </Button>
-            <Button variant="accent" size="sm" onClick={() => setIntakeOpen(true)}>
-              <Plus size={14} />
-              Add / Resolve Channels
             </Button>
           </div>
         </div>
@@ -340,27 +307,6 @@ export function ChannelTableView({
         </div>
       </div>
 
-      {/* ── Intake Modal ── */}
-      {intakeOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1A1A2E]/55 p-4">
-          <div className="max-h-[90vh] w-full max-w-7xl overflow-y-auto rounded-2xl border border-[#E8E4DC] bg-[#F7F4EE] p-4 shadow-2xl">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-semibold tracking-tight text-[#1A1A2E]">
-                Channel Intake
-              </h2>
-              <button
-                type="button"
-                onClick={() => setIntakeOpen(false)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#6B6B6B] transition-colors hover:bg-[#1A1A2E]/5 hover:text-[#1A1A2E]"
-                aria-label="Close intake modal"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <ChannelIntakePanel onIntakeComplete={handleIntakeComplete} />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

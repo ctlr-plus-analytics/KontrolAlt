@@ -45,7 +45,6 @@ export function useChannels(
   const realtimeTables = useMemo(
     () => [
       { table: "channels" },
-      { table: "gate0_results" },
     ],
     []
   );
@@ -172,10 +171,10 @@ function isDefaultInitialQuery(filters: Partial<ChannelFilters>): boolean {
   return (
     (filters.platform === undefined || filters.platform === "all") &&
     (filters.comment_tier === undefined || filters.comment_tier === "all") &&
-    (filters.gate0_statuses?.length ?? 0) === 0 &&
+    (filters.affiliation_statuses?.length ?? 0) === 0 &&
     (filters.category_tags?.length ?? 0) === 0 &&
     !filters.search_query &&
-    filters.min_subscriber_count == null &&
+    (filters.min_subscriber_count === undefined || filters.min_subscriber_count === 10) &&
     filters.max_subscriber_count == null &&
     filters.min_avg_views == null &&
     filters.max_avg_views == null &&
@@ -183,7 +182,7 @@ function isDefaultInitialQuery(filters: Partial<ChannelFilters>): boolean {
     filters.max_avg_comments == null &&
     !filters.last_active_from &&
     !filters.last_active_to &&
-    !filters.inactive_filter &&
+    (filters.inactive_filter === undefined || filters.inactive_filter === true) &&
     !filters.incomplete_only &&
     (filters.sort_by === undefined || filters.sort_by === "avg_comments") &&
     (filters.sort_order === undefined || filters.sort_order === "desc")

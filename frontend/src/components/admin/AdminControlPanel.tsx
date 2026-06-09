@@ -9,9 +9,10 @@ import {
   getAdminTaskStatus,
   getAdminWorkerLogs,
   getAdminWorkers,
+  preflightAdminTask,
   triggerAdminClassifyChannels,
   triggerAdminDiscoveryNow,
-  triggerAdminGate0Now,
+  triggerAdminAffiliationNow,
   triggerAdminNeverScrapedBootstrapNow,
   triggerAdminWeeklyVelocityNow,
   triggerAdminScrapeNow,
@@ -20,15 +21,16 @@ import {
   purgeAdminQueue,
 } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
-import type { AdminAuditRecord, AdminTaskStatusResponse, CompetitorDef, KeywordTaxonomyDef, PurgeQueueResponse, WorkerInfo, WorkerLogsResponse } from "@/types";
+import type { AdminAuditRecord, AdminTaskKind, AdminTaskStatusResponse, CompetitorDef, KeywordTaxonomyDef, PurgeQueueResponse, WorkerInfo, WorkerLogsResponse } from "@/types";
 import { Button } from "@/components/ui/Button";
+import { ChannelIntakePanel } from "@/components/channels/ChannelIntakePanel";
 
 const AUDIT_PAGE_SIZE = 20;
 const TASK_POLL_INTERVAL_MS = 2500;
 const TERMINAL_TASK_STATES = new Set(["SUCCESS", "FAILURE", "REVOKED"]);
 const ERROR_TASK_STATES = new Set(["FAILURE", "REVOKED"]);
 
-type ManualTaskKind = "scrape" | "discovery" | "never-scraped-bootstrap" | "weekly-velocity" | "gate0" | "classify-channels" | "classify-channels-all";
+type ManualTaskKind = AdminTaskKind;
 
 interface ManualTaskRun {
   id: string;
@@ -48,7 +50,7 @@ function getTaskLabel(kind: ManualTaskKind): string {
   if (kind === "weekly-velocity") return "Weekly Velocity";
   if (kind === "classify-channels") return "AI Classify (Unclassified)";
   if (kind === "classify-channels-all") return "AI Classify (All Channels)";
-  return "Previous Gold Affiliation Batch";
+  return "Affiliation Batch";
 }
 
 function isTaskSettled(status?: AdminTaskStatusResponse): boolean {
@@ -127,7 +129,7 @@ export function AdminControlPanel() {
   const [audit, setAudit] = useState<AdminAuditRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [message, setMessage] = useState<string>("");
-  const [gate0IdsInput, setGate0IdsInput] = useState<string>("");
+  const [affiliationIdsInput, setAffiliationIdsInput] = useState<string>("");
   const [taskRuns, setTaskRuns] = useState<ManualTaskRun[]>([]);
 
   const [competitors, setCompetitors] = useState<CompetitorDef[]>([]);
@@ -288,55 +290,61 @@ export function AdminControlPanel() {
       if (!token) return;
       setMessage("");
       try {
+        const preflight = await preflightAdminTask({ task_kind: kind }, token);
+        if (!preflight.ready) {
+          setMessage(preflight.message);
+          return;
+        }
+        const preflightNote = preflight.warning_services.length > 0 ? preflight.message : null;
         if (kind === "scrape") {
           const result = await triggerAdminScrapeNow({ reason: "admin-ui" }, token);
-          setMessage(result.message);
+          setMessage(preflightNote ? `${result.message} ${preflightNote}` : result.message);
           setTaskRuns((prev) => [{
             id: `${kind}-${result.triggered_at}`,
             kind,
             label: getTaskLabel(kind),
             taskIds: result.task_ids,
             triggeredAt: result.triggered_at,
-            message: result.message,
+            message: preflightNote ? `${result.message} ${preflightNote}` : result.message,
             statuses: {},
             pollingError: null,
           }, ...prev.slice(0, 4)]);
         } else if (kind === "discovery") {
           const result = await triggerAdminDiscoveryNow({ reason: "admin-ui" }, token);
-          setMessage(result.message);
+          setMessage(preflightNote ? `${result.message} ${preflightNote}` : result.message);
           setTaskRuns((prev) => [{
             id: `${kind}-${result.triggered_at}`,
             kind,
             label: getTaskLabel(kind),
             taskIds: result.task_ids,
             triggeredAt: result.triggered_at,
-            message: result.message,
+            message: preflightNote ? `${result.message} ${preflightNote}` : result.message,
             statuses: {},
             pollingError: null,
           }, ...prev.slice(0, 4)]);
         } else if (kind === "weekly-velocity") {
           const result = await triggerAdminWeeklyVelocityNow({ reason: "admin-ui" }, token);
-          setMessage(result.message);
+          setMessage(preflightNote ? `${result.message} ${preflightNote}` : result.message);
           setTaskRuns((prev) => [{
             id: `${kind}-${result.triggered_at}`,
             kind,
             label: getTaskLabel(kind),
             taskIds: result.task_ids,
             triggeredAt: result.triggered_at,
-            message: result.message,
+            message: preflightNote ? `${result.message} ${preflightNote}` : result.message,
             statuses: {},
             pollingError: null,
           }, ...prev.slice(0, 4)]);
         } else if (kind === "never-scraped-bootstrap") {
           const result = await triggerAdminNeverScrapedBootstrapNow({ reason: "admin-ui" }, token);
-          setMessage(result.message);
+          setMessage(preflightNote ? `${result.message} ${preflightNote}` : result.message);
           setTaskRuns((prev) => [{
             id: `${kind}-${result.triggered_at}`,
             kind,
             label: getTaskLabel(kind),
             taskIds: result.task_ids,
             triggeredAt: result.triggered_at,
-            message: result.message,
+            message: preflightNote ? `${result.message} ${preflightNote}` : result.message,
             statuses: {},
             pollingError: null,
           }, ...prev.slice(0, 4)]);
@@ -345,31 +353,37 @@ export function AdminControlPanel() {
             { reclassify: kind === "classify-channels-all", reason: "admin-ui" },
             token,
           );
-          setMessage(result.message);
+          setMessage(preflightNote ? `${result.message} ${preflightNote}` : result.message);
           setTaskRuns((prev) => [{
             id: `${kind}-${result.triggered_at}`,
             kind,
             label: getTaskLabel(kind),
             taskIds: result.task_ids,
             triggeredAt: result.triggered_at,
-            message: result.message,
+            message: preflightNote ? `${result.message} ${preflightNote}` : result.message,
             statuses: {},
             pollingError: null,
           }, ...prev.slice(0, 4)]);
         } else {
-          const ids = gate0IdsInput
+          const ids = affiliationIdsInput
             .split(/[\n,]/)
             .map((value) => value.trim())
             .filter(Boolean);
-          const result = await triggerAdminGate0Now({ channel_ids: ids, reason: "admin-ui" }, token);
-          setMessage(`Queued previous gold affiliation tasks: ${result.queued}`);
+          const result = await triggerAdminAffiliationNow({ channel_ids: ids, reason: "admin-ui" }, token);
+          setMessage(
+            preflightNote
+              ? `Queued affiliation tasks: ${result.queued} ${preflightNote}`
+              : `Queued affiliation tasks: ${result.queued}`
+          );
           setTaskRuns((prev) => [{
             id: `${kind}-${result.triggered_at}`,
             kind,
             label: getTaskLabel(kind),
             taskIds: result.task_ids,
             triggeredAt: result.triggered_at,
-            message: `Queued previous gold affiliation tasks: ${result.queued}`,
+            message: preflightNote
+              ? `Queued affiliation tasks: ${result.queued} ${preflightNote}`
+              : `Queued affiliation tasks: ${result.queued}`,
             statuses: {},
             pollingError: null,
           }, ...prev.slice(0, 4)]);
@@ -380,8 +394,14 @@ export function AdminControlPanel() {
         setMessage(error instanceof Error ? error.message : "Task trigger failed.");
       }
     },
-    [gate0IdsInput, token]
+    [affiliationIdsInput, token]
   );
+
+  const handleIntakeComplete = useCallback(async () => {
+    if (!token) return;
+    const auditData = await getAdminAudit(1, AUDIT_PAGE_SIZE, token).catch(() => null);
+    if (auditData) setAudit(auditData.data);
+  }, [token]);
 
   const parseDomains = (raw: string): string[] =>
     raw.split(",").map((d) => d.trim()).filter(Boolean);
@@ -564,13 +584,13 @@ export function AdminControlPanel() {
           <Button variant="primary" size="sm" onClick={() => void runTask("discovery")}>Trigger Discovery</Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("never-scraped-bootstrap")}>Bootstrap Never-Scraped Rumble/Substack</Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("weekly-velocity")}>Trigger Weekly Velocity</Button>
-          <Button variant="primary" size="sm" onClick={() => void runTask("gate0")}>Trigger Previous Gold Affiliation Batch</Button>
+          <Button variant="primary" size="sm" onClick={() => void runTask("affiliation")}>Trigger Affiliation Batch</Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("classify-channels")}>AI Classify Channels</Button>
           <Button variant="ghost" size="sm" onClick={() => void runTask("classify-channels-all")}>AI Reclassify All</Button>
         </div>
         <textarea
-          value={gate0IdsInput}
-          onChange={(event) => setGate0IdsInput(event.target.value)}
+          value={affiliationIdsInput}
+          onChange={(event) => setAffiliationIdsInput(event.target.value)}
           rows={3}
           placeholder="Paste channel UUIDs (comma or newline separated)"
           className="mt-3 w-full rounded-lg border border-[#E8E4DC] bg-white px-3 py-2 text-xs text-[#0D0D0D] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
@@ -615,6 +635,17 @@ export function AdminControlPanel() {
             ))}
           </div>
         )}
+      </section>
+
+      <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
+        <h2 className="mb-1 text-lg font-semibold text-[#1A1A2E]">Channel Intake</h2>
+        <p className="mb-4 text-xs text-[#6B6B6B]">
+          Add channels to the database manually. Use <strong>Add Single Channel</strong> for one-off additions with
+          optional metadata, <strong>Bulk Add URLs</strong> for large imports, or <strong>Creator Name Resolver</strong> when
+          you know the creator&apos;s name but not the exact URL. All methods detect duplicates automatically.
+          Channels added here are tagged <code className="rounded bg-[#F7F4EE] px-1 py-0.5 text-[#1A1A2E]">manual_frontend</code> as the discovery source.
+        </p>
+        <ChannelIntakePanel onIntakeComplete={() => { void handleIntakeComplete(); }} />
       </section>
 
       <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
@@ -778,8 +809,8 @@ export function AdminControlPanel() {
       </section>
 
       <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
-        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">Previous Gold Affiliation Competitors</h2>
-        <p className="mb-3 text-xs text-[#6B6B6B]">Channels promoting these brands are flagged with a prior gold affiliation. Changes take effect on the next affiliation run.</p>
+        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">Affiliation Competitors</h2>
+        <p className="mb-3 text-xs text-[#6B6B6B]">Channels promoting these brands are flagged on the next affiliation run. Changes take effect the next time the list is evaluated.</p>
 
         {competitorsError && (
           <p className="mb-3 text-xs text-[#B22222]">{competitorsError}</p>

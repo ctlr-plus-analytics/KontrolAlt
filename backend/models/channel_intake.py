@@ -41,11 +41,24 @@ class ManualChannelIntakeRequest(BaseModel):
         return sorted({tag.strip() for tag in value if tag.strip()})
 
 
+_MAX_BULK_URLS = 500
+
+
 class BulkChannelIntakeRequest(BaseModel):
     """Request body for bulk URL intake."""
 
     urls_text: str = Field(min_length=1)
     trigger_scrape_now: bool = False
+
+    @field_validator("urls_text")
+    @classmethod
+    def validate_url_count(cls, value: str) -> str:
+        count = sum(1 for part in value.replace(",", "\n").split("\n") if part.strip())
+        if count > _MAX_BULK_URLS:
+            raise ValueError(
+                f"Too many URLs ({count}). Maximum allowed is {_MAX_BULK_URLS} per request."
+            )
+        return value
 
 
 class IntakeRecordResult(BaseModel):

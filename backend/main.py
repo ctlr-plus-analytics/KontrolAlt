@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
 from core.config import settings
+from core.exceptions import WorkerUnavailableError
 from core.logging import get_logger
 from core.supabase import supabase_admin
 from api.v1.health import router as health_router
@@ -149,6 +150,23 @@ async def validation_exception_handler(
     return JSONResponse(
         status_code=422,
         content=_error_content("Validation error", str(exc.errors())),
+    )
+
+
+@app.exception_handler(WorkerUnavailableError)
+async def worker_unavailable_exception_handler(
+    request: Request, exc: WorkerUnavailableError
+) -> JSONResponse:
+    """Return a structured 409 when a manual task is blocked by worker health."""
+    logger.warning(
+        "%s %s → 409: %s",
+        request.method,
+        request.url.path,
+        exc,
+    )
+    return JSONResponse(
+        status_code=409,
+        content=_error_content("Worker unavailable", str(exc)),
     )
 
 

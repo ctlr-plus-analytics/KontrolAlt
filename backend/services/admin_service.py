@@ -3,7 +3,10 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-import docker as docker_lib
+try:
+    import docker as docker_lib
+except ImportError:  # pragma: no cover - optional runtime dependency in tests
+    docker_lib = None
 import redis as redis_lib
 from celery import Celery
 from celery.exceptions import CeleryError
@@ -12,7 +15,7 @@ from kombu.exceptions import OperationalError
 from postgrest.exceptions import APIError
 
 from core.config import settings
-from core.exceptions import SupabaseError
+from core.exceptions import SupabaseError, WorkerUnavailableError
 from core.logging import get_logger
 from core.supabase import supabase_admin
 from models.admin import (
@@ -20,6 +23,7 @@ from models.admin import (
     AdminTaskTriggerResponse,
     Gate0BatchTriggerResponse,
     PurgeQueueResponse,
+    WorkerPreflightResponse,
     WorkerInfo,
     WorkerLogsResponse,
     WorkerStatusResponse,
@@ -43,6 +47,32 @@ _FEATURE_FIELDS = {
     "gate0": "gate0_enabled",
     "discovery": "discovery_enabled",
     "lookalike": "lookalike_enabled",
+}
+
+_TASK_WORKER_REQUIREMENTS: dict[str, list[str]] = {
+    "scrape": [
+        "worker-discovery",
+        "worker-rumble",
+        "worker-substack",
+        "worker-gate0",
+        "worker-classify",
+    ],
+    "discovery": ["worker-discovery", "worker-rumble", "worker-substack"],
+    "never-scraped-bootstrap": ["worker-discovery", "worker-rumble", "worker-substack"],
+    "weekly-velocity": ["worker-discovery", "worker-rumble", "worker-substack"],
+    "gate0": ["worker-gate0"],
+    "classify-channels": ["worker-classify"],
+    "classify-channels-all": ["worker-classify"],
+}
+
+_TASK_LABELS: dict[str, str] = {
+    "scrape": "Full scrape",
+    "discovery": "Discovery",
+    "never-scraped-bootstrap": "Never-scraped bootstrap",
+    "weekly-velocity": "Weekly velocity",
+    "gate0": "Gate 0 batch",
+    "classify-channels": "AI classify channels",
+    "classify-channels-all": "AI reclassify all channels",
 }
 
 def _normalize_competitors(value: object) -> list[dict]:
@@ -115,6 +145,7 @@ def _audit(
 
 
 async def trigger_full_scrape(actor: dict, reason: str | None) -> AdminTaskTriggerResponse:
+    await _require_workers("scrape")
     task = _celery.send_task(TASK_RUN_DAILY_SCRAPE, queue=QUEUE_DISCOVERY)
     _audit(
         actor=actor,
@@ -133,6 +164,7 @@ async def trigger_full_scrape(actor: dict, reason: str | None) -> AdminTaskTrigg
 async def trigger_weekly_velocity(
     actor: dict, reason: str | None
 ) -> AdminTaskTriggerResponse:
+    await _require_workers("weekly-velocity")
     task = _celery.send_task(TASK_RUN_WEEKLY_VELOCITY_SCRAPE, queue=QUEUE_DISCOVERY)
     _audit(
         actor=actor,
@@ -149,6 +181,7 @@ async def trigger_weekly_velocity(
 
 
 async def trigger_discovery(actor: dict, reason: str | None) -> AdminTaskTriggerResponse:
+    await _require_workers("discovery")
     discovery_task = _celery.send_task(TASK_DISCOVER_CHANNELS, queue=QUEUE_DISCOVERY)
     task_ids = [discovery_task.id]
     _audit(
@@ -168,6 +201,7 @@ async def trigger_discovery(actor: dict, reason: str | None) -> AdminTaskTrigger
 async def trigger_never_scraped_bootstrap(
     actor: dict, reason: str | None
 ) -> AdminTaskTriggerResponse:
+    await _require_workers("never-scraped-bootstrap")
     task = _celery.send_task(
         TASK_SCRAPE_NEVER_SCRAPED_RUMBLE_SUBSTACK,
         queue=QUEUE_DISCOVERY,
@@ -189,6 +223,7 @@ async def trigger_never_scraped_bootstrap(
 async def trigger_gate0_batch(
     actor: dict, channel_ids: list[UUID], reason: str | None
 ) -> Gate0BatchTriggerResponse:
+    await _require_workers("gate0")
     task_ids: list[str] = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for channel_id in channel_ids:
@@ -456,6 +491,7 @@ async def purge_queues(actor: dict, reason: str | None) -> PurgeQueueResponse:
 async def trigger_classify_channels(
     actor: dict, reclassify: bool, reason: str | None
 ) -> AdminTaskTriggerResponse:
+    await _require_workers("classify-channels-all" if reclassify else "classify-channels")
     task = _celery.send_task(
         TASK_CLASSIFY_CHANNELS,
         kwargs={"reclassify": reclassify},
@@ -513,6 +549,9 @@ _SERVICE_TO_CELERY_NAME: dict[str, str] = {
 
 
 def _docker_client() -> docker_lib.DockerClient | None:
+    if docker_lib is None:
+        logger.warning("Docker client unavailable: docker package is not installed")
+        return None
     try:
         client = docker_lib.from_env()
         client.ping()  # eagerly test the connection
@@ -546,7 +585,8 @@ def _build_queue_to_worker(queues_map: dict) -> dict[str, str]:
     return result
 
 
-async def get_worker_statuses() -> WorkerStatusResponse:
+def _collect_worker_statuses() -> tuple[list[WorkerInfo], datetime]:
+    """Inspect Celery and Docker once, returning the current worker snapshot."""
     try:
         inspector = _celery.control.inspect(timeout=3.0)
         ping_map: dict = inspector.ping() or {}
@@ -560,9 +600,7 @@ async def get_worker_statuses() -> WorkerStatusResponse:
 
     logger.debug("Celery ping_map keys: %s", list(ping_map.keys()))
 
-    # Dynamic fallback: map queue name → actual Celery worker name (handles any hostname)
     queue_to_worker = _build_queue_to_worker(queues_map)
-
     docker = _docker_client()
     workers: list[WorkerInfo] = []
 
@@ -570,7 +608,6 @@ async def get_worker_statuses() -> WorkerStatusResponse:
         container_status = _container_status(docker, service)
 
         if queue is not None:
-            # Prefer the explicit hostname; fall back to dynamic queue-based discovery
             preferred = _SERVICE_TO_CELERY_NAME[service]
             celery_name: str | None = preferred if preferred in ping_map else queue_to_worker.get(queue)
             online = celery_name is not None
@@ -584,7 +621,6 @@ async def get_worker_statuses() -> WorkerStatusResponse:
             pid: int | None = worker_stats.get("pid")
             display_celery_name = celery_name
         else:
-            # beat: no Celery worker, derive online from Docker container status
             online = container_status == "running"
             active_tasks = reserved_tasks = processed_total = 0
             concurrency = pid = None
@@ -602,13 +638,85 @@ async def get_worker_statuses() -> WorkerStatusResponse:
             pid=pid,
         ))
 
-    return WorkerStatusResponse(workers=workers, checked_at=datetime.now(timezone.utc))
+    return workers, datetime.now(timezone.utc)
+
+
+def _format_offline_services(services: list[str]) -> str:
+    if not services:
+        return ""
+    if len(services) == 1:
+        return services[0]
+    return ", ".join(services[:-1]) + f" and {services[-1]}"
+
+
+def _build_worker_preflight_response(task_kind: str) -> WorkerPreflightResponse:
+    required_services = _TASK_WORKER_REQUIREMENTS.get(task_kind, [])
+    workers, checked_at = _collect_worker_statuses()
+    worker_map = {worker.service: worker for worker in workers}
+    offline_services: list[str] = []
+    for service in required_services:
+        worker = worker_map.get(service)
+        if worker is None or not worker.online:
+            offline_services.append(service)
+    warning_services = [worker.service for worker in workers if not worker.online and worker.service not in required_services]
+    ready = len(offline_services) == 0
+    task_label = _TASK_LABELS.get(task_kind, task_kind)
+
+    if ready:
+        if warning_services:
+            message = (
+                f"{task_label} can proceed, but "
+                f"{_format_offline_services(warning_services)} is offline."
+            )
+        else:
+            message = f"{task_label} preflight passed. All required workers are online."
+    else:
+        message = (
+            f"{task_label} is blocked because "
+            f"{_format_offline_services(offline_services)} is offline."
+        )
+        if warning_services:
+            message += f" Additional offline workers: {_format_offline_services(warning_services)}."
+
+    return WorkerPreflightResponse(
+        task_kind=task_kind,
+        ready=ready,
+        message=message,
+        required_services=required_services,
+        blocking_services=offline_services,
+        warning_services=warning_services,
+        workers=workers,
+        checked_at=checked_at,
+    )
+
+
+async def get_worker_preflight(task_kind: str) -> WorkerPreflightResponse:
+    """Check whether the worker containers required for a task are online."""
+    return _build_worker_preflight_response(task_kind)
+
+
+async def _require_workers(task_kind: str) -> None:
+    preflight = await get_worker_preflight(task_kind)
+    if not preflight.ready:
+        raise WorkerUnavailableError(preflight.message)
+
+
+async def get_worker_statuses() -> WorkerStatusResponse:
+    workers, checked_at = _collect_worker_statuses()
+    return WorkerStatusResponse(workers=workers, checked_at=checked_at)
 
 
 async def get_worker_logs(service: str, tail: int) -> WorkerLogsResponse:
     valid = {s for s, _ in _WORKER_SERVICES}
     if service not in valid:
         return WorkerLogsResponse(service=service, lines=["Unknown service."], tail=tail)
+
+    if docker_lib is None:
+        return WorkerLogsResponse(
+            service=service,
+            lines=["Docker package is unavailable in this environment."],
+            tail=tail,
+        )
 
     try:
         docker_client_instance = docker_lib.from_env()

@@ -1,0 +1,108 @@
+envVarGroups:
+  - name: scraper-secrets
+    envVars:
+      - key: REDIS_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SERP_API_KEY
+        sync: false
+      - key: PROXY_LIST
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+
+services:
+  # ── Backend API ────────────────────────────────────────────────────────────
+  - type: web
+    name: backend
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - fromGroup: scraper-secrets
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+
+  # ── Celery Beat ────────────────────────────────────────────────────────────
+  - type: worker
+    name: beat
+    env: docker
+    dockerfilePath: ./scraper/Dockerfile
+    dockerContext: .
+    startCommand: /opt/venv/bin/celery -A worker.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    envVars:
+      - fromGroup: scraper-secrets
+      - key: PYTHONPATH
+        value: /app
+
+  # ── Discovery / orchestration worker ──────────────────────────────────────
+  - type: worker
+    name: worker-discovery
+    env: docker
+    dockerfilePath: ./scraper/Dockerfile
+    dockerContext: .
+    startCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=discovery --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-discovery
+    envVars:
+      - fromGroup: scraper-secrets
+      - key: PYTHONPATH
+        value: /app
+
+  # ── Gate 0 worker ──────────────────────────────────────────────────────────
+  - type: worker
+    name: worker-gate0
+    env: docker
+    dockerfilePath: ./scraper/Dockerfile
+    dockerContext: .
+    startCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=gate0 --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-gate0
+    envVars:
+      - fromGroup: scraper-secrets
+      - key: PYTHONPATH
+        value: /app
+
+  # ── AI classification worker ───────────────────────────────────────────────
+  - type: worker
+    name: worker-classify
+    env: docker
+    dockerfilePath: ./scraper/Dockerfile
+    dockerContext: .
+    startCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=classify --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-classify
+    envVars:
+      - fromGroup: scraper-secrets
+      - key: PYTHONPATH
+        value: /app
+
+  # ── Rumble browser worker ──────────────────────────────────────────────────
+  - type: worker
+    name: worker-rumble
+    env: docker
+    dockerfilePath: ./scraper/Dockerfile
+    dockerContext: .
+    startCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=rumble --concurrency=4 --prefetch-multiplier=1 --hostname=celery@worker-rumble
+    envVars:
+      - fromGroup: scraper-secrets
+      - key: PYTHONPATH
+        value: /app
+      - key: BROWSER_HEADLESS
+        value: "true"
+
+  # ── Substack browser worker ────────────────────────────────────────────────
+  - type: worker
+    name: worker-substack
+    env: docker
+    dockerfilePath: ./scraper/Dockerfile
+    dockerContext: .
+    startCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=substack --concurrency=4 --prefetch-multiplier=1 --hostname=celery@worker-substack
+    envVars:
+      - fromGroup: scraper-secrets
+      - key: PYTHONPATH
+        value: /app
+      - key: BROWSER_HEADLESS
+        value: "true"

@@ -76,18 +76,6 @@ def _canonicalize_proxy_url(proxy: str) -> str:
     return f"{scheme}://{username}:{password}@{host}:{port}"
 
 
-def _rotate_proxy_session(proxy_url: str) -> str:
-    """Replace the _session-XXXXX suffix with a fresh random ID.
-
-    Residential proxies use sticky sessions to pin traffic to one exit node.
-    If that node has SSL inspection software the whole 5-minute window fails.
-    Randomising the session ID on every launch forces Evomi to assign a fresh
-    device each time, so a broken node affects at most one scrape.
-    Has no effect if the URL contains no _session- parameter.
-    """
-    new_id = "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=10))
-    return re.sub(r"(_session-)[A-Za-z0-9]+", rf"\g<1>{new_id}", proxy_url)
-
 
 def _normalize_proxy(proxy: str) -> str:
     """Ensure a proxy string has an http:// scheme so urlsplit can parse it.
@@ -311,6 +299,26 @@ class ProxyRotator:
         weights = [max(0.05, health_tracker.get_score(p)) for p in available]
         return random.choices(available, weights=weights, k=1)[0]
 
+    def get_pinned(self, channel_key: str, health_tracker: "ProxyHealthTracker") -> str:
+        """Return a deterministically pinned proxy for a channel key.
+
+        The same channel always maps to the same proxy so that cf_clearance
+        cookies (which are tied to a specific exit node IP) remain valid across
+        runs. Falls back to the next proxy in the list if the pinned one is
+        quarantined, cycling through all available proxies before giving up.
+        """
+        if not self.proxies:
+            raise RuntimeError("PROXY_LIST must contain at least one proxy")
+        n = len(self.proxies)
+        # Stable index derived from the channel key — same channel, same slot.
+        base = int(hashlib.sha256(channel_key.encode()).hexdigest(), 16) % n
+        for i in range(n):
+            proxy = self.proxies[(base + i) % n]
+            if not health_tracker.is_quarantined(proxy):
+                return proxy
+        # All proxies quarantined — return the pinned one as a last resort.
+        return self.proxies[base % n]
+
     def has_proxies(self) -> bool:
         """Return True if at least one proxy is available."""
         return len(self.proxies) > 0
@@ -319,6 +327,19 @@ class ProxyRotator:
 # Module-level singletons
 proxy_rotator = ProxyRotator(scraper_settings.proxy_list)
 proxy_health_tracker = ProxyHealthTracker()
+
+# Per-platform rotators — fall back to the shared list when the platform-
+# specific env var (PROXY_LIST_RUMBLE / PROXY_LIST_SUBSTACK) is not set.
+_proxy_rotator_rumble = ProxyRotator(
+    scraper_settings.proxy_list_rumble or scraper_settings.proxy_list
+)
+_proxy_rotator_substack = ProxyRotator(
+    scraper_settings.proxy_list_substack or scraper_settings.proxy_list
+)
+_PLATFORM_ROTATORS: dict[str, ProxyRotator] = {
+    "rumble": _proxy_rotator_rumble,
+    "substack": _proxy_rotator_substack,
+}
 
 
 def get_weighted_proxy() -> str:
@@ -329,6 +350,22 @@ def get_weighted_proxy() -> str:
     selection when Redis is unavailable.
     """
     return proxy_rotator.get_weighted(proxy_health_tracker)
+
+
+def get_pinned_proxy(channel_key: str) -> str:
+    """Return a deterministically pinned proxy for a channel (shared pool)."""
+    return proxy_rotator.get_pinned(channel_key, proxy_health_tracker)
+
+
+def get_pinned_proxy_for_platform(channel_key: str, platform: str) -> str:
+    """Return a deterministically pinned proxy from the platform-specific pool.
+
+    Uses PROXY_LIST_RUMBLE or PROXY_LIST_SUBSTACK when set, otherwise falls
+    back to the shared PROXY_LIST.  Health scoring is global across platforms
+    so a quarantined proxy is avoided regardless of which platform flagged it.
+    """
+    rotator = _PLATFORM_ROTATORS.get(platform, proxy_rotator)
+    return rotator.get_pinned(channel_key, proxy_health_tracker)
 
 
 def get_random_proxy() -> str:

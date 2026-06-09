@@ -5,7 +5,6 @@ import Link from "next/link";
 import { ExternalLink } from "lucide-react";
 import type { LookalikeMatch } from "@/types";
 import { Badge } from "@/components/ui/Badge";
-import { Gate0Badge } from "@/components/channels/Gate0Badge";
 import { formatNumber, cn } from "@/lib/utils";
 
 interface LookalikeMatchCardProps {
@@ -61,12 +60,6 @@ export function LookalikeMatchCard({ match }: LookalikeMatchCardProps) {
                 ? "Guest Appearance"
                 : "Category Overlap"}
             </Badge>
-            {channel?.gate0_status && (
-              <Gate0Badge
-                status={channel.gate0_status}
-                flaggedBrand={channel.gate0_flagged_brand}
-              />
-            )}
           </div>
 
           {/* Match Detail */}

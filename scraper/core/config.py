@@ -30,8 +30,10 @@ class ScraperSettings(BaseSettings):
     # Redis
     redis_url: str
 
-    # Proxies (comma-separated)
+    # Proxies (comma-separated). Platform-specific lists override the shared list.
     proxy_list: str
+    proxy_list_rumble: str | None = None
+    proxy_list_substack: str | None = None
     proxy_session_minutes: int = 10
     proxy_active_since_minutes: int = 0
     proxy_platform_filter: str | None = None

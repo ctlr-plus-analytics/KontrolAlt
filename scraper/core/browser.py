@@ -1,6 +1,7 @@
 """Playwright Chromium browser launch with stealth config and proxy support."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -26,11 +27,12 @@ from core.config import scraper_settings
 from core.exceptions import CloudflareBlockError
 from core.proxy import (
     get_weighted_proxy,
+    get_pinned_proxy,
+    get_pinned_proxy_for_platform,
     extract_proxy_country,
     record_proxy_success,
     record_proxy_failure,
     proxy_health_tracker,
-    _rotate_proxy_session,
 )
 from core.runtime_settings import get_runtime_settings
 
@@ -87,60 +89,153 @@ class BrowserTelemetry:
 _PROFILE_BASE_DIR = Path(
     os.environ.get("BROWSER_PROFILE_DIR", "/tmp/cf_profiles")
 )
+_CF_PROFILE_REDIS_PREFIX = "cf_profile:"
+_CF_PROFILE_REDIS_MAX_TTL = 30 * 24 * 3600  # 30 days ceiling
+
+_browser_state_redis = None
 
 
-def _profile_dir(session_key: str | None) -> Path | None:
-    """Return the persistent profile directory for a session key, or None."""
+def _get_browser_state_redis():
+    """Return a lazily-created sync Redis client for cf_profile state.
+
+    Reuses the same URL as the rest of the scraper.  Returns None if Redis
+    is unavailable so callers can silently fall back to disk.
+    """
+    global _browser_state_redis
+    if _browser_state_redis is None:
+        try:
+            import redis as _redis_lib
+            _browser_state_redis = _redis_lib.Redis.from_url(
+                scraper_settings.redis_url, decode_responses=True, socket_timeout=2
+            )
+        except Exception:
+            return None
+    return _browser_state_redis
+
+
+def _cf_profile_redis_key(profile_dir: Path) -> str:
+    return f"{_CF_PROFILE_REDIS_PREFIX}{profile_dir.name}"
+
+
+def _cf_profile_ttl(state: dict) -> int:
+    """Derive Redis TTL from the cf_clearance cookie expiry, capped at 30 days."""
+    import time as _time
+    now = _time.time()
+    best: float = 0.0
+    for cookie in state.get("cookies", []):
+        if cookie.get("name") == "cf_clearance":
+            exp = float(cookie.get("expires") or 0)
+            if exp > best:
+                best = exp
+    remaining = int(best - now) if best > now else 0
+    return max(min(remaining, _CF_PROFILE_REDIS_MAX_TTL), 3600)  # 1 h floor
+
+
+def _extract_domain(session_key: str) -> str | None:
+    """Extract the hostname from a session key that is a URL.
+
+    Returns e.g. 'rumble.com' from 'https://rumble.com/c/Chan|attempt:0|task:x'.
+    Returns None when the session key is not a URL (e.g. scratch scripts).
+    """
+    base = session_key.split("|")[0] if "|" in session_key else session_key
+    try:
+        from urllib.parse import urlsplit as _urlsplit
+        parsed = _urlsplit(base)
+        return parsed.hostname or None
+    except Exception:
+        return None
+
+
+def _profile_dir(session_key: str | None, proxy: str = "") -> Path | None:
+    """Return the persistent profile directory for a (domain, proxy) pair.
+
+    Keying on domain + proxy device means all channels on the same site that
+    are pinned to the same exit node share one cf_clearance cookie. The first
+    channel to solve the CF challenge writes the cookie; every subsequent
+    channel on that device loads it and skips the challenge entirely.
+
+    Falls back to a per-session-key directory when the session key is not a
+    URL (e.g. one-off scratch scripts) so those paths are unaffected.
+    """
     if not session_key:
         return None
-    import hashlib
-    # Strip the per-run task ID so the same channel always maps to the same
-    # profile directory. Without this, cf_clearance is never reused because
-    # session_key includes "|task:{UUID}" which changes every Celery run.
+    domain = _extract_domain(session_key)
+    if domain and proxy:
+        # Shared profile: one directory per (domain, proxy endpoint).
+        composite = f"{domain}:{proxy}"
+        key_hash = hashlib.sha256(composite.encode()).hexdigest()[:24]
+        return _PROFILE_BASE_DIR / "shared" / key_hash
+    # Fallback: per-channel profile (scratch scripts, no-proxy runs).
     stable_key = session_key.split("|task:")[0] if "|task:" in session_key else session_key
     key_hash = hashlib.sha256(stable_key.encode()).hexdigest()[:24]
     return _PROFILE_BASE_DIR / key_hash
 
 
 def _load_browser_state(profile_dir: Path | None) -> dict | None:
-    """Load Playwright storage state (cookies + localStorage) from disk.
+    """Load Playwright storage state — Redis first, disk fallback.
 
-    Returns the parsed JSON dict or None if no saved state exists.
     Never raises — storage state loss is non-fatal.
     """
     if profile_dir is None:
         return None
+    # Redis primary
+    try:
+        r = _get_browser_state_redis()
+        if r is not None:
+            raw = r.get(_cf_profile_redis_key(profile_dir))
+            if raw:
+                state = json.loads(raw)
+                logger.debug("Loaded browser state from Redis (%s)", profile_dir.name)
+                return state
+    except Exception as exc:
+        logger.debug("Redis browser state load failed, trying disk: %s", exc)
+    # Disk fallback
     state_file = profile_dir / "storage_state.json"
     if not state_file.exists():
         return None
     try:
         with state_file.open("r", encoding="utf-8") as fh:
             state = json.load(fh)
-        logger.debug("Loaded browser state from %s", state_file)
+        logger.debug("Loaded browser state from disk (%s)", state_file)
         return state
     except Exception as exc:
-        logger.debug("Could not load browser state from %s: %s", state_file, exc)
+        logger.debug("Could not load browser state from disk %s: %s", state_file, exc)
         return None
 
 
 async def _save_browser_state(context: BrowserContext, profile_dir: Path | None) -> None:
-    """Persist Playwright storage state (cookies + localStorage) to disk.
+    """Persist Playwright storage state — Redis primary, disk secondary.
 
-    Saving the cf_clearance cookie means subsequent scrapes of the same
-    session avoid the Cloudflare challenge entirely until it expires.
-    Never raises — storage state loss is non-fatal.
+    Saving the cf_clearance cookie means subsequent scrapes on the same
+    (domain, proxy) skip the Cloudflare challenge.  Never raises.
     """
     if profile_dir is None:
         return
     try:
         state = await context.storage_state()
+    except Exception as exc:
+        logger.debug("Could not capture browser storage state: %s", exc)
+        return
+    # Redis primary
+    try:
+        r = _get_browser_state_redis()
+        if r is not None:
+            ttl = _cf_profile_ttl(state)
+            r.setex(_cf_profile_redis_key(profile_dir), ttl, json.dumps(state))
+            logger.debug(
+                "Saved browser state to Redis (%s, ttl=%ds)", profile_dir.name, ttl
+            )
+    except Exception as exc:
+        logger.debug("Redis browser state save failed: %s", exc)
+    # Disk secondary
+    try:
         profile_dir.mkdir(parents=True, exist_ok=True)
         state_file = profile_dir / "storage_state.json"
         with state_file.open("w", encoding="utf-8") as fh:
             json.dump(state, fh)
-        logger.debug("Saved browser state to %s", state_file)
+        logger.debug("Saved browser state to disk (%s)", state_file)
     except Exception as exc:
-        logger.debug("Could not save browser state to %s: %s", profile_dir, exc)
+        logger.debug("Could not save browser state to disk %s: %s", profile_dir, exc)
 
 
 def _state_has_cf_clearance(state: dict | None) -> bool:
@@ -308,6 +403,7 @@ async def launch_browser(
     session_key: str | None = None,
     telemetry: BrowserTelemetry | None = None,
     use_proxy: bool = True,
+    platform: str | None = None,
 ) -> AsyncGenerator[BrowserContext, None]:
     """Launch a Playwright Chromium browser context with stealth flags.
 
@@ -318,15 +414,28 @@ async def launch_browser(
     Proxy is always set at context level so pool and fallback paths behave
     identically and different tasks can use different proxy endpoints.
 
+    Args:
+        platform: "rumble" or "substack" — selects the platform-specific proxy
+            pool (PROXY_LIST_RUMBLE / PROXY_LIST_SUBSTACK).  Falls back to the
+            shared PROXY_LIST when None or unrecognised.
+
     Yields:
         A configured BrowserContext ready for scraping.
     """
     attempt = _parse_attempt_from_session_key(session_key)
-    proxy = get_weighted_proxy() if use_proxy else ""
-    # Rotate the session ID so each launch gets a different residential exit node.
-    # The canonical URL (proxy) is kept for health-score tracking; only Playwright
-    # sees the per-launch variant so a single SSL-broken device doesn't recur.
-    proxy_for_playwright = _rotate_proxy_session(proxy) if proxy else ""
+    # Pin each channel to a specific proxy so cf_clearance cookies (tied to the
+    # exit node IP) remain valid across runs.  Use the platform-specific pool
+    # when available so Rumble and Substack failures don't cross-contaminate
+    # each other's health scores.
+    if use_proxy:
+        stable_key = session_key.split("|task:")[0] if session_key and "|task:" in session_key else session_key
+        if stable_key:
+            proxy = get_pinned_proxy_for_platform(stable_key, platform or "")
+        else:
+            proxy = get_weighted_proxy()
+    else:
+        proxy = ""
+    proxy_for_playwright = proxy
     headless = _resolve_headless_mode()
     proxy_settings = _parse_proxy_settings(proxy_for_playwright) if proxy_for_playwright else {}
     proxy_country = extract_proxy_country(proxy_for_playwright) if proxy_for_playwright else None
@@ -349,7 +458,7 @@ async def launch_browser(
         proxy_country=proxy_country,
     )
 
-    pdir = _profile_dir(session_key)
+    pdir = _profile_dir(session_key, proxy)
     saved_state = _load_browser_state(pdir)
     if _state_has_cf_clearance(saved_state):
         logger.debug("launch_browser: restoring session with cf_clearance cookie")
@@ -463,6 +572,7 @@ async def launch_browser(
                     "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
                     "--ignore-certificate-errors",
+                    "--disable-dev-shm-usage",
                 ],
             )
             try:

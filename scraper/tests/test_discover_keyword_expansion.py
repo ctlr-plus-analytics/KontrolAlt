@@ -14,15 +14,20 @@ def test_canonicalize_rumble_user_channel_path() -> None:
     assert candidate.platform == "rumble"
 
 
+def test_canonicalize_rumble_root_slug_is_rejected() -> None:
+    assert canonicalize_channel_url("https://rumble.com/MacroAlpha") is None
+
+
 
 
 def test_extract_bare_supported_urls_from_serp_text() -> None:
     candidates = extract_supported_channel_urls(
-        "Results mention rumble.com/LibertyDesk, and theconsciouslee.substack.com."
+        "Results mention rumble.com/LibertyDesk, rumble.com/c/LibertyDesk, and theconsciouslee.substack.com."
     )
 
     urls = {candidate.channel_url for candidate in candidates}
-    assert "https://rumble.com/LibertyDesk" in urls
+    assert "https://rumble.com/LibertyDesk" not in urls
+    assert "https://rumble.com/c/LibertyDesk" in urls
     assert "https://substack.com/@theconsciouslee" in urls
 
 

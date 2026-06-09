@@ -472,6 +472,14 @@ async def get_channel_by_id(channel_id: UUID) -> ChannelWithMetrics | None:
 
         gate0_data = None
         if row.get("gate0_result_id") is not None:
+            gate0_result = (
+                supabase_admin.table("gate0_results")
+                .select("confidence,evidence_signals")
+                .eq("id", str(row.get("gate0_result_id")))
+                .maybe_single()
+                .execute()
+            )
+            gate0_row = gate0_result.data or {}
             gate0_data = {
                 "id": row.get("gate0_result_id"),
                 "channel_id": row.get("id"),
@@ -480,6 +488,8 @@ async def get_channel_by_id(channel_id: UUID) -> ChannelWithMetrics | None:
                 "result_status": row.get("gate0_result_status"),
                 "flagged_brand": row.get("gate0_flagged_brand"),
                 "source_url": row.get("gate0_source_url"),
+                "confidence": gate0_row.get("confidence"),
+                "evidence_signals": gate0_row.get("evidence_signals"),
             }
 
         logs_result = (

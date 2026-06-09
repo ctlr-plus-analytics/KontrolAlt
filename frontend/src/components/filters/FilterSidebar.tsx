@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search, X, ArrowUp, ArrowDown, Check, ChevronDown } from "lucide-react";
-import type { CategoryTagOption, ChannelFilters, Gate0Status, Gate0StatusOption } from "@/types";
+import type { CategoryTagOption, ChannelFilters } from "@/types";
 import { NumericRangeFilter } from "@/components/filters/NumericRangeFilter";
 import { cn } from "@/lib/utils";
 
@@ -12,32 +12,15 @@ interface FilterSidebarProps {
   categoryTagOptions: CategoryTagOption[];
   categoryTagsLoading?: boolean;
   onCategoryMenuOpen?: () => void;
-  gate0StatusOptions?: Gate0StatusOption[];
-  gate0StatusesLoading?: boolean;
 }
-
-const GATE0_STATUS_CONFIG: Record<
-  Gate0Status,
-  { label: string; dot: string; activeText: string }
-> = {
-  clean:        { label: "Clean",        dot: "bg-emerald-500",      activeText: "text-emerald-400" },
-  needs_review: { label: "Needs Review", dot: "bg-amber-400",        activeText: "text-amber-300"   },
-  dirty:        { label: "Competitor",   dot: "bg-red-500",          activeText: "text-red-400"     },
-  pending:      { label: "Pending",      dot: "bg-amber-600/40",     activeText: "text-amber-600/70"},
-  unchecked:    { label: "Unchecked",    dot: "bg-[#F7F4EE]/20",     activeText: "text-[#F7F4EE]/50"},
-};
-
-const GATE0_STATUS_ORDER: Gate0Status[] = [
-  "clean", "dirty", "needs_review",
-];
 
 export const DEFAULT_FILTERS: ChannelFilters = {
   platform: "all",
   comment_tier: "all",
-  gate0_statuses: [],
+  affiliation_statuses: [],
   category_tags: [],
   search_query: null,
-  min_subscriber_count: null,
+  min_subscriber_count: 10,
   max_subscriber_count: null,
   min_avg_views: null,
   max_avg_views: null,
@@ -45,7 +28,7 @@ export const DEFAULT_FILTERS: ChannelFilters = {
   max_avg_comments: null,
   last_active_from: null,
   last_active_to: null,
-  inactive_filter: false,
+  inactive_filter: true,
   incomplete_only: false,
   sort_by: "avg_comments",
   sort_order: "desc",
@@ -98,8 +81,6 @@ export function FilterSidebar({
   categoryTagOptions,
   categoryTagsLoading = false,
   onCategoryMenuOpen,
-  gate0StatusOptions = [],
-  gate0StatusesLoading = false,
 }: FilterSidebarProps) {
   const [isCategoryMenuOpen, setIsCategoryMenuOpen] = useState<boolean>(false);
   const categoryMenuRef = useRef<HTMLDivElement | null>(null);
@@ -136,7 +117,6 @@ export function FilterSidebar({
     if (filters.last_active_from || filters.last_active_to) count++;
     if (filters.inactive_filter) count++;
     if (filters.incomplete_only) count++;
-    if (filters.gate0_statuses.length > 0) count++;
     return count;
   }, [filters]);
 
@@ -227,73 +207,6 @@ export function FilterSidebar({
             </button>
           );
         })}
-      </div>
-
-      <SectionLabel>Gold Affiliation</SectionLabel>
-      <div className="flex flex-col gap-0.5 px-4 pb-4">
-        {gate0StatusesLoading && gate0StatusOptions.length === 0 && (
-          <p className="px-1 py-2 text-[11px] text-[#F7F4EE]/30">Loading…</p>
-        )}
-        {GATE0_STATUS_ORDER.map((status) => {
-          const cfg = GATE0_STATUS_CONFIG[status];
-          const isActive = filters.gate0_statuses.includes(status);
-          const option = gate0StatusOptions.find((o) => o.status === status);
-          const count = option?.count ?? null;
-          return (
-            <button
-              key={status}
-              type="button"
-              onClick={() =>
-                update({
-                  gate0_statuses: isActive
-                    ? filters.gate0_statuses.filter((s) => s !== status)
-                    : [...filters.gate0_statuses, status],
-                })
-              }
-              className={cn(
-                "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-all duration-150 cursor-pointer text-left",
-                isActive
-                  ? cn("bg-[#F7F4EE]/8", cfg.activeText)
-                  : "text-[#F7F4EE]/50 hover:bg-[#F7F4EE]/5 hover:text-[#F7F4EE]/80"
-              )}
-            >
-              <span
-                className={cn(
-                  "h-2.5 w-2.5 shrink-0 rounded-full transition-all",
-                  isActive ? cfg.dot : "bg-[#F7F4EE]/20"
-                )}
-              />
-              <span className="flex-1 leading-none">{cfg.label}</span>
-              {count !== null && (
-                <span className="shrink-0 rounded-full border border-[#F7F4EE]/12 bg-[#F7F4EE]/5 px-1.5 py-0.5 text-[10px] text-[#F7F4EE]/40">
-                  {count.toLocaleString()}
-                </span>
-              )}
-              <span
-                className={cn(
-                  "ml-auto h-3.5 w-3.5 shrink-0 rounded border-2 transition-all flex items-center justify-center",
-                  isActive ? "border-current bg-current/20" : "border-[#F7F4EE]/25"
-                )}
-              >
-                {isActive && (
-                  <svg width="8" height="8" viewBox="0 0 10 10" fill="currentColor">
-                    <path d="M1.5 5l2.5 2.5 5-5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                )}
-              </span>
-            </button>
-          );
-        })}
-        {filters.gate0_statuses.length > 0 && (
-          <button
-            type="button"
-            onClick={() => update({ gate0_statuses: [] })}
-            className="mt-1 flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] text-[#F7F4EE]/30 transition-colors hover:text-[#F7F4EE]/60 cursor-pointer"
-          >
-            <X size={10} />
-            Clear selection
-          </button>
-        )}
       </div>
 
       <SectionLabel>Sort</SectionLabel>
