@@ -37,7 +37,7 @@ services:
     env: docker
     dockerfilePath: ./scraper/Dockerfile
     dockerContext: .
-    startCommand: /opt/venv/bin/celery -A worker.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    dockerCommand: /opt/venv/bin/celery -A worker.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
     envVars:
       - fromGroup: scraper-secrets
       - key: PYTHONPATH
@@ -49,7 +49,7 @@ services:
     env: docker
     dockerfilePath: ./scraper/Dockerfile
     dockerContext: .
-    startCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=discovery --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-discovery
+    dockerCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=discovery --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-discovery
     envVars:
       - fromGroup: scraper-secrets
       - key: PYTHONPATH
@@ -61,7 +61,7 @@ services:
     env: docker
     dockerfilePath: ./scraper/Dockerfile
     dockerContext: .
-    startCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=gate0 --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-gate0
+    dockerCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=gate0 --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-gate0
     envVars:
       - fromGroup: scraper-secrets
       - key: PYTHONPATH
@@ -73,7 +73,7 @@ services:
     env: docker
     dockerfilePath: ./scraper/Dockerfile
     dockerContext: .
-    startCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=classify --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-classify
+    dockerCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=classify --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-classify
     envVars:
       - fromGroup: scraper-secrets
       - key: PYTHONPATH
@@ -85,7 +85,7 @@ services:
     env: docker
     dockerfilePath: ./scraper/Dockerfile
     dockerContext: .
-    startCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=rumble --concurrency=4 --prefetch-multiplier=1 --hostname=celery@worker-rumble
+    dockerCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=rumble --concurrency=4 --prefetch-multiplier=1 --hostname=celery@worker-rumble
     envVars:
       - fromGroup: scraper-secrets
       - key: PYTHONPATH
@@ -99,7 +99,7 @@ services:
     env: docker
     dockerfilePath: ./scraper/Dockerfile
     dockerContext: .
-    startCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=substack --concurrency=4 --prefetch-multiplier=1 --hostname=celery@worker-substack
+    dockerCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=substack --concurrency=4 --prefetch-multiplier=1 --hostname=celery@worker-substack
     envVars:
       - fromGroup: scraper-secrets
       - key: PYTHONPATH
