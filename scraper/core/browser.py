@@ -171,6 +171,32 @@ def _profile_dir(session_key: str | None, proxy: str = "") -> Path | None:
     return _PROFILE_BASE_DIR / key_hash
 
 
+def _delete_browser_state(profile_dir: Path | None) -> None:
+    """Delete stored browser state after a CF block invalidates the session.
+
+    Called whenever a CloudflareBlockError is raised so the revoked
+    cf_clearance cookie is not reloaded by the next scrape on the same
+    (domain, proxy) pair, which would cause an immediate cascade block
+    across all channels pinned to that exit node.
+    """
+    if profile_dir is None:
+        return
+    try:
+        r = _get_browser_state_redis()
+        if r is not None:
+            r.delete(_cf_profile_redis_key(profile_dir))
+            logger.debug("Deleted browser state from Redis (%s)", profile_dir.name)
+    except Exception as exc:
+        logger.debug("Redis browser state delete failed: %s", exc)
+    try:
+        state_file = profile_dir / "storage_state.json"
+        if state_file.exists():
+            state_file.unlink()
+            logger.debug("Deleted browser state from disk (%s)", state_file)
+    except Exception as exc:
+        logger.debug("Could not delete browser state from disk %s: %s", profile_dir, exc)
+
+
 def _load_browser_state(profile_dir: Path | None) -> dict | None:
     """Load Playwright storage state — Redis first, disk fallback.
 
@@ -378,22 +404,99 @@ async def wait_for_content(
     return False
 
 
-# Injected into every new page at the context level.
-# Masks the primary automation signal; plugins and chrome.runtime are patched
-# so headless Chromium looks identical to a standard desktop install.
+# Injected at context level (runs before any page JS on every navigation).
+# Patches the signals Cloudflare Turnstile and BotManagement v2 evaluate:
+#   1. Automation flag (navigator.webdriver)
+#   2. Plugin list (empty in headless)
+#   3. chrome.runtime (absent in headless)
+#   4. Hardware fingerprint (hardwareConcurrency, deviceMemory — low values are
+#      a bot signal on Render Starter plan containers)
+#   5. Platform / vendor consistency with the Windows UA pool
+#   6. Network connection stub (undefined in headless)
+#   7. WebGL renderer (headless defaults to SwiftShader, a well-known bot signal)
+#   8. Canvas getImageData noise (defeats pixel-level fingerprinting)
+#   9. AudioContext buffer noise (defeats audio fingerprinting)
 _STEALTH_JS = """
-Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-if (navigator.plugins.length === 0) {
-    Object.defineProperty(navigator, 'plugins', {
-        get: () => [
-            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-            { name: 'Native Client', filename: 'internal-nacl-plugin' },
-        ]
-    });
-}
-if (!window.chrome) { window.chrome = {}; }
-if (!window.chrome.runtime) { window.chrome.runtime = {}; }
+(function () {
+    // 1. Automation flag
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+    // 2. Plugin list
+    if (navigator.plugins.length === 0) {
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [
+                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                { name: 'Native Client', filename: 'internal-nacl-plugin' },
+            ]
+        });
+    }
+
+    // 3. chrome.runtime
+    if (!window.chrome) { window.chrome = {}; }
+    if (!window.chrome.runtime) { window.chrome.runtime = {}; }
+
+    // 4. Hardware fingerprint
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    try { Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 }); } catch(e) {}
+
+    // 5. Platform / vendor (must match the Windows UA strings in CHROME_UA_POOL)
+    try { Object.defineProperty(navigator, 'platform', { get: () => 'Win32' }); } catch(e) {}
+    try { Object.defineProperty(navigator, 'vendor',   { get: () => 'Google Inc.' }); } catch(e) {}
+
+    // 6. Network connection stub
+    try {
+        if (!navigator.connection) {
+            Object.defineProperty(navigator, 'connection', {
+                get: () => ({ effectiveType: '4g', rtt: 100, downlink: 10, saveData: false })
+            });
+        }
+    } catch(e) {}
+
+    // 7. WebGL renderer — mask the SwiftShader / Mesa strings that identify headless Chromium
+    (function () {
+        var _patch = function (proto) {
+            var _orig = proto.getParameter;
+            proto.getParameter = function (p) {
+                if (p === 37445) return 'Intel Inc.';               // UNMASKED_VENDOR_WEBGL
+                if (p === 37446) return 'Intel Iris OpenGL Engine'; // UNMASKED_RENDERER_WEBGL
+                return _orig.call(this, p);
+            };
+        };
+        if (typeof WebGLRenderingContext  !== 'undefined') _patch(WebGLRenderingContext.prototype);
+        if (typeof WebGL2RenderingContext !== 'undefined') _patch(WebGL2RenderingContext.prototype);
+    })();
+
+    // 8. Canvas fingerprint noise — 1 % of pixels get ±1 LSB perturbation
+    (function () {
+        var _orig = CanvasRenderingContext2D.prototype.getImageData;
+        CanvasRenderingContext2D.prototype.getImageData = function () {
+            var d = _orig.apply(this, arguments);
+            for (var i = 0; i < d.data.length; i += 4) {
+                if (Math.random() < 0.01) {
+                    var n = Math.random() < 0.5 ? 1 : -1;
+                    d.data[i]   = Math.max(0, Math.min(255, d.data[i]   + n));
+                    d.data[i+1] = Math.max(0, Math.min(255, d.data[i+1] + n));
+                    d.data[i+2] = Math.max(0, Math.min(255, d.data[i+2] + n));
+                }
+            }
+            return d;
+        };
+    })();
+
+    // 9. AudioContext fingerprint noise
+    (function () {
+        if (typeof AudioBuffer === 'undefined') return;
+        var _orig = AudioBuffer.prototype.getChannelData;
+        AudioBuffer.prototype.getChannelData = function () {
+            var data = _orig.apply(this, arguments);
+            for (var i = 0; i < data.length; i += 100) {
+                data[i] += (Math.random() - 0.5) * 1e-7;
+            }
+            return data;
+        };
+    })();
+})();
 """
 
 
@@ -548,7 +651,14 @@ async def launch_browser(
                 _proxy_failed = True
             raise
         finally:
-            await _save_browser_state(context, pdir)
+            if _cf_blocked:
+                # Delete the stored clearance so the next scrape on this
+                # (domain, proxy) pair starts fresh rather than loading a
+                # potentially revoked cf_clearance that would cascade-block
+                # all other channels pinned to the same exit node.
+                _delete_browser_state(pdir)
+            else:
+                await _save_browser_state(context, pdir)
             if proxy:
                 if _cf_blocked:
                     record_proxy_failure(proxy, _cf_error_code)
@@ -571,7 +681,6 @@ async def launch_browser(
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
-                    "--ignore-certificate-errors",
                     "--disable-dev-shm-usage",
                 ],
             )
@@ -587,7 +696,10 @@ async def launch_browser(
                     _proxy_failed = True
                     raise
                 finally:
-                    await _save_browser_state(context, pdir)
+                    if _cf_blocked:
+                        _delete_browser_state(pdir)
+                    else:
+                        await _save_browser_state(context, pdir)
                     if _cf_blocked:
                         record_proxy_failure(proxy, _cf_error_code)
                     elif _proxy_failed:
@@ -613,7 +725,12 @@ async def is_cold_session(context: BrowserContext) -> bool:
         return True
 
 
-async def pre_warm_homepage(page, base_url: str, session_key: str | None = None) -> None:
+async def pre_warm_homepage(
+    page,
+    base_url: str,
+    session_key: str | None = None,
+    proxy_key: str | None = None,
+) -> None:
     """Visit the site homepage briefly before navigating to a deep channel URL.
 
     Real users don't arrive at a channel URL (e.g. /channel/xyz/) with a blank
@@ -624,12 +741,15 @@ async def pre_warm_homepage(page, base_url: str, session_key: str | None = None)
     Only call this when ``is_cold_session()`` returns True.  Sessions loaded
     from a persisted storage state already have cookies and do not need it.
 
+    ``proxy_key`` should be the active proxy URL so the RPM budget is shared
+    with other tasks on the same exit node.
+
     This is a best-effort helper — any exception is swallowed so warm-up
     failure never aborts the actual scrape.
     """
     try:
         logger.debug("pre_warm_homepage: visiting %s", base_url)
-        await acquire_session_request_slot(session_key)
+        await acquire_session_request_slot(proxy_key or session_key)
         await page.goto(base_url, wait_until="domcontentloaded", timeout=20_000)
         await human_delay(0.5, 1.5)
         await initialize_mouse_position(page)
@@ -658,14 +778,26 @@ def _parse_proxy_settings(proxy_url: str) -> dict[str, str]:
     return {"server": proxy_url}
 
 
-async def guarded_goto(page, url: str, *, session_key: str | None, **kwargs):
-    """Throttle per-session request rate before navigation.
+async def guarded_goto(
+    page,
+    url: str,
+    *,
+    session_key: str | None,
+    proxy_key: str | None = None,
+    **kwargs,
+):
+    """Throttle per-exit-node request rate before navigation.
 
-    Applies the Redis cross-worker RPM rate limit before issuing the
-    ``page.goto`` call, then initialises the in-page mouse position tracker
-    so that subsequent ``human_click`` calls have a realistic start point.
+    ``proxy_key`` should be the active proxy URL so the RPM budget is shared
+    across all sessions routed through the same exit-node IP.  When two
+    concurrent tasks on the same worker are pinned to the same proxy, they
+    share one RPM counter rather than each claiming the full allowance.
+    Falls back to ``session_key``-based limiting when no proxy is active.
+
+    Initialises the in-page mouse position tracker after navigation so
+    subsequent ``human_click`` calls have a realistic start point.
     """
-    await acquire_session_request_slot(session_key)
+    await acquire_session_request_slot(proxy_key or session_key)
     response = await page.goto(url, **kwargs)
     # Seed the in-page mouse position variable from the viewport centre so
     # human_click() always has a valid start point, even on the first click.

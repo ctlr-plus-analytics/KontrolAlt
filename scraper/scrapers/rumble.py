@@ -22,7 +22,7 @@ from core.browser import (
     pre_warm_homepage,
     wait_for_content,
 )
-from core.cf_bypass import check_for_cf_challenge, human_scroll
+from core.cf_bypass import check_for_cf_challenge, human_scroll, wait_for_cf_resolution
 from core.exceptions import ScraperBlockedError, ScraperClassifiedError
 from core.runtime_settings import get_runtime_settings
 from scrapers.base import BaseScraper
@@ -369,15 +369,17 @@ class RumbleScraper(BaseScraper):
             about_url = self._channel_tab_url(channel_base_url, "about")
             session_key = self._session_key or channel_base_url
             async with launch_browser(session_key=session_key, telemetry=telemetry, platform="rumble") as context:
+                self._proxy_key = telemetry.selected_proxy
                 page = await context.new_page()
                 if await is_cold_session(context):
                     await pre_warm_homepage(
-                        page, RUMBLE_BASE_URL + "/", session_key=session_key
+                        page, RUMBLE_BASE_URL + "/", session_key=session_key, proxy_key=self._proxy_key
                     )
                 response = await guarded_goto(
                     page,
                     videos_url,
                     session_key=session_key,
+                    proxy_key=self._proxy_key,
                     wait_until="domcontentloaded",
                     timeout=get_runtime_settings().scraper_rumble_nav_timeout_ms,
                 )
@@ -391,19 +393,14 @@ class RumbleScraper(BaseScraper):
                 )
                 # CF managed challenge pages are > 5 KB (passing the byte check) but
                 # block real content behind a JS fingerprint verification that auto-
-                # resolves in 2–3 s for browsers that pass. Poll until the challenge
-                # clears or the timeout expires before handing off to the parser.
+                # resolves in 2–3 s for browsers that pass. Poll with behavioral
+                # signals until the challenge clears or the timeout expires.
                 if content_ok and await check_for_cf_challenge(page):
                     logger.info(
                         "Rumble: CF managed challenge on %s — waiting for auto-resolution",
                         channel_url,
                     )
-                    for _ in range(30):  # up to 15 s in 0.5 s steps
-                        await asyncio.sleep(0.5)
-                        if not await check_for_cf_challenge(page):
-                            break
-                    else:
-                        content_ok = False
+                    content_ok = await wait_for_cf_resolution(page)
                 if not content_ok:
                     logger.warning("Rumble: content not ready, reloading %s", channel_url)
                     await page.reload(
@@ -413,6 +410,16 @@ class RumbleScraper(BaseScraper):
                     content_ok = await wait_for_content(
                         page, timeout_s=self.RELOAD_CONTENT_TIMEOUT_S
                     )
+                    # Re-run the challenge check after reload — a CF managed challenge
+                    # page is large enough to pass the byte heuristic, so without this
+                    # check the reload path skips the 15 s resolution wait entirely and
+                    # fails immediately at ensure_not_blocked.
+                    if content_ok and await check_for_cf_challenge(page):
+                        logger.info(
+                            "Rumble: CF managed challenge after reload on %s — waiting for auto-resolution",
+                            channel_url,
+                        )
+                        content_ok = await wait_for_cf_resolution(page)
                 runtime = get_runtime_settings()
                 if not content_ok and runtime.scraper_challenge_second_cycle_enabled:
                     logger.warning(
@@ -776,6 +783,7 @@ class RumbleScraper(BaseScraper):
                     about_page,
                     about_url,
                     session_key=self._session_key or about_url,
+                    proxy_key=self._proxy_key,
                     wait_until="commit",
                     timeout=self.ABOUT_NAV_TIMEOUT_MS,
                 )
@@ -1079,6 +1087,7 @@ class RumbleScraper(BaseScraper):
                 page,
                 video_url,
                 session_key=self._session_key or video_url,
+                proxy_key=self._proxy_key,
                 wait_until="commit",
                 timeout=self.VIDEO_PAGE_TIMEOUT_MS,
             )

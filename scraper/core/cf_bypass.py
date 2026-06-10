@@ -102,17 +102,24 @@ async def _get_slot_redis():
     return _aioredis_slot_client
 
 
-async def acquire_session_request_slot(session_key: str | None) -> None:
-    """Enforce per-session RPM limit using a Redis sorted-set sliding window.
+async def acquire_session_request_slot(rate_limit_key: str | None) -> None:
+    """Enforce per-exit-node RPM limit using a Redis sorted-set sliding window.
+
+    ``rate_limit_key`` should be the active proxy URL so the RPM budget is
+    shared across all sessions routed through the same exit-node IP.  Falls
+    back to session-key-based limiting when no proxy is active.  Keying on
+    the proxy URL prevents two concurrent tasks pinned to the same IP from
+    each claiming the full RPM allowance (which would double the effective
+    per-IP rate and trigger CF challenges).
 
     Cross-worker safe: all Celery workers share the same Redis state, so the
     configured RPM is honoured globally rather than per-process.
     """
-    if not session_key:
+    if not rate_limit_key:
         return
     runtime = get_runtime_settings()
     max_rpm = max(1, runtime.cf_bypass_max_rpm_residential)
-    slot_key = "ratelimit:session:" + hashlib.sha1(session_key.encode()).hexdigest()[:20]
+    slot_key = "ratelimit:session:" + hashlib.sha1(rate_limit_key.encode()).hexdigest()[:20]
     window_s = 60.0
     now = time.time()
     deadline = now + window_s
@@ -397,6 +404,29 @@ async def detect_captcha(page) -> bool:
     )
     for selector in selectors:
         if await page.query_selector(selector):
+            return True
+    return False
+
+
+async def wait_for_cf_resolution(page, *, max_wait_s: float = 15.0) -> bool:
+    """Poll until the CF challenge clears, injecting behavioral signals.
+
+    Scrolls the page every ~3 s so Cloudflare's Turnstile widget sees
+    user-like activity instead of a static headless page.  A page that
+    generates no events during the challenge window is a strong bot signal.
+
+    Returns True if the challenge resolved within ``max_wait_s``, False if
+    still present at timeout.
+    """
+    steps = max(1, int(max_wait_s / 0.5))
+    for i in range(steps):
+        await asyncio.sleep(0.5)
+        if i % 6 == 0:  # every ~3 s
+            try:
+                await human_scroll(page, direction="down", steps=1)
+            except Exception:
+                pass
+        if not await check_for_cf_challenge(page):
             return True
     return False
 

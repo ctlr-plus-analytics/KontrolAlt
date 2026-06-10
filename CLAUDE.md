@@ -70,6 +70,19 @@ Frontend connects to Supabase as anon (JWT-gated via Supabase Auth).
 - Primary table: `channels` — unified table for all platforms (Rumble, BitChute, Substack). Earlier `channel_discovery` view is retired; use `channels` directly.
 - Admin control-plane tables (from migrations 005, 009, 010): runtime operational settings and competitor definitions are stored in Supabase and read at runtime by both backend and scraper.
 
+## Deployment
+
+| Service | Platform | Notes |
+|---------|----------|-------|
+| Frontend | Vercel | Auto-deploys from `main` |
+| Backend API | Render | Docker, defined in `render.yaml` |
+| Celery Beat | Render | Docker worker, defined in `render.yaml` |
+| Celery Workers | Render | Per-queue workers (discovery, gate0, classify, rumble, substack), defined in `render.yaml` |
+| Redis | Upstash | Managed Redis; `REDIS_URL` uses `rediss://` (TLS) |
+| Database | Supabase | Managed PostgreSQL |
+
+`render.yaml` defines all Render services and the `scraper-secrets` env var group (shared across backend + all workers).
+
 ## Key Conventions
 
 - **Python**: PEP 8, snake_case, explicit typing. `get_logger(__name__)` from `core/logging.py`.

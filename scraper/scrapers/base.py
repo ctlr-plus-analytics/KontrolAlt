@@ -65,6 +65,7 @@ class BaseScraper(ABC):
     def __init__(self) -> None:
         self.supabase = get_supabase_client()
         self._session_key: str | None = None
+        self._proxy_key: str | None = None
 
     @abstractmethod
     async def scrape(self, channel_url: str) -> dict[str, object]:
