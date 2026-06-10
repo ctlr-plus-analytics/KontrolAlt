@@ -1,5 +1,6 @@
 """Admin service for audit logs and manual task triggers."""
 
+import ssl as _ssl
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -41,6 +42,9 @@ from workers.tasks import TASK_RUN_WEEKLY_VELOCITY_SCRAPE
 
 logger = get_logger(__name__)
 _celery = Celery(broker=settings.redis_url, backend=settings.redis_url)
+if settings.redis_url.startswith("rediss://"):
+    _ssl_opts = {"ssl_cert_reqs": _ssl.CERT_NONE}
+    _celery.conf.update(broker_use_ssl=_ssl_opts, redis_backend_use_ssl=_ssl_opts)
 
 _AUDIT_TABLE = "admin_actions_audit"
 _FEATURE_FIELDS = {
@@ -402,7 +406,14 @@ async def purge_queues(actor: dict, reason: str | None) -> PurgeQueueResponse:
     Intended as a troubleshooting reset. Safe to call at any time; partial
     failures are logged but do not prevent remaining cleanup steps.
     """
-    client = redis_lib.Redis.from_url(settings.redis_url, decode_responses=False)
+    _redis_ssl_kwargs = (
+        {"ssl_cert_reqs": _ssl.CERT_NONE}
+        if settings.redis_url.startswith("rediss://")
+        else {}
+    )
+    client = redis_lib.Redis.from_url(
+        settings.redis_url, decode_responses=False, **_redis_ssl_kwargs
+    )
     stats: dict[str, object] = {}
 
     # Step 1 — SIGKILL active, reserved, and scheduled tasks in worker processes
@@ -588,7 +599,7 @@ def _build_queue_to_worker(queues_map: dict) -> dict[str, str]:
 def _collect_worker_statuses() -> tuple[list[WorkerInfo], datetime]:
     """Inspect Celery and Docker once, returning the current worker snapshot."""
     try:
-        inspector = _celery.control.inspect(timeout=3.0)
+        inspector = _celery.control.inspect(timeout=1.0)
         ping_map: dict = inspector.ping() or {}
         stats_map: dict = inspector.stats() or {}
         active_map: dict = inspector.active() or {}

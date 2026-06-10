@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import ssl as _ssl
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
@@ -38,6 +39,9 @@ from services import admin_service
 logger = get_logger(__name__)
 
 _celery = Celery(broker=settings.redis_url, backend=settings.redis_url)
+if settings.redis_url.startswith("rediss://"):
+    _ssl_opts = {"ssl_cert_reqs": _ssl.CERT_NONE}
+    _celery.conf.update(broker_use_ssl=_ssl_opts, redis_backend_use_ssl=_ssl_opts)
 _URL_SPLIT_PATTERN = re.compile(r"[\n,]+")
 
 
