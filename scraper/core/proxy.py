@@ -8,6 +8,8 @@ import time
 import hashlib
 from urllib.parse import urlsplit
 
+import ssl as _ssl
+
 import redis
 
 from core.config import scraper_settings
@@ -22,11 +24,17 @@ _proxy_redis_client: redis.Redis | None = None
 def _proxy_redis() -> redis.Redis:
     global _proxy_redis_client
     if _proxy_redis_client is None:
+        ssl_kwargs = (
+            {"ssl_cert_reqs": _ssl.CERT_NONE}
+            if scraper_settings.redis_url.startswith("rediss://")
+            else {}
+        )
         _proxy_redis_client = redis.Redis.from_url(
             scraper_settings.redis_url,
             decode_responses=True,
             socket_connect_timeout=0.1,
             socket_timeout=1.0,
+            **ssl_kwargs,
         )
     return _proxy_redis_client
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import ssl
 import sys
 
 from celery import Celery
@@ -9,6 +10,12 @@ from celery.signals import worker_process_init, worker_process_shutdown
 
 from core.config import scraper_settings
 from schedules.beat_schedule import CELERY_BEAT_SCHEDULE
+
+_SSL_OPTS = (
+    {"ssl_cert_reqs": ssl.CERT_NONE}
+    if scraper_settings.redis_url.startswith("rediss://")
+    else {}
+)
 
 # Reduce noisy request logs from HTTP clients used by Supabase/PostgREST.
 
@@ -45,6 +52,8 @@ celery_app.conf.update(
     enable_utc=True,
     beat_schedule=CELERY_BEAT_SCHEDULE,
     broker_connection_retry_on_startup=True,
+    broker_use_ssl=_SSL_OPTS or None,
+    redis_backend_use_ssl=_SSL_OPTS or None,
     # Prevent Redis from requeuing long-running tasks (discovery can take hours).
     broker_transport_options={"visibility_timeout": 21600},
     task_track_started=True,
