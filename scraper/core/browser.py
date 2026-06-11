@@ -32,6 +32,7 @@ from core.proxy import (
     extract_proxy_country,
     record_proxy_success,
     record_proxy_failure,
+    record_proxy_tunnel_failure,
     proxy_health_tracker,
 )
 from core.runtime_settings import get_runtime_settings
@@ -568,8 +569,9 @@ async def launch_browser(
 
     _cf_blocked = False
     _cf_error_code: int | None = None
-    _proxy_failed = False  # network/timeout failure — penalise proxy score
-    _ssl_error = False     # exit-node TLS failure — don't penalise the proxy endpoint
+    _proxy_failed = False   # network/timeout failure — penalise proxy score
+    _tunnel_failed = False  # proxy rejected CONNECT — immediately quarantine
+    _ssl_error = False      # exit-node TLS failure — don't penalise the proxy endpoint
     proxy_arg = proxy_settings if proxy_active else None
 
     async def _build_context(browser) -> BrowserContext:
@@ -642,7 +644,12 @@ async def launch_browser(
             raise
         except PlaywrightError as exc:
             err = str(exc)
-            if "ERR_SSL" in err or "ERR_CERT_" in err:
+            if "ERR_TUNNEL_CONNECTION_FAILED" in err:
+                # Proxy accepted TCP but rejected the CONNECT tunnel for this
+                # destination — expired session, exhausted bandwidth, or ACL block.
+                # Immediately quarantine; no point retrying on the same proxy.
+                _tunnel_failed = True
+            elif "ERR_SSL" in err or "ERR_CERT_" in err:
                 # TLS handshake failure from a faulty exit node, not the proxy
                 # endpoint itself. Don't penalise — rotating the session on the
                 # next launch will assign a different device.
@@ -662,6 +669,8 @@ async def launch_browser(
             if proxy:
                 if _cf_blocked:
                     record_proxy_failure(proxy, _cf_error_code)
+                elif _tunnel_failed:
+                    record_proxy_tunnel_failure(proxy)
                 elif _proxy_failed:
                     # Don't re-penalize an already-quarantined proxy — that would
                     # reset its 30-minute TTL and prevent natural recovery.
@@ -692,8 +701,11 @@ async def launch_browser(
                     _cf_blocked = True
                     _cf_error_code = exc.error_code
                     raise
-                except PlaywrightError:
-                    _proxy_failed = True
+                except PlaywrightError as exc:
+                    if "ERR_TUNNEL_CONNECTION_FAILED" in str(exc):
+                        _tunnel_failed = True
+                    else:
+                        _proxy_failed = True
                     raise
                 finally:
                     if _cf_blocked:
@@ -702,6 +714,8 @@ async def launch_browser(
                         await _save_browser_state(context, pdir)
                     if _cf_blocked:
                         record_proxy_failure(proxy, _cf_error_code)
+                    elif _tunnel_failed:
+                        record_proxy_tunnel_failure(proxy)
                     elif _proxy_failed:
                         record_proxy_failure(proxy, None)
                     else:

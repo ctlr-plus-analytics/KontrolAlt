@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   IntakeSummaryResponse,
   Platform,
@@ -10,6 +10,7 @@ import type {
 import {
   ApiError,
   confirmResolvedChannels,
+  getAdminTaskStatus,
   intakeBulkChannels,
   intakeManualChannel,
   resolveSeedChannels,
@@ -17,6 +18,10 @@ import {
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import {
+  IntakeScrapeProgress,
+  type IntakeScrapeJob,
+} from "@/components/channels/IntakeScrapeProgress";
 
 interface ChannelIntakePanelProps {
   onIntakeComplete: () => void;
@@ -70,12 +75,14 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
   const [manualLoading, setManualLoading] = useState<boolean>(false);
   const [manualSummary, setManualSummary] = useState<IntakeSummaryResponse | null>(null);
   const [manualError, setManualError] = useState<string | null>(null);
+  const [manualScrapeJobs, setManualScrapeJobs] = useState<IntakeScrapeJob[]>([]);
 
   const [bulkUrls, setBulkUrls] = useState<string>("");
   const [bulkTriggerNow, setBulkTriggerNow] = useState<boolean>(false);
   const [bulkLoading, setBulkLoading] = useState<boolean>(false);
   const [bulkSummary, setBulkSummary] = useState<IntakeSummaryResponse | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkScrapeJobs, setBulkScrapeJobs] = useState<IntakeScrapeJob[]>([]);
 
   const [seedNames, setSeedNames] = useState<string>("");
   const [resolverResults, setResolverResults] = useState<ResolverSeedResult[]>([]);
@@ -84,6 +91,85 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
   const [resolverSummary, setResolverSummary] = useState<IntakeSummaryResponse | null>(null);
   const [resolverError, setResolverError] = useState<string | null>(null);
   const [resolverSelected, setResolverSelected] = useState<Record<string, boolean>>({});
+  const [resolverScrapeJobs, setResolverScrapeJobs] = useState<IntakeScrapeJob[]>([]);
+
+  const POLL_INTERVAL_MS = 2500;
+  const TERMINAL_STATES = new Set(["SUCCESS", "FAILURE", "REVOKED"]);
+
+  function buildJobsFromSummary(
+    summary: IntakeSummaryResponse,
+    platform: Platform
+  ): IntakeScrapeJob[] {
+    return summary.records
+      .filter((r) => r.status === "inserted" && r.scrape_task_id)
+      .map((r) => ({
+        channelUrl: r.channel_url ?? r.input_value,
+        platform: r.platform ?? platform,
+        taskId: r.scrape_task_id!,
+        status: null,
+        pollingError: null,
+      }));
+  }
+
+  const pollJobs = useCallback(
+    (
+      jobs: IntakeScrapeJob[],
+      setJobs: React.Dispatch<React.SetStateAction<IntakeScrapeJob[]>>
+    ) => {
+      if (!token) return undefined;
+      const pending = jobs.filter(
+        (j) => !TERMINAL_STATES.has(j.status?.state ?? "")
+      );
+      if (pending.length === 0) return undefined;
+
+      const timer = window.setTimeout(() => {
+        void (async () => {
+          const updates = await Promise.all(
+            pending.map(async (job) => {
+              try {
+                const status = await getAdminTaskStatus(job.taskId, token);
+                return { taskId: job.taskId, status, error: null };
+              } catch {
+                return {
+                  taskId: job.taskId,
+                  status: null,
+                  error: "Could not fetch status",
+                };
+              }
+            })
+          );
+          setJobs((current) =>
+            current.map((job) => {
+              const update = updates.find((u) => u.taskId === job.taskId);
+              if (!update) return job;
+              if (update.status) {
+                return { ...job, status: update.status, pollingError: null };
+              }
+              return { ...job, pollingError: update.error };
+            })
+          );
+        })();
+      }, POLL_INTERVAL_MS);
+
+      return timer;
+    },
+    [token]
+  );
+
+  useEffect(() => {
+    const timer = pollJobs(manualScrapeJobs, setManualScrapeJobs);
+    return () => { if (timer !== undefined) window.clearTimeout(timer); };
+  }, [manualScrapeJobs, pollJobs]);
+
+  useEffect(() => {
+    const timer = pollJobs(bulkScrapeJobs, setBulkScrapeJobs);
+    return () => { if (timer !== undefined) window.clearTimeout(timer); };
+  }, [bulkScrapeJobs, pollJobs]);
+
+  useEffect(() => {
+    const timer = pollJobs(resolverScrapeJobs, setResolverScrapeJobs);
+    return () => { if (timer !== undefined) window.clearTimeout(timer); };
+  }, [resolverScrapeJobs, pollJobs]);
 
   const selectedResolverCandidates = useMemo(() => {
     const selections: ResolverConfirmSelection[] = [];
@@ -127,6 +213,9 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
         token
       );
       setManualSummary(summary);
+      if (manualTriggerNow) {
+        setManualScrapeJobs(buildJobsFromSummary(summary, manualPlatform));
+      }
       setManualUrl("");
       onIntakeComplete();
     } catch (error: unknown) {
@@ -152,6 +241,9 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
         token
       );
       setBulkSummary(summary);
+      if (bulkTriggerNow) {
+        setBulkScrapeJobs(buildJobsFromSummary(summary, "rumble"));
+      }
       setBulkUrls("");
       onIntakeComplete();
     } catch (error: unknown) {
@@ -203,6 +295,7 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
         token
       );
       setResolverSummary(summary);
+      setResolverScrapeJobs(buildJobsFromSummary(summary, "rumble"));
       onIntakeComplete();
     } catch (error: unknown) {
       setResolverError(error instanceof ApiError ? error.message : "Resolver confirm failed");
@@ -295,6 +388,12 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
         </Button>
         <div className="mt-3">
           <IntakeSummary summary={manualSummary} />
+          {manualScrapeJobs.length > 0 && (
+            <IntakeScrapeProgress
+              jobs={manualScrapeJobs}
+              onDismiss={() => setManualScrapeJobs([])}
+            />
+          )}
           {manualError ? <p className="mt-2 text-xs text-[#B22222]">{manualError}</p> : null}
         </div>
       </form>
@@ -350,6 +449,12 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
         </Button>
         <div className="mt-3">
           <IntakeSummary summary={bulkSummary} />
+          {bulkScrapeJobs.length > 0 && (
+            <IntakeScrapeProgress
+              jobs={bulkScrapeJobs}
+              onDismiss={() => setBulkScrapeJobs([])}
+            />
+          )}
           {bulkError ? <p className="mt-2 text-xs text-[#B22222]">{bulkError}</p> : null}
         </div>
       </form>
@@ -454,6 +559,12 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
         </p>
         <div className="mt-2">
           <IntakeSummary summary={resolverSummary} />
+          {resolverScrapeJobs.length > 0 && (
+            <IntakeScrapeProgress
+              jobs={resolverScrapeJobs}
+              onDismiss={() => setResolverScrapeJobs([])}
+            />
+          )}
           {resolverError ? <p className="mt-2 text-xs text-[#B22222]">{resolverError}</p> : null}
         </div>
       </div>

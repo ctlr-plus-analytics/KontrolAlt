@@ -155,6 +155,7 @@ def _on_worker_process_init(**kwargs):
                 proxy_health_tracker,
                 timeout=12.0,
                 concurrency=4,
+                target_url="https://rumble.com/",
             )
             await worker_pool.ensure_browser()
 

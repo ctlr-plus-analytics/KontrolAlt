@@ -218,6 +218,26 @@ class ProxyHealthTracker:
         except Exception as exc:
             logger.debug("ProxyHealthTracker.record_success: %s", exc)
 
+    def record_tunnel_failure(self, proxy: str) -> None:
+        """Immediately quarantine a proxy after an HTTP CONNECT tunnel rejection.
+
+        ERR_TUNNEL_CONNECTION_FAILED means the proxy accepted the TCP connection
+        but refused to open the CONNECT tunnel to the target host — e.g. the
+        proxy returned HTTP 407/403/503 in response to the CONNECT request.
+        This is unambiguously a dead proxy for this destination; skip the
+        score ladder and quarantine immediately.
+        """
+        try:
+            r = self._redis()
+            r.setex(self._quarantine_key(proxy), self.QUARANTINE_TTL, "1")
+            r.setex(self._score_key(proxy), self.SCORE_TTL, "0.0")
+            logger.info(
+                "Proxy immediately quarantined after CONNECT tunnel failure (hash=%s)",
+                self._hash(proxy),
+            )
+        except Exception as exc:
+            logger.debug("ProxyHealthTracker.record_tunnel_failure: %s", exc)
+
     def record_failure(
         self, proxy: str, error_code: int | None = None
     ) -> None:
@@ -386,6 +406,11 @@ def record_proxy_success(proxy: str) -> None:
     proxy_health_tracker.record_success(proxy)
 
 
+def record_proxy_tunnel_failure(proxy: str) -> None:
+    """Immediately quarantine a proxy whose HTTP CONNECT tunnel was rejected."""
+    proxy_health_tracker.record_tunnel_failure(proxy)
+
+
 def record_proxy_failure(proxy: str, error_code: int | None = None) -> None:
     """Apply a health penalty to a proxy after a Cloudflare block.
 
@@ -477,11 +502,20 @@ proxy_session_manager = ProxySessionManager()
 # Startup proxy health validation
 # ---------------------------------------------------------------------------
 
-async def _check_single_proxy_health(proxy_url: str, timeout: float = 12.0) -> tuple[bool, str]:
-    """Check whether a proxy is reachable and returns a valid response.
+async def _check_single_proxy_health(
+    proxy_url: str,
+    timeout: float = 12.0,
+    target_url: str = "https://api.ipify.org?format=json",
+) -> tuple[bool, str]:
+    """Check whether a proxy can open an HTTP CONNECT tunnel to target_url.
 
-    Makes a lightweight GET request to https://api.ipify.org through the proxy.
-    Returns (is_healthy, reason_string).
+    Any HTTP response from the target (including 301/403/CF challenges) means
+    the CONNECT tunnel succeeded and the proxy is healthy.  Only httpx.ProxyError
+    indicates a tunnel rejection — the same failure mode as ERR_TUNNEL_CONNECTION_FAILED
+    in Chromium.
+
+    Pass target_url matching the actual scrape destination (e.g. https://rumble.com/)
+    so destination-specific ACL blocks are detected at startup rather than at scrape time.
     """
     try:
         import httpx
@@ -490,22 +524,22 @@ async def _check_single_proxy_health(proxy_url: str, timeout: float = 12.0) -> t
             timeout=httpx.Timeout(timeout),
             follow_redirects=False,
         ) as client:
-            resp = await client.get("https://api.ipify.org?format=json")
-            if resp.status_code == 200:
-                return True, "ok"
-            return False, f"http_{resp.status_code}"
+            await client.head(target_url)
+            return True, "ok"
     except httpx.ProxyError as exc:
         return False, f"proxy_error:{type(exc).__name__}"
     except httpx.ConnectTimeout:
         return False, "connect_timeout"
     except httpx.ReadTimeout:
-        return False, "read_timeout"
+        # ReadTimeout after CONNECT succeeded means the target was slow to respond,
+        # not that the proxy is broken.  Treat as healthy.
+        return True, "ok_read_timeout"
     except Exception as exc:
         return False, f"exception:{type(exc).__name__}"
 
 
 _STARTUP_LOCK_KEY = "proxy:startup_check_lock"
-_STARTUP_LOCK_TTL = 120  # seconds — one check per 2-minute window across all workers
+_STARTUP_LOCK_TTL = 15  # seconds — deduplicate fork siblings within one container startup
 
 
 async def validate_proxy_pool_on_startup(
@@ -514,6 +548,7 @@ async def validate_proxy_pool_on_startup(
     *,
     timeout: float = 12.0,
     concurrency: int = 4,
+    target_url: str = "https://api.ipify.org?format=json",
 ) -> None:
     """Check every proxy in the pool at worker startup.
 
@@ -522,7 +557,9 @@ async def validate_proxy_pool_on_startup(
     the N forked processes independently applies a -0.25 penalty, driving a
     single proxy from score 1.0 to 0.0 in one startup cycle.
 
-    The lock TTL is 120 s so each fresh container startup gets one real check.
+    Pass target_url matching the actual scrape destination so destination-specific
+    ACL blocks are detected here rather than at scrape time (e.g. pass
+    "https://rumble.com/" for the Rumble worker).
     """
     # Deduplicate across forked worker processes.
     try:
@@ -540,8 +577,9 @@ async def validate_proxy_pool_on_startup(
         return
 
     logger.info(
-        "validate_proxy_pool_on_startup: checking %d proxy(ies) with concurrency=%d timeout=%.1fs",
+        "validate_proxy_pool_on_startup: checking %d proxy(ies) target=%s concurrency=%d timeout=%.1fs",
         len(proxies),
+        target_url,
         concurrency,
         timeout,
     )
@@ -551,13 +589,13 @@ async def validate_proxy_pool_on_startup(
     async def _check_and_report(proxy: str) -> None:
         hash_hint = health_tracker._hash(proxy)
         async with semaphore:
-            healthy, reason = await _check_single_proxy_health(proxy, timeout=timeout)
+            healthy, reason = await _check_single_proxy_health(proxy, timeout=timeout, target_url=target_url)
         if healthy:
             logger.info(
                 "validate_proxy_pool_on_startup: proxy %s — REACHABLE",
                 hash_hint,
             )
-        elif reason in ("connect_timeout", "read_timeout"):
+        elif reason == "connect_timeout":
             # Residential proxies route through real devices and can have 10–20 s
             # initial latency.  A timeout here does not mean the proxy is dead —
             # it may just be slow to respond to the httpx check.  Log a warning
@@ -568,8 +606,18 @@ async def validate_proxy_pool_on_startup(
                 hash_hint,
                 reason,
             )
+        elif reason.startswith("proxy_error"):
+            # CONNECT tunnel was actively rejected — same failure mode as
+            # ERR_TUNNEL_CONNECTION_FAILED in Chromium.  Immediately quarantine.
+            health_tracker.record_tunnel_failure(proxy)
+            logger.warning(
+                "validate_proxy_pool_on_startup: proxy %s — TUNNEL REJECTED (%s) "
+                "— immediately quarantined",
+                hash_hint,
+                reason,
+            )
         else:
-            # Genuine proxy error (bad credentials, server rejection, etc.).
+            # Other errors (bad credentials, server rejection, etc.).
             health_tracker.record_failure(proxy, error_code=None)
             logger.warning(
                 "validate_proxy_pool_on_startup: proxy %s — UNREACHABLE (%s) "
