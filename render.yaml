@@ -20,6 +20,7 @@ services:
     name: redis
     plan: starter
     maxmemoryPolicy: noeviction
+    ipAllowList: []
 
   # ── Backend API ────────────────────────────────────────────────────────────
   - type: web
