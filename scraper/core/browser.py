@@ -775,19 +775,33 @@ async def pre_warm_homepage(
 
 
 def _parse_proxy_settings(proxy_url: str) -> dict[str, str]:
-    """Convert an env proxy URL into Playwright proxy settings."""
+    """Convert an env proxy URL into Playwright proxy settings.
+
+    Credentials are embedded directly in the server URL rather than passed as
+    separate username/password fields.  When credentials are in the URL,
+    Chromium includes Proxy-Authorization pre-emptively in the initial CONNECT
+    request.  When they are passed as separate fields, Chromium uses a
+    407 challenge-response cycle: it sends CONNECT without auth, waits for 407,
+    then retries.  Residential proxy providers that close the TCP connection
+    after returning 407 (non-RFC behaviour) cause ERR_TUNNEL_CONNECTION_FAILED
+    on the retry.  Pre-emptive auth avoids the 407 dance entirely and matches
+    how httpx handles proxy credentials in the URL.
+    """
     parsed = urlsplit(proxy_url)
     if parsed.scheme and parsed.hostname:
-        server = f"{parsed.scheme}://{parsed.hostname}"
+        # Re-embed decoded credentials so Chromium sends Proxy-Authorization
+        # in the initial CONNECT without waiting for a 407 challenge.
+        if parsed.username:
+            from urllib.parse import quote as _pct
+            user = _pct(unquote(parsed.username), safe="")
+            pwd = _pct(unquote(parsed.password or ""), safe="")
+            auth = f"{user}:{pwd}@"
+        else:
+            auth = ""
+        server = f"{parsed.scheme}://{auth}{parsed.hostname}"
         if parsed.port is not None:
             server = f"{server}:{parsed.port}"
-
-        settings: dict[str, str] = {"server": server}
-        if parsed.username:
-            settings["username"] = unquote(parsed.username)
-        if parsed.password:
-            settings["password"] = unquote(parsed.password)
-        return settings
+        return {"server": server}
 
     return {"server": proxy_url}
 

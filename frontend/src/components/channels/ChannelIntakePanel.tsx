@@ -101,7 +101,7 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
     platform: Platform
   ): IntakeScrapeJob[] {
     return summary.records
-      .filter((r) => r.status === "inserted" && r.scrape_task_id)
+      .filter((r) => r.scrape_task_id !== null && r.scrape_task_id !== undefined)
       .map((r) => ({
         channelUrl: r.channel_url ?? r.input_value,
         platform: r.platform ?? platform,
