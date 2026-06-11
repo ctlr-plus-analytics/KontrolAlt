@@ -777,20 +777,22 @@ async def pre_warm_homepage(
 def _parse_proxy_settings(proxy_url: str) -> dict[str, str]:
     """Convert an env proxy URL into Playwright proxy settings.
 
-    Credentials are embedded directly in the server URL rather than passed as
-    separate username/password fields.  When credentials are in the URL,
-    Chromium includes Proxy-Authorization pre-emptively in the initial CONNECT
-    request.  When they are passed as separate fields, Chromium uses a
-    407 challenge-response cycle: it sends CONNECT without auth, waits for 407,
-    then retries.  Residential proxy providers that close the TCP connection
-    after returning 407 (non-RFC behaviour) cause ERR_TUNNEL_CONNECTION_FAILED
-    on the retry.  Pre-emptive auth avoids the 407 dance entirely and matches
-    how httpx handles proxy credentials in the URL.
+    Credentials are provided both ways so either Chromium auth path works:
+
+    1. Embedded in the server URL  →  Chromium may send Proxy-Authorization
+       pre-emptively in the initial CONNECT, skipping the 407 dance entirely.
+
+    2. Separate username / password  →  Playwright registers a 407 auth handler.
+       If the proxy returns 407 and keeps the connection open (standard RFC
+       behaviour, e.g. Evomi after a fresh data-cap renewal), Chromium retries
+       with credentials via the handler.
+
+    Having both ensures the scrape works regardless of which auth flow the
+    proxy triggers.  Omitting the separate fields caused 45-second hangs when
+    the provider returned 407 and waited for credentials that never arrived.
     """
     parsed = urlsplit(proxy_url)
     if parsed.scheme and parsed.hostname:
-        # Re-embed decoded credentials so Chromium sends Proxy-Authorization
-        # in the initial CONNECT without waiting for a 407 challenge.
         if parsed.username:
             from urllib.parse import quote as _pct
             user = _pct(unquote(parsed.username), safe="")
@@ -801,7 +803,12 @@ def _parse_proxy_settings(proxy_url: str) -> dict[str, str]:
         server = f"{parsed.scheme}://{auth}{parsed.hostname}"
         if parsed.port is not None:
             server = f"{server}:{parsed.port}"
-        return {"server": server}
+        settings: dict[str, str] = {"server": server}
+        if parsed.username:
+            settings["username"] = unquote(parsed.username)
+        if parsed.password:
+            settings["password"] = unquote(parsed.password)
+        return settings
 
     return {"server": proxy_url}
 
