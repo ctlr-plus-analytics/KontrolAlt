@@ -1,8 +1,6 @@
 envVarGroups:
   - name: scraper-secrets
     envVars:
-      - key: REDIS_URL
-        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
@@ -17,6 +15,12 @@ envVarGroups:
         sync: false
 
 services:
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  - type: redis
+    name: redis
+    plan: starter
+    maxmemoryPolicy: noeviction
+
   # ── Backend API ────────────────────────────────────────────────────────────
   - type: web
     name: backend
@@ -27,6 +31,11 @@ services:
     healthCheckPath: /health
     envVars:
       - fromGroup: scraper-secrets
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
       - key: FRONTEND_ORIGIN
         sync: false
       - key: APP_ENV
@@ -44,6 +53,11 @@ services:
     dockerCommand: /opt/venv/bin/celery -A worker.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
     envVars:
       - fromGroup: scraper-secrets
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
       - key: PYTHONPATH
         value: /app
 
@@ -57,6 +71,11 @@ services:
     dockerCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=discovery --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-discovery
     envVars:
       - fromGroup: scraper-secrets
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
       - key: PYTHONPATH
         value: /app
 
@@ -70,6 +89,11 @@ services:
     dockerCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=gate0 --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-gate0
     envVars:
       - fromGroup: scraper-secrets
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
       - key: PYTHONPATH
         value: /app
 
@@ -83,6 +107,11 @@ services:
     dockerCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=classify --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-classify
     envVars:
       - fromGroup: scraper-secrets
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
       - key: PYTHONPATH
         value: /app
 
@@ -96,6 +125,11 @@ services:
     dockerCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=rumble --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-rumble
     envVars:
       - fromGroup: scraper-secrets
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
       - key: PYTHONPATH
         value: /app
       - key: BROWSER_HEADLESS
@@ -111,6 +145,11 @@ services:
     dockerCommand: /opt/venv/bin/celery -A worker.celery_app worker --loglevel=info --queues=substack --concurrency=2 --prefetch-multiplier=1 --hostname=celery@worker-substack
     envVars:
       - fromGroup: scraper-secrets
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis
+          property: connectionString
       - key: PYTHONPATH
         value: /app
       - key: BROWSER_HEADLESS
