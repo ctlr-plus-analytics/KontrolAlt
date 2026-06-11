@@ -608,7 +608,7 @@ def classify_channels(
             page_size = 1000
             offset = 0
             while True:
-                result = (
+                query = (
                     supabase.table("channels")
                     .select(_SELECT)
                     .eq("is_active", True)
@@ -616,9 +616,21 @@ def classify_channels(
                     .eq("dashboard_metrics_complete", True)
                     .eq("dashboard_url_valid", True)
                     .eq("dashboard_eligible", True)
-                    .range(offset, offset + page_size - 1)
-                    .execute()
                 )
+                if not reclassify:
+                    # Only fetch channels that actually need work:
+                    # missing/empty niche_tags, "Unknown / Needs Review" tag,
+                    # missing Q&A report, or low context score (may need reclassification
+                    # now that more data is available).
+                    query = query.or_(
+                        "niche_tags.is.null,"
+                        "niche_tags.eq.{},"
+                        'niche_tags.cs.{"Unknown / Needs Review"},'
+                        "ai_channel_report.is.null,"
+                        "ai_channel_report.eq.,"
+                        "classification_context_score.lt.2"
+                    )
+                result = query.range(offset, offset + page_size - 1).execute()
                 page = result.data or []
                 fetched.extend(page)
                 if len(page) < page_size:
