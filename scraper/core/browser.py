@@ -557,8 +557,14 @@ async def launch_browser(
         telemetry.geoip_enabled = proxy_active
         telemetry.selected_proxy = proxy
 
+    # Seed the browser profile on (domain, proxy) — the same scope as the
+    # shared storage state bucket.  This guarantees the UA used to solve a CF
+    # challenge is identical across all channels pinned to the same proxy, so
+    # a loaded cf_clearance cookie is always fingerprint-consistent.
+    _domain = _extract_domain(session_key) if session_key else None
+    _profile_seed = f"{_domain}:{proxy}" if (_domain and proxy) else session_key
     profile = get_consistent_browser_profile(
-        session_key=session_key,
+        session_key=_profile_seed,
         proxy_country=proxy_country,
     )
 
