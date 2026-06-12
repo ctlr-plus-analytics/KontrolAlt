@@ -114,6 +114,12 @@ def _row_matches_category_tags(row: dict[str, object], category_tags: list[str])
     return len(filter_tags.intersection(row_tags)) > 0
 
 
+def _resolve_sort_column(sort_by: str) -> str:
+    if sort_by == "avg_likes":
+        return "avg_views"
+    return sort_by
+
+
 def _fetch_channels_by_ids_ordered(channel_ids: list[str]) -> list[dict[str, object]]:
     if not channel_ids:
         return []
@@ -318,7 +324,7 @@ async def get_channels(
                 )
 
             candidate_query = candidate_query.order(
-                filters.sort_by,
+                _resolve_sort_column(filters.sort_by),
                 desc=(filters.sort_order == "desc"),
                 nullsfirst=False,
             )
@@ -333,7 +339,7 @@ async def get_channels(
             records = _fetch_channels_by_ids_ordered(page_ids)
         else:
             query = query.order(
-                filters.sort_by,
+                _resolve_sort_column(filters.sort_by),
                 desc=(filters.sort_order == "desc"),
                 nullsfirst=False,
             )
@@ -348,6 +354,128 @@ async def get_channels(
     except (APIError, TypeError, ValueError) as exc:
         logger.error("Failed to fetch channels: %s", exc, exc_info=True)
         raise SupabaseError(f"Failed to fetch channels: {exc}") from exc
+
+
+async def export_channels(filters: ChannelFilters) -> list[dict]:
+    """Fetch all matching channels for CSV export, ignoring pagination."""
+    try:
+        query = supabase_admin.table(_CHANNELS_TABLE).select(_CHANNEL_LIST_SELECT)
+        query = query.eq("is_active", True)
+        if filters.incomplete_only:
+            query = query.eq("dashboard_eligible", False)
+        else:
+            query = query.eq("dashboard_eligible", True)
+
+        if filters.platform is not None:
+            query = query.eq("platform", filters.platform.value)
+        if filters.comment_tier is not None:
+            query = query.eq("comment_tier", filters.comment_tier.value)
+        if filters.gate0_statuses:
+            query = query.in_("gate0_status", [s.value for s in filters.gate0_statuses])
+        if filters.search_query is not None:
+            term = filters.search_query.replace("%", "").replace(",", "").strip()
+            if term:
+                pattern = f"%{term}%"
+                query = query.or_(
+                    f"name.ilike.{pattern},channel_url.ilike.{pattern},description.ilike.{pattern}"
+                )
+        if filters.min_subscriber_count is not None:
+            query = query.gte("subscriber_count", filters.min_subscriber_count)
+        if filters.max_subscriber_count is not None:
+            query = query.lte("subscriber_count", filters.max_subscriber_count)
+        if filters.min_avg_views is not None:
+            query = query.gte("avg_views", ceil(filters.min_avg_views))
+        if filters.max_avg_views is not None:
+            query = query.lte("avg_views", floor(filters.max_avg_views))
+        if filters.min_avg_comments is not None:
+            query = query.gte("avg_comments", ceil(filters.min_avg_comments))
+        if filters.max_avg_comments is not None:
+            query = query.lte("avg_comments", floor(filters.max_avg_comments))
+        if filters.inactive_filter:
+            cutoff = (date.today() - timedelta(days=90)).isoformat()
+            query = query.gte("last_active_date", cutoff)
+        if filters.last_active_from is not None:
+            query = query.gte("last_active_date", filters.last_active_from.isoformat())
+        if filters.last_active_to is not None:
+            query = query.lte("last_active_date", filters.last_active_to.isoformat())
+
+        if filters.category_tags:
+            normalized_category_tags = _normalize_filter_niche_tags(filters.category_tags)
+            requires_canonical_fallback = "Unknown / Needs Review" in normalized_category_tags
+        else:
+            normalized_category_tags = []
+            requires_canonical_fallback = False
+
+        if filters.category_tags and not requires_canonical_fallback:
+            query = query.overlaps("niche_tags", normalized_category_tags)
+
+        query = query.order(filters.sort_by, desc=(filters.sort_order == "desc"), nullsfirst=False)
+
+        if filters.category_tags and requires_canonical_fallback:
+            candidate_query = supabase_admin.table(_CHANNELS_TABLE).select(
+                "id,niche_tags,subscriber_count,avg_comments,"
+                "avg_views,last_active_date,view_velocity_30d,"
+                "view_velocity_90d,engagement_rate"
+            )
+            candidate_query = candidate_query.eq("is_active", True)
+            if filters.incomplete_only:
+                candidate_query = candidate_query.eq("dashboard_eligible", False)
+            else:
+                candidate_query = candidate_query.eq("dashboard_eligible", True)
+            if filters.platform is not None:
+                candidate_query = candidate_query.eq("platform", filters.platform.value)
+            if filters.comment_tier is not None:
+                candidate_query = candidate_query.eq("comment_tier", filters.comment_tier.value)
+            if filters.gate0_statuses:
+                candidate_query = candidate_query.in_(
+                    "gate0_status", [s.value for s in filters.gate0_statuses]
+                )
+            if filters.search_query is not None:
+                term = filters.search_query.replace("%", "").replace(",", "").strip()
+                if term:
+                    pattern = f"%{term}%"
+                    candidate_query = candidate_query.or_(
+                        f"name.ilike.{pattern},channel_url.ilike.{pattern},description.ilike.{pattern}"
+                    )
+            if filters.min_subscriber_count is not None:
+                candidate_query = candidate_query.gte("subscriber_count", filters.min_subscriber_count)
+            if filters.max_subscriber_count is not None:
+                candidate_query = candidate_query.lte("subscriber_count", filters.max_subscriber_count)
+            if filters.min_avg_views is not None:
+                candidate_query = candidate_query.gte("avg_views", ceil(filters.min_avg_views))
+            if filters.max_avg_views is not None:
+                candidate_query = candidate_query.lte("avg_views", floor(filters.max_avg_views))
+            if filters.min_avg_comments is not None:
+                candidate_query = candidate_query.gte("avg_comments", ceil(filters.min_avg_comments))
+            if filters.max_avg_comments is not None:
+                candidate_query = candidate_query.lte("avg_comments", floor(filters.max_avg_comments))
+            if filters.inactive_filter:
+                cutoff = (date.today() - timedelta(days=90)).isoformat()
+                candidate_query = candidate_query.gte("last_active_date", cutoff)
+            if filters.last_active_from is not None:
+                candidate_query = candidate_query.gte(
+                    "last_active_date", filters.last_active_from.isoformat()
+                )
+            if filters.last_active_to is not None:
+                candidate_query = candidate_query.lte(
+                    "last_active_date", filters.last_active_to.isoformat()
+                )
+            candidate_query = candidate_query.order(
+                filters.sort_by, desc=(filters.sort_order == "desc"), nullsfirst=False
+            )
+            candidate_rows = _fetch_all_rows(candidate_query)
+            filtered_rows = [
+                row for row in candidate_rows
+                if _row_matches_category_tags(row, filters.category_tags or [])
+            ]
+            all_ids = [str(row.get("id")) for row in filtered_rows if row.get("id") is not None]
+            return _fetch_channels_by_ids_ordered(all_ids)
+        else:
+            return _fetch_all_rows(query)
+
+    except (APIError, TypeError, ValueError) as exc:
+        logger.error("Failed to export channels: %s", exc, exc_info=True)
+        raise SupabaseError(f"Failed to export channels: {exc}") from exc
 
 
 async def list_niche_tags(filters: ChannelFilters | None = None) -> tuple[list[str], list[dict[str, int | str]]]:

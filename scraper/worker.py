@@ -58,8 +58,9 @@ celery_app.conf.update(
     broker_transport_options={"visibility_timeout": 21600},
     task_track_started=True,
     task_acks_late=True,
+    worker_pool_restarts=True,
     worker_prefetch_multiplier=1,
-    task_default_queue="discovery",
+    task_default_queue="celery",
     task_routes={
         "scraper.tasks.discover_channels": {"queue": "discovery"},
         "scraper.tasks.discover_keyword_expansion": {"queue": "discovery"},

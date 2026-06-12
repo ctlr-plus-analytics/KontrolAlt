@@ -8,7 +8,7 @@ from tasks.scrape_helpers import clear_platform_slots
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="scraper.tasks.clear_platform_slots")
+@celery_app.task(name="scraper.tasks.clear_platform_slots", queue="discovery")
 def clear_platform_slots_task() -> dict[str, object]:
     """Manually clear platform slot counters in Redis."""
     result = clear_platform_slots()

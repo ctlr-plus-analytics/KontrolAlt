@@ -213,11 +213,13 @@ export interface ManualChannelIntakeRequest {
   notes?: string | null;
   tags: string[];
   trigger_scrape_now: boolean;
+  trigger_classify_after?: boolean;
 }
 
 export interface BulkChannelIntakeRequest {
   urls_text: string;
   trigger_scrape_now: boolean;
+  trigger_classify_after?: boolean;
 }
 
 export interface ResolverSeedRequest {
@@ -254,6 +256,7 @@ export interface ResolverConfirmSelection {
 export interface ResolverConfirmRequest {
   selections: ResolverConfirmSelection[];
   trigger_scrape_now: boolean;
+  trigger_classify_after?: boolean;
 }
 
 export interface UpdateChannelDoNotContactRequest {
@@ -280,6 +283,7 @@ export interface ChannelFilters {
   incomplete_only?: boolean;
   sort_by:
     | "subscriber_count"
+    | "avg_likes"
     | "avg_views"
     | "avg_comments"
     | "engagement_rate"

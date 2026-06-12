@@ -14,6 +14,7 @@ import {
   FileText,
   Video,
   Brain,
+  Sparkles,
 } from "lucide-react";
 import type {
   Channel,
@@ -159,6 +160,7 @@ export function ChannelDetail({
       : channel.do_not_contact === "Current Partner"
         ? "gold"
         : "muted";
+  const similarChannelCount = lookalikes.length;
   const recentVideos = channel.recent_videos ?? [];
   const recentVideoRows: RecentVideoRow[] =
     recentVideos.length > 0
@@ -509,46 +511,132 @@ export function ChannelDetail({
       )}
 
       <div id="tour-similar-channels">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
-            Similar Channels
-            <InfoPopover content="Channels that share a similar niche, subscriber range, or engagement profile. Powered by the lookalike algorithm using topic tags, engagement metrics, and contact overlap." />
-          </h2>
-          <Button
-            variant="ghost"
-            size="sm"
-            loading={lookalikesLoading}
-            disabled={!session?.access_token}
-            onClick={() => void handleLoadLookalikes()}
-          >
-            Load Similar Channels
-          </Button>
-        </div>
-        {lookalikesError && (
-          <p className="mb-3 text-sm text-[#B22222]">{lookalikesError}</p>
-        )}
-        {lookalikesLoaded && lookalikes.length === 0 && !lookalikesError && (
-          <p className="rounded-xl border border-[#E8E4DC] bg-white p-5 text-sm text-[#6B6B6B] shadow-sm">
-            No similar channels found
-          </p>
-        )}
-        {lookalikes.length > 0 && (
-          <div className="space-y-3">
-            {lookalikes.map((match) => {
-              const adapted: LookalikeMatch = {
-                id: `${channel.id}-${match.matched_channel_id}-${match.match_type}`,
-                seed_id: channel.id,
-                matched_channel_id: match.matched_channel_id,
-                match_type: match.match_type,
-                match_detail: match.match_detail,
-                found_at: channel.updated_at,
-                channel: match.channel,
-                seed: null,
-              };
-              return <LookalikeMatchCard key={adapted.id} match={adapted} />;
-            })}
+        <section className="overflow-hidden rounded-3xl border border-[#C9A84C]/25 bg-white shadow-[0_18px_50px_rgba(26,26,46,0.08)]">
+          <div className="bg-gradient-to-br from-[#1A1A2E] via-[#20213B] to-[#0F1020] px-6 py-6 text-white md:px-8 md:py-8">
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+              <div className="max-w-3xl">
+                <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-white/80">
+                  <Sparkles size={12} />
+                  Similar channel finder
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <h2 className="text-2xl font-semibold tracking-tight md:text-3xl">
+                    Similar Channels
+                  </h2>
+                  <InfoPopover
+                    dark
+                    content="Channels that share a similar niche, subscriber range, or engagement profile. Powered by the lookalike algorithm using topic tags, engagement metrics, and contact overlap."
+                  />
+                </div>
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-white/75 md:text-base">
+                  Load a focused shortlist of related creators to expand outreach, compare audience fit, and spot adjacent channels with matching engagement patterns.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-3 lg:items-end">
+                <Button
+                  variant="accent"
+                  size="lg"
+                  loading={lookalikesLoading}
+                  disabled={!session?.access_token}
+                  className="min-w-[12rem] shadow-[0_12px_24px_rgba(201,168,76,0.24)]"
+                  onClick={() => void handleLoadLookalikes()}
+                >
+                  <Sparkles size={16} />
+                  Load Similar Channels
+                </Button>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-white/70">
+                  <span className="rounded-full border border-white/10 bg-white/10 px-2.5 py-1">
+                    Matches update on demand
+                  </span>
+                  {lookalikesLoaded && (
+                    <span className="rounded-full border border-white/10 bg-white/10 px-2.5 py-1">
+                      {similarChannelCount} result{similarChannelCount === 1 ? "" : "s"} loaded
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
-        )}
+
+          <div className="space-y-4 bg-[#FAF8F4] px-6 py-6 md:px-8 md:py-8">
+            {lookalikesError && (
+              <div className="rounded-2xl border border-[#B22222]/20 bg-[#B22222]/8 px-4 py-3 text-sm text-[#B22222]">
+                {lookalikesError}
+              </div>
+            )}
+
+            {lookalikesLoaded && lookalikes.length === 0 && !lookalikesError && (
+              <div className="rounded-2xl border border-dashed border-[#C9A84C]/35 bg-white px-5 py-8 text-center shadow-sm">
+                <p className="text-base font-medium text-[#1A1A2E]">
+                  No similar channels found yet
+                </p>
+                <p className="mt-1 text-sm text-[#6B6B6B]">
+                  Try loading again after more channels are scraped or classified.
+                </p>
+              </div>
+            )}
+
+            {!lookalikesLoaded && !lookalikesError && !lookalikesLoading && (
+              <div className="grid gap-4 md:grid-cols-3">
+                <div className="rounded-2xl border border-[#E8E4DC] bg-white p-5 shadow-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#6B6B6B]">
+                    Audience overlap
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-[#1A1A2E]">
+                    Finds channels with similar engagement and size ranges.
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-[#E8E4DC] bg-white p-5 shadow-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#6B6B6B]">
+                    Topic adjacency
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-[#1A1A2E]">
+                    Surfaces related niche tags and category matches.
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-[#E8E4DC] bg-white p-5 shadow-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-[#6B6B6B]">
+                    Outreach expansion
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-[#1A1A2E]">
+                    Use it to widen a prospect list without leaving the page.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {lookalikesLoading && (
+              <div className="rounded-2xl border border-[#E8E4DC] bg-white p-8 text-center shadow-sm">
+                <div className="mx-auto mb-4 h-12 w-12 animate-pulse rounded-full bg-[#C9A84C]/15" />
+                <p className="text-base font-medium text-[#1A1A2E]">
+                  Loading similar channels
+                </p>
+                <p className="mt-1 text-sm text-[#6B6B6B]">
+                  Pulling related creators, audience overlap, and category matches.
+                </p>
+              </div>
+            )}
+
+            {lookalikes.length > 0 && (
+              <div className="grid gap-4 lg:grid-cols-2">
+                {lookalikes.map((match) => {
+                  const adapted: LookalikeMatch = {
+                    id: `${channel.id}-${match.matched_channel_id}-${match.match_type}`,
+                    seed_id: channel.id,
+                    matched_channel_id: match.matched_channel_id,
+                    match_type: match.match_type,
+                    match_detail: match.match_detail,
+                    found_at: channel.updated_at,
+                    channel: match.channel,
+                    seed: null,
+                  };
+                  return <LookalikeMatchCard key={adapted.id} match={adapted} />;
+                })}
+              </div>
+            )}
+          </div>
+        </section>
       </div>
       {/* ─── Scrape History ─── */}
       <div id="tour-scrape-history">

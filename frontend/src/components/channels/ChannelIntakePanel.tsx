@@ -72,6 +72,7 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
   const [manualNotes, setManualNotes] = useState<string>("");
   const [manualTags, setManualTags] = useState<string>("");
   const [manualTriggerNow, setManualTriggerNow] = useState<boolean>(true);
+  const [manualClassifyAfter, setManualClassifyAfter] = useState<boolean>(false);
   const [manualLoading, setManualLoading] = useState<boolean>(false);
   const [manualSummary, setManualSummary] = useState<IntakeSummaryResponse | null>(null);
   const [manualError, setManualError] = useState<string | null>(null);
@@ -79,6 +80,7 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
 
   const [bulkUrls, setBulkUrls] = useState<string>("");
   const [bulkTriggerNow, setBulkTriggerNow] = useState<boolean>(false);
+  const [bulkClassifyAfter, setBulkClassifyAfter] = useState<boolean>(false);
   const [bulkLoading, setBulkLoading] = useState<boolean>(false);
   const [bulkSummary, setBulkSummary] = useState<IntakeSummaryResponse | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
@@ -213,6 +215,7 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
             .map((item) => item.trim())
             .filter((item) => item.length > 0),
           trigger_scrape_now: manualTriggerNow,
+          trigger_classify_after: manualTriggerNow && manualClassifyAfter,
         },
         token
       );
@@ -241,6 +244,7 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
         {
           urls_text: bulkUrls,
           trigger_scrape_now: bulkTriggerNow,
+          trigger_classify_after: bulkTriggerNow && bulkClassifyAfter,
         },
         token
       );
@@ -374,16 +378,32 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
           className="mb-3"
         />
 
-        <label className="mb-4 flex items-start gap-2 text-xs text-[#6B6B6B]">
+        <label className="mb-2 flex items-start gap-2 text-xs text-[#6B6B6B]">
           <input
             type="checkbox"
             className="mt-0.5 shrink-0"
             checked={manualTriggerNow}
-            onChange={(event) => setManualTriggerNow(event.target.checked)}
+            onChange={(event) => {
+              setManualTriggerNow(event.target.checked);
+              if (!event.target.checked) setManualClassifyAfter(false);
+            }}
           />
           <span>
             <span className="font-medium text-[#1A1A2E]">Trigger scrape immediately</span>
             {" "}— queues a full channel scrape now and schedules a follow-up check ~2 minutes later. Leave unchecked to add the channel quietly and let the daily scrape pick it up.
+          </span>
+        </label>
+        <label className={`mb-4 flex items-start gap-2 text-xs ${manualTriggerNow ? "text-[#6B6B6B]" : "text-[#AAAAAA]"}`}>
+          <input
+            type="checkbox"
+            className="mt-0.5 ml-4 shrink-0"
+            checked={manualClassifyAfter}
+            disabled={!manualTriggerNow}
+            onChange={(event) => setManualClassifyAfter(event.target.checked)}
+          />
+          <span>
+            <span className={`font-medium ${manualTriggerNow ? "text-[#1A1A2E]" : "text-[#AAAAAA]"}`}>Also run Classification + Q/A</span>
+            {" "}— queues AI classification and Q/A report ~6 minutes after scrape, once Gate 0 has finished.
           </span>
         </label>
 
@@ -435,16 +455,32 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
           Supported: rumble.com/c/… and substack.com/@… (or handle.substack.com). Unsupported URLs are reported as invalid in the result summary.
         </FieldHint>
 
-        <label className="mb-4 flex items-start gap-2 text-xs text-[#6B6B6B]">
+        <label className="mb-2 flex items-start gap-2 text-xs text-[#6B6B6B]">
           <input
             type="checkbox"
             className="mt-0.5 shrink-0"
             checked={bulkTriggerNow}
-            onChange={(event) => setBulkTriggerNow(event.target.checked)}
+            onChange={(event) => {
+              setBulkTriggerNow(event.target.checked);
+              if (!event.target.checked) setBulkClassifyAfter(false);
+            }}
           />
           <span>
             <span className="font-medium text-[#1A1A2E]">Trigger scrape immediately</span>
             {" "}— queues a scrape task for every URL in the list. Leave unchecked for large imports to avoid overwhelming the worker queue.
+          </span>
+        </label>
+        <label className={`mb-4 flex items-start gap-2 text-xs ${bulkTriggerNow ? "text-[#6B6B6B]" : "text-[#AAAAAA]"}`}>
+          <input
+            type="checkbox"
+            className="mt-0.5 ml-4 shrink-0"
+            checked={bulkClassifyAfter}
+            disabled={!bulkTriggerNow}
+            onChange={(event) => setBulkClassifyAfter(event.target.checked)}
+          />
+          <span>
+            <span className={`font-medium ${bulkTriggerNow ? "text-[#1A1A2E]" : "text-[#AAAAAA]"}`}>Also run Classification + Q/A</span>
+            {" "}— queues AI classification and Q/A for each channel ~6 minutes after scrape.
           </span>
         </label>
 

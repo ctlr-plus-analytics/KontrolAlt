@@ -280,6 +280,7 @@ export interface ChannelFilters {
   incomplete_only?: boolean;
   sort_by:
     | "subscriber_count"
+    | "avg_likes"
     | "avg_views"
     | "avg_comments"
     | "engagement_rate"

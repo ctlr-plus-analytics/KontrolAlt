@@ -18,7 +18,7 @@ def discover_seed_expansion_now(*, platform: str | None = None) -> dict[str, obj
     return {key: value for key, value in result.items() if key != "new_urls"}
 
 
-@celery_app.task(name="scraper.tasks.discover_seed_expansion")
+@celery_app.task(name="scraper.tasks.discover_seed_expansion", queue="discovery")
 def discover_seed_expansion(platform: str | None = None) -> dict[str, object]:
     """Legacy task alias for known-channel direct discovery."""
     logger.info("Starting seed expansion discovery platform=%s", platform or "all")

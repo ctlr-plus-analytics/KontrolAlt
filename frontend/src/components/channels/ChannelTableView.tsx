@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef, useLayoutEffect, useMemo } from "react";
-import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, RefreshCw } from "lucide-react";
 import type { CategoryTagOption, Channel, ChannelFilters, VelocityScore } from "@/types";
 import { ChannelTable } from "@/components/channels/ChannelTable";
 import { FilterSidebar, DEFAULT_FILTERS } from "@/components/filters/FilterSidebar";
@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { useChannels } from "@/hooks/useChannels";
 import { useAuth } from "@/hooks/useAuth";
-import { getCategoryTags } from "@/lib/api/backend";
+import { getCategoryTags, exportChannels } from "@/lib/api/backend";
 import { useDashboardTour } from "@/hooks/useTourAutoStart";
 
 interface ChannelTableViewProps {
@@ -47,6 +47,8 @@ export function ChannelTableView({
   // Keep initial render SSR-stable; restore session state after mount.
   const [filters, setFilters] = useState<ChannelFilters>(DEFAULT_FILTERS);
   const [page, setPage] = useState<number>(1);
+  const [exporting, setExporting] = useState(false);
+  const [exportingExcel, setExportingExcel] = useState(false);
   const [categoryTagOptions, setCategoryTagOptions] = useState<CategoryTagOption[]>([]);
   const [categoryTagsLoading, setCategoryTagsLoading] = useState<boolean>(false);
   const [categoryTagsLoadedKey, setCategoryTagsLoadedKey] = useState<string | null>(null);
@@ -188,6 +190,26 @@ export function ChannelTableView({
     }
   }, [page, totalPages]);
 
+  const handleExport = useCallback(async () => {
+    if (!token) return;
+    setExporting(true);
+    try {
+      await exportChannels(filters, token, "csv");
+    } finally {
+      setExporting(false);
+    }
+  }, [filters, token]);
+
+  const handleExportExcel = useCallback(async () => {
+    if (!token) return;
+    setExportingExcel(true);
+    try {
+      await exportChannels(filters, token, "xlsx");
+    } finally {
+      setExportingExcel(false);
+    }
+  }, [filters, token]);
+
   const loadCategoryTags = useCallback(async () => {
     if (!token || categoryTagsLoading || categoryTagsLoadedKey === categoryTagsScopeKey) {
       return;
@@ -229,6 +251,24 @@ export function ChannelTableView({
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={exporting}
+              onClick={() => void handleExport()}
+            >
+              <Download size={14} />
+              Export CSV
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={exportingExcel}
+              onClick={() => void handleExportExcel()}
+            >
+              <Download size={14} />
+              Export Excel
+            </Button>
             <Button
               variant="ghost"
               size="sm"

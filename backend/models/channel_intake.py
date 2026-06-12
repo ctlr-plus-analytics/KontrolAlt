@@ -26,6 +26,7 @@ class ManualChannelIntakeRequest(BaseModel):
     notes: str | None = None
     tags: list[str] = Field(default_factory=list)
     trigger_scrape_now: bool = False
+    trigger_classify_after: bool = False
 
     @field_validator("channel_url")
     @classmethod
@@ -49,6 +50,7 @@ class BulkChannelIntakeRequest(BaseModel):
 
     urls_text: str = Field(min_length=1)
     trigger_scrape_now: bool = False
+    trigger_classify_after: bool = False
 
     @field_validator("urls_text")
     @classmethod
@@ -159,6 +161,7 @@ class ResolverConfirmRequest(BaseModel):
 
     selections: list[ResolverConfirmSelection]
     trigger_scrape_now: bool = False
+    trigger_classify_after: bool = False
 
     @field_validator("selections")
     @classmethod

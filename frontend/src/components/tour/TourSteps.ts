@@ -59,7 +59,7 @@ export const DASHBOARD_STEPS: Step[] = [
     target: "#tour-filter-sort",
     title: "Sort Controls",
     content:
-      "Sort By chooses the ranking metric: Avg Comments, Subscribers, Avg Views, 30-day View Velocity, 90-day View Velocity, or Last Active date. Order sets ascending (smallest first) or descending (largest first). The default is Avg Comments descending — the most engaged channels surface first, which is the most useful starting point for outreach research.",
+      "Sort By chooses the ranking metric: Avg Comments, Subscribers, Avg Views, Avg Likes, 30-day View Velocity, 90-day View Velocity, or Last Active date. Order sets ascending (smallest first) or descending (largest first). The default is Avg Comments descending — the most engaged channels surface first, which is the most useful starting point for outreach research.",
     placement: "right",
   },
   {
@@ -101,7 +101,7 @@ export const DASHBOARD_STEPS: Step[] = [
     target: "#tour-channel-table",
     title: "Channel Table",
     content:
-      "Every channel that matches your filters is listed here. Columns: Channel name, Platform, Subscribers, Niche/Category tag, Avg Views, Likes (Substack only), Avg Comments, Engagement Rate (comments ÷ subscribers), and Last Active date. Click any column header to sort by that column — clicking the active column again toggles the sort direction. Click any row to open the full channel profile.",
+      "Every channel that matches your filters is listed here. Columns: Channel name, Platform, Subscribers, Niche/Category tag, Avg Views, Likes (Substack only), Avg Comments, Engagement Rate (comments ÷ subscribers), and Last Active date. Click any sortable column header to sort by that column — including Likes and Last Active now — and clicking the active header again toggles the sort direction. Click any row to open the full channel profile.",
     placement: "bottom",
   },
   {

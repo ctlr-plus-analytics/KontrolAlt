@@ -52,6 +52,7 @@ const SORT_OPTIONS = [
   { value: "avg_comments", label: "Avg Comments" },
   { value: "subscriber_count", label: "Subscribers" },
   { value: "avg_views", label: "Avg Views" },
+  { value: "avg_likes", label: "Avg Likes" },
   { value: "view_velocity_30d", label: "View Velocity 30d" },
   { value: "view_velocity_90d", label: "View Velocity 90d" },
   { value: "last_active_date", label: "Last Active" },

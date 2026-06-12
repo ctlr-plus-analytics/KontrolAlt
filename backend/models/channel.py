@@ -158,6 +158,7 @@ class ChannelFilters(BaseModel):
     def validate_sort_by(cls, v: str) -> str:
         allowed = {
             "subscriber_count",
+            "avg_likes",
             "avg_views",
             "avg_comments",
             "engagement_rate",

@@ -33,7 +33,7 @@ def discover_keyword_expansion_now(
     return {key: value for key, value in result.items() if key != "new_urls"}
 
 
-@celery_app.task(name="scraper.tasks.discover_keyword_expansion")
+@celery_app.task(name="scraper.tasks.discover_keyword_expansion", queue="discovery")
 def discover_keyword_expansion(
     platform: str | None = None,
 ) -> dict[str, object]:

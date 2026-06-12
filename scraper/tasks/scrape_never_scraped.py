@@ -15,7 +15,7 @@ from worker import celery_app
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="scraper.tasks.scrape_never_scraped_rumble_substack")
+@celery_app.task(name="scraper.tasks.scrape_never_scraped_rumble_substack", queue="discovery")
 def scrape_never_scraped_rumble_substack() -> dict[str, object]:
     """Queue never-scraped, active Rumble and Substack channels."""
     runtime = get_runtime_settings()

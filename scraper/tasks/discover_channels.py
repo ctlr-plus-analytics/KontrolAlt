@@ -1447,7 +1447,7 @@ def discover_channels_now(
     }
 
 
-@celery_app.task(name="scraper.tasks.discover_channels")
+@celery_app.task(name="scraper.tasks.discover_channels", queue="discovery")
 def discover_channels(
     mode: str = "all",
     platform: str | None = None,

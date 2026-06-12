@@ -1,9 +1,15 @@
 """Channel endpoints — GET /channels, GET /channels/{id}."""
 
+import csv
+import io
 from datetime import date
 from uuid import UUID
 
+import openpyxl
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from core.exceptions import NotFoundError, SupabaseError
 from core.logging import get_logger
@@ -34,6 +40,115 @@ from services import channel_intake_service
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+_EXPORT_HEADERS = [
+    "Name", "Platform", "URL", "Subscribers",
+    "Niche / Category", "Avg Views", "Avg Comments",
+    "Engagement Rate (%)", "Last Active",
+]
+
+
+def _build_csv_response(rows: list[dict]) -> StreamingResponse:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(_EXPORT_HEADERS)
+    for row in rows:
+        tags = row.get("niche_tags") or []
+        niche_str = "; ".join(tags) if tags else ""
+        eng = row.get("engagement_rate")
+        writer.writerow([
+            row.get("name") or "",
+            row.get("platform") or "",
+            row.get("channel_url") or "",
+            row.get("subscriber_count") if row.get("subscriber_count") is not None else "",
+            niche_str,
+            row.get("avg_views") if row.get("avg_views") is not None else "",
+            row.get("avg_comments") if row.get("avg_comments") is not None else "",
+            f"{eng:.2f}" if eng is not None else "",
+            row.get("last_active_date") or "",
+        ])
+    today = date.today().isoformat()
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="channels_export_{today}.csv"'},
+    )
+
+
+def _build_excel_response(rows: list[dict]) -> StreamingResponse:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Channels"
+
+    header_fill = PatternFill(start_color="1A1A2E", end_color="1A1A2E", fill_type="solid")
+    header_font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    header_align = Alignment(horizontal="center", vertical="center")
+
+    for col, title in enumerate(_EXPORT_HEADERS, 1):
+        cell = ws.cell(row=1, column=col, value=title)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_align
+
+    ws.row_dimensions[1].height = 28
+    ws.freeze_panes = "A2"
+
+    alt_fill = PatternFill(start_color="F5F4F1", end_color="F5F4F1", fill_type="solid")
+    data_font = Font(name="Calibri", size=10)
+    link_font = Font(name="Calibri", size=10, color="4472C4", underline="single")
+    num_formats = [None, None, None, "#,##0", None, "#,##0", "#,##0.0", "0.00", None]
+
+    for i, row in enumerate(rows):
+        r = i + 2
+        tags = row.get("niche_tags") or []
+        eng = row.get("engagement_rate")
+        url = row.get("channel_url") or ""
+
+        values = [
+            row.get("name") or "",
+            row.get("platform") or "",
+            url,
+            row.get("subscriber_count"),
+            "; ".join(tags) if tags else "",
+            row.get("avg_views"),
+            row.get("avg_comments"),
+            eng,
+            row.get("last_active_date") or "",
+        ]
+
+        row_fill = alt_fill if i % 2 == 1 else None
+        for col, (val, fmt) in enumerate(zip(values, num_formats), 1):
+            cell = ws.cell(row=r, column=col, value=val)
+            cell.font = data_font
+            if row_fill:
+                cell.fill = row_fill
+            if fmt:
+                cell.number_format = fmt
+
+        if url:
+            lc = ws.cell(row=r, column=3)
+            lc.hyperlink = url
+            lc.font = link_font
+
+    # Auto-fit column widths based on content (sample header + up to 200 rows)
+    for col_idx in range(1, len(_EXPORT_HEADERS) + 1):
+        max_len = len(_EXPORT_HEADERS[col_idx - 1])
+        for r in range(2, min(len(rows) + 2, 202)):
+            cell_val = ws.cell(row=r, column=col_idx).value
+            if cell_val is not None:
+                max_len = max(max_len, len(str(cell_val)))
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, 60)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    today = date.today().isoformat()
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="channels_export_{today}.xlsx"'},
+    )
 
 
 @router.get("", response_model=PaginatedChannels)
@@ -196,6 +311,67 @@ async def confirm_resolved_channels(
 ) -> IntakeSummaryResponse:
     """Insert user-confirmed resolver candidates."""
     return await channel_intake_service.confirm_resolver_selections(body)
+
+
+@router.get("/export")
+async def export_channels(
+    platform: Platform | None = Query(None),
+    comment_tier: CommentTier | None = Query(None),
+    gate0_status: Gate0Status | None = Query(None),
+    gate0_statuses: list[Gate0Status] | None = Query(None),
+    category_tag: str | None = Query(None),
+    category_tags: list[str] | None = Query(None),
+    niche_tag: str | None = Query(None),
+    niche_tags: list[str] | None = Query(None),
+    search_query: str | None = Query(None),
+    min_subscriber_count: int | None = Query(None, ge=0),
+    max_subscriber_count: int | None = Query(None, ge=0),
+    min_avg_views: float | None = Query(None, ge=0),
+    max_avg_views: float | None = Query(None, ge=0),
+    min_avg_comments: float | None = Query(None, ge=0),
+    max_avg_comments: float | None = Query(None, ge=0),
+    inactive_filter: bool = Query(False),
+    last_active_from: date | None = Query(None),
+    last_active_to: date | None = Query(None),
+    incomplete_only: bool = Query(False),
+    sort_by: str = Query("avg_comments"),
+    sort_order: str = Query("desc"),
+    format: str = Query("csv", pattern="^(csv|xlsx)$"),
+    user: dict = Depends(get_current_user),
+) -> StreamingResponse:
+    """Download all matching channels as CSV or Excel."""
+    filters = ChannelFilters(
+        platform=platform,
+        comment_tier=comment_tier,
+        gate0_statuses=(gate0_statuses or ([gate0_status] if gate0_status else None)),
+        category_tags=(
+            category_tags
+            or ([category_tag] if category_tag else None)
+            or niche_tags
+            or ([niche_tag] if niche_tag else None)
+        ),
+        niche_tags=(
+            category_tags
+            or ([category_tag] if category_tag else None)
+            or niche_tags
+            or ([niche_tag] if niche_tag else None)
+        ),
+        search_query=search_query,
+        min_subscriber_count=min_subscriber_count,
+        max_subscriber_count=max_subscriber_count,
+        min_avg_views=min_avg_views,
+        max_avg_views=max_avg_views,
+        min_avg_comments=min_avg_comments,
+        max_avg_comments=max_avg_comments,
+        inactive_filter=inactive_filter,
+        last_active_from=last_active_from,
+        last_active_to=last_active_to,
+        incomplete_only=incomplete_only,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
+    rows = await channel_service.export_channels(filters)
+    return _build_excel_response(rows) if format == "xlsx" else _build_csv_response(rows)
 
 
 @router.get("/{channel_id}", response_model=ChannelWithMetrics)

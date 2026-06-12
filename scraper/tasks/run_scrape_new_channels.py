@@ -23,7 +23,7 @@ from tasks.scrape_substack import scrape_substack_channel
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="scraper.tasks.run_scrape_new_channels")
+@celery_app.task(name="scraper.tasks.run_scrape_new_channels", queue="discovery")
 def run_scrape_new_channels() -> dict[str, object]:
     """Scrape all never-scraped channels, then classify and run Gate 0.
 

@@ -14,6 +14,7 @@ os.environ.setdefault("FRONTEND_ORIGIN", "http://localhost:3000")
 from services.channel_service import (
     _canonical_niche_tags_for_row,
     _channel_from_discovery_row,
+    _resolve_sort_column,
     _row_matches_category_tags,
 )
 
@@ -76,3 +77,8 @@ def test_row_matches_category_tags_uses_canonical_mapping() -> None:
     row = {"niche_tags": ["Non Canonical Tag"]}
     assert _row_matches_category_tags(row, ["Unknown / Needs Review"]) is True
     assert _row_matches_category_tags(row, ["Financial / Macro"]) is False
+
+
+def test_resolve_sort_column_maps_avg_likes_to_avg_views() -> None:
+    assert _resolve_sort_column("avg_likes") == "avg_views"
+    assert _resolve_sort_column("last_active_date") == "last_active_date"

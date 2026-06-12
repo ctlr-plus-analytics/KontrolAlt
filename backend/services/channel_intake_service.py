@@ -27,13 +27,15 @@ from models.channel_intake import (
     ResolverSeedResult,
 )
 from workers.tasks import (
+    QUEUE_CLASSIFY,
     QUEUE_GATE0,
     QUEUE_RUMBLE,
     QUEUE_SUBSTACK,
+    TASK_CLASSIFY_CHANNELS,
+    TASK_RUN_GATE0,
     TASK_SCRAPE_RUMBLE_CHANNEL,
     TASK_SCRAPE_SUBSTACK_CHANNEL,
 )
-from workers.tasks import TASK_RUN_GATE0
 from services import admin_service
 
 logger = get_logger(__name__)
@@ -172,6 +174,25 @@ def _dispatch_gate0_after_scrape(channel_id: str) -> str | None:
         return None
 
 
+def _dispatch_classify_after_scrape(channel_id: str) -> str | None:
+    """Queue Classification + Q/A ~6 minutes after intake scrape, giving scrape + Gate 0 time to finish."""
+    try:
+        task = _celery.send_task(
+            TASK_CLASSIFY_CHANNELS,
+            kwargs={"channel_ids": [channel_id], "reclassify": False},
+            countdown=360,
+            queue=QUEUE_CLASSIFY,
+        )
+        return task.id
+    except Exception as exc:
+        logger.warning(
+            "Failed to queue classify after immediate scrape for %s: %s",
+            channel_id,
+            exc,
+        )
+        return None
+
+
 def _query_existing_channel(channel_url: str) -> str | None:
     """Return the existing channel id for the given URL, or None if not found."""
     try:
@@ -284,6 +305,8 @@ async def add_manual_channel(body: ManualChannelIntakeRequest) -> IntakeSummaryR
             scrape_task_id = _safe_dispatch_scrape(canonical_url, platform)
             if channel_id is not None:
                 _dispatch_gate0_after_scrape(channel_id)
+                if body.trigger_classify_after:
+                    _dispatch_classify_after_scrape(channel_id)
         return _build_summary(
             "Channel intake complete",
             [
@@ -341,6 +364,8 @@ async def add_bulk_channels(body: BulkChannelIntakeRequest) -> IntakeSummaryResp
                 scrape_task_id = _safe_dispatch_scrape(canonical_url, platform)
                 if channel_id is not None:
                     _dispatch_gate0_after_scrape(channel_id)
+                    if body.trigger_classify_after:
+                        _dispatch_classify_after_scrape(channel_id)
             records.append(
                 IntakeRecordResult(
                     input_value=raw_url,
@@ -494,6 +519,8 @@ async def confirm_resolver_selections(
                 scrape_task_id = _safe_dispatch_scrape(canonical_url, platform)
                 if channel_id is not None:
                     _dispatch_gate0_after_scrape(channel_id)
+                    if body.trigger_classify_after:
+                        _dispatch_classify_after_scrape(channel_id)
             records.append(
                 IntakeRecordResult(
                     input_value=selection.channel_url,

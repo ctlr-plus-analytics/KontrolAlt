@@ -223,6 +223,93 @@ export async function getChannels(
   };
 }
 
+/** Download all channels matching the current filters as CSV or Excel. */
+export async function exportChannels(
+  filters: Partial<ChannelFilters>,
+  token?: string,
+  format: "csv" | "xlsx" = "csv"
+): Promise<void> {
+  const params = new URLSearchParams();
+
+  if (filters.platform && filters.platform !== "all") {
+    params.set("platform", filters.platform);
+  }
+  if (filters.comment_tier && filters.comment_tier !== "all") {
+    params.set("comment_tier", filters.comment_tier);
+  }
+  if (filters.affiliation_statuses && filters.affiliation_statuses.length > 0) {
+    filters.affiliation_statuses.forEach((status) => params.append("gate0_statuses", status));
+  }
+  const categoryTags = filters.category_tags ?? filters.niche_tags;
+  if (categoryTags && categoryTags.length > 0) {
+    categoryTags.forEach((tag) => params.append("category_tags", tag));
+  }
+  if (filters.search_query && filters.search_query.trim().length > 0) {
+    params.set("search_query", filters.search_query.trim());
+  }
+  if (filters.min_subscriber_count !== undefined && filters.min_subscriber_count !== null) {
+    params.set("min_subscriber_count", String(filters.min_subscriber_count));
+  }
+  if (filters.max_subscriber_count !== undefined && filters.max_subscriber_count !== null) {
+    params.set("max_subscriber_count", String(filters.max_subscriber_count));
+  }
+  if (filters.min_avg_views !== undefined && filters.min_avg_views !== null) {
+    params.set("min_avg_views", String(filters.min_avg_views));
+  }
+  if (filters.max_avg_views !== undefined && filters.max_avg_views !== null) {
+    params.set("max_avg_views", String(filters.max_avg_views));
+  }
+  if (filters.min_avg_comments !== undefined && filters.min_avg_comments !== null) {
+    params.set("min_avg_comments", String(filters.min_avg_comments));
+  }
+  if (filters.max_avg_comments !== undefined && filters.max_avg_comments !== null) {
+    params.set("max_avg_comments", String(filters.max_avg_comments));
+  }
+  if (filters.last_active_from) {
+    params.set("last_active_from", filters.last_active_from);
+  }
+  if (filters.last_active_to) {
+    params.set("last_active_to", filters.last_active_to);
+  }
+  if (filters.inactive_filter) {
+    params.set("inactive_filter", "true");
+  }
+  if (filters.incomplete_only) {
+    params.set("incomplete_only", "true");
+  }
+  if (filters.sort_by) {
+    params.set("sort_by", filters.sort_by);
+  }
+  if (filters.sort_order) {
+    params.set("sort_order", filters.sort_order);
+  }
+  params.set("format", format);
+
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${BASE_URL}/api/v1/channels/export?${params.toString()}`, {
+    headers,
+  });
+
+  if (!response.ok) {
+    throw new ApiError(`Export failed: ${response.statusText}`, response.status);
+  }
+
+  const today = new Date().toISOString().split("T")[0];
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `channels_export_${today}.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 /** Fetch distinct category tags and counts for dropdown filters, scoped to active filters (excluding category_tags). */
 export async function getCategoryTags(
   token?: string,

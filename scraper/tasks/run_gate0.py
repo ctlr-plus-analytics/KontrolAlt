@@ -1533,7 +1533,7 @@ def _run_gate0_sync(
 # Celery tasks
 # ---------------------------------------------------------------------------
 
-@celery_app.task(name="scraper.tasks.run_gate0_all")
+@celery_app.task(name="scraper.tasks.run_gate0_all", queue="gate0")
 def run_gate0_all(
     recheck_clean: bool = False,
     dashboard_eligible_only: bool = False,
@@ -1608,6 +1608,7 @@ def run_gate0_all(
     bind=True,
     max_retries=2,
     name="scraper.tasks.run_gate0",
+    queue="gate0",
 )
 def run_gate0(
     self: Task, channel_id: str, manual: bool = False

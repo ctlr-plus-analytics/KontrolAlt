@@ -50,6 +50,7 @@ def _is_supported_substack_channel_url(channel_url: str) -> bool:
     max_retries=get_runtime_settings().scrape_run_max_retries_per_channel,
     default_retry_delay=60,
     name="scraper.tasks.scrape_substack_channel",
+    queue="substack",
 )
 def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
     args = ScrapeTaskArgs(channel_url=channel_url)
@@ -203,7 +204,7 @@ def scrape_substack_channel(self: Task, channel_url: str) -> dict[str, object]:
         release_scrape_lock(channel_url)
 
 
-@celery_app.task(name="scraper.tasks.scrape_substack_all")
+@celery_app.task(name="scraper.tasks.scrape_substack_all", queue="substack")
 def scrape_substack_all(never_scraped_only: bool = True) -> dict[str, object]:
     logger.info("Starting batch Substack scrape (never_scraped_only=%s)", never_scraped_only)
     if get_runtime_settings().scrape_platform_slot_limit_substack == 0:

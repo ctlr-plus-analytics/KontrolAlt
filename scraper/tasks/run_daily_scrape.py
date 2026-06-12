@@ -178,7 +178,7 @@ def _prioritize_channels_for_scrape(
     return never_scraped
 
 
-@celery_app.task(name="scraper.tasks.run_post_scrape_tasks")
+@celery_app.task(name="scraper.tasks.run_post_scrape_tasks", queue="discovery")
 def run_post_scrape_tasks() -> dict[str, object]:
     """Run Gate 0 checks and channel classification after scraping completes."""
     try:
@@ -259,14 +259,14 @@ def _select_weekly_velocity_channels(
     return [item[1] for item in selected]
 
 
-@celery_app.task(name="scraper.tasks.run_weekly_velocity_scrape_callback")
+@celery_app.task(name="scraper.tasks.run_weekly_velocity_scrape_callback", queue="discovery")
 def run_weekly_velocity_scrape_callback() -> dict[str, object]:
     """Compute velocity after the weekly clean-lead scrape finishes."""
     velocity_task = compute_velocity_all.delay(qualified_only=True)
     return {"velocity_task_id": velocity_task.id}
 
 
-@celery_app.task(name="scraper.tasks.run_weekly_velocity_scrape")
+@celery_app.task(name="scraper.tasks.run_weekly_velocity_scrape", queue="discovery")
 def run_weekly_velocity_scrape() -> dict[str, object]:
     """Queue weekly scrapes for clean leads with stronger engagement metrics."""
     logger.info("Starting weekly clean-lead velocity scrape workflow")
@@ -346,7 +346,7 @@ def run_weekly_velocity_scrape() -> dict[str, object]:
     }
 
 
-@celery_app.task(name="scraper.tasks.dispatch_daily_scrapes")
+@celery_app.task(name="scraper.tasks.dispatch_daily_scrapes", queue="discovery")
 def dispatch_daily_scrapes() -> dict[str, object]:
     """Fetch active channels and dispatch the daily scrape chord.
 
@@ -420,7 +420,7 @@ def dispatch_daily_scrapes() -> dict[str, object]:
     }
 
 
-@celery_app.task(name="scraper.tasks.run_daily_scrape")
+@celery_app.task(name="scraper.tasks.run_daily_scrape", queue="discovery")
 def run_daily_scrape() -> dict[str, object]:
     """Kick off the daily scrape workflow.
 

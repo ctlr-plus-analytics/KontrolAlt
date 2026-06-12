@@ -108,6 +108,7 @@ def _emit_kpi_alerts(channel_url: str, result: dict[str, object]) -> None:
     max_retries=get_runtime_settings().scrape_run_max_retries_per_channel,
     default_retry_delay=60,
     name="scraper.tasks.scrape_rumble_channel",
+    queue="rumble",
 )
 def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
     """Scrape a single Rumble channel and store results.
@@ -268,7 +269,7 @@ def scrape_rumble_channel(self: Task, channel_url: str) -> dict[str, object]:
         release_scrape_lock(channel_url)
 
 
-@celery_app.task(name="scraper.tasks.scrape_rumble_all")
+@celery_app.task(name="scraper.tasks.scrape_rumble_all", queue="rumble")
 def scrape_rumble_all(never_scraped_only: bool = True) -> dict[str, object]:
     """Fetch all Rumble channel URLs and dispatch individual scrape tasks.
 

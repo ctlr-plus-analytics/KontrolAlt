@@ -30,10 +30,10 @@ const COLUMNS: SortableColumn[] = [
   { key: "subscriber_count", label: "Subscribers", align: "right" },
   { key: null, label: "Niche (Category)" },
   { key: "avg_views", label: "Avg Views", align: "right" },
-  { key: null, label: "Likes", align: "right" },
+  { key: "avg_likes", label: "Likes", align: "right" },
   { key: "avg_comments", label: "Avg Comments", align: "right" },
   { key: "engagement_rate", label: "Engagement Rate %", align: "right" },
-  { key: null, label: "Last Active" },
+  { key: "last_active_date", label: "Last Active" },
 ];
 
 export function ChannelTable({

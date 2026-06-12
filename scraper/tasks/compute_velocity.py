@@ -163,6 +163,7 @@ def _compute_velocity_sync(channel_id: str) -> dict[str, object]:
     bind=True,
     max_retries=2,
     name="scraper.tasks.compute_velocity",
+    queue="discovery",
 )
 def compute_velocity(self: Task, channel_id: str) -> dict[str, object]:
     """Compute velocity metrics for a single channel."""
@@ -179,7 +180,7 @@ def compute_velocity(self: Task, channel_id: str) -> dict[str, object]:
         raise self.retry(exc=exc, countdown=30)
 
 
-@celery_app.task(name="scraper.tasks.compute_velocity_all")
+@celery_app.task(name="scraper.tasks.compute_velocity_all", queue="discovery")
 def compute_velocity_all(qualified_only: bool = False) -> dict[str, object]:
     """Fetch channel IDs and dispatch individual velocity tasks.
 

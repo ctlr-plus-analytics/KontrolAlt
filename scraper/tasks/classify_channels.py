@@ -547,7 +547,7 @@ def _process_channel(
     return stats
 
 
-@celery_app.task(name="scraper.tasks.classify_channels", bind=True)
+@celery_app.task(name="scraper.tasks.classify_channels", bind=True, queue="classify")
 def classify_channels(
     self,
     channel_ids: list[str] | None = None,

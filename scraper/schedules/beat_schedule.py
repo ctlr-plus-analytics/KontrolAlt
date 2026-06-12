@@ -26,14 +26,5 @@ def _weekly_velocity_crontab() -> crontab:
         return crontab(hour=3, minute=0, day_of_week="sun")
 
 CELERY_BEAT_SCHEDULE: dict[str, dict[str, object]] = {
-    "daily-discovery-scrape": {
-        "task": "scraper.tasks.run_daily_scrape",
-        "schedule": _daily_scrape_crontab(),
-        "options": {"queue": "discovery"},
-    },
-    "weekly-clean-lead-velocity-scrape": {
-        "task": "scraper.tasks.run_weekly_velocity_scrape",
-        "schedule": _weekly_velocity_crontab(),
-        "options": {"queue": "discovery"},
-    },
+    # Disabled — re-add entries to re-enable scheduled runs
 }
