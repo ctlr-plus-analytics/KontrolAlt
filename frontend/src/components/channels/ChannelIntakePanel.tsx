@@ -93,6 +93,10 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
   const [resolverSelected, setResolverSelected] = useState<Record<string, boolean>>({});
   const [resolverScrapeJobs, setResolverScrapeJobs] = useState<IntakeScrapeJob[]>([]);
 
+  const dismissManualScrapeJobs = useCallback(() => setManualScrapeJobs([]), []);
+  const dismissBulkScrapeJobs = useCallback(() => setBulkScrapeJobs([]), []);
+  const dismissResolverScrapeJobs = useCallback(() => setResolverScrapeJobs([]), []);
+
   const POLL_INTERVAL_MS = 2500;
   const TERMINAL_STATES = new Set(["SUCCESS", "FAILURE", "REVOKED"]);
 
@@ -391,7 +395,7 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
           {manualScrapeJobs.length > 0 && (
             <IntakeScrapeProgress
               jobs={manualScrapeJobs}
-              onDismiss={() => setManualScrapeJobs([])}
+              onDismiss={dismissManualScrapeJobs}
             />
           )}
           {manualError ? <p className="mt-2 text-xs text-[#B22222]">{manualError}</p> : null}
@@ -452,7 +456,7 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
           {bulkScrapeJobs.length > 0 && (
             <IntakeScrapeProgress
               jobs={bulkScrapeJobs}
-              onDismiss={() => setBulkScrapeJobs([])}
+              onDismiss={dismissBulkScrapeJobs}
             />
           )}
           {bulkError ? <p className="mt-2 text-xs text-[#B22222]">{bulkError}</p> : null}
@@ -562,7 +566,7 @@ export function ChannelIntakePanel({ onIntakeComplete }: ChannelIntakePanelProps
           {resolverScrapeJobs.length > 0 && (
             <IntakeScrapeProgress
               jobs={resolverScrapeJobs}
-              onDismiss={() => setResolverScrapeJobs([])}
+              onDismiss={dismissResolverScrapeJobs}
             />
           )}
           {resolverError ? <p className="mt-2 text-xs text-[#B22222]">{resolverError}</p> : null}

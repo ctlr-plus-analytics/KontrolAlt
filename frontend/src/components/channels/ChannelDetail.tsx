@@ -25,6 +25,7 @@ import type {
 } from "@/types";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { InfoPopover } from "@/components/ui/InfoPopover";
 import { VelocityBadge } from "@/components/channels/VelocityBadge";
 import { formatEngagementRate, formatNumber, timeAgo, cn } from "@/lib/utils";
 import {
@@ -35,6 +36,7 @@ import {
 } from "@/lib/api/backend";
 import { useAuth } from "@/hooks/useAuth";
 import { useRealtimeRefresh } from "@/hooks/useRealtimeRefresh";
+import { useChannelDetailTour } from "@/hooks/useTourAutoStart";
 import { useRouter } from "next/navigation";
 import { LookalikeMatchCard } from "@/components/lookalike/LookalikeMatchCard";
 
@@ -52,6 +54,8 @@ export function ChannelDetail({
   velocity: initialVelocity,
   scrapeLogs,
 }: ChannelDetailProps) {
+  useChannelDetailTour();
+
   const router = useRouter();
   const { session } = useAuth();
   const [lookalikes, setLookalikes] = useState<ChannelLookalikeMatch[]>([]);
@@ -255,7 +259,7 @@ export function ChannelDetail({
   return (
     <div className="space-y-6">
       {/* ─── Header Section ─── */}
-      <div className="rounded-xl border border-[#E8E4DC] bg-white p-6 shadow-sm">
+      <div id="tour-channel-header" className="rounded-xl border border-[#E8E4DC] bg-white p-6 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-3">
@@ -274,13 +278,14 @@ export function ChannelDetail({
 
             {/* Stat Pills */}
             <div className="mt-4 flex flex-wrap gap-3">
-              <StatPill label="Subscribers" value={formatNumber(channel.subscriber_count)} />
-              <StatPill label="Avg Views" value={formatNumber(channel.avg_views)} />
+              <StatPill label="Subscribers" value={formatNumber(channel.subscriber_count)} info="Total subscriber or follower count at the time of last scrape." />
+              <StatPill label="Avg Views" value={formatNumber(channel.avg_views)} info="Rolling average views per video or post. Reflects actual content reach, independent of subscriber count." />
               <StatPill
                 label="Engagement Rate"
                 value={formatEngagementRate(channel.subscriber_count, channel.avg_comments)}
+                info="Average comments divided by subscriber count, as a percentage. A high ratio signals a highly engaged, niche audience relative to size."
               />
-              <StatPill label="Avg Comments" value={formatNumber(channel.avg_comments)} />
+              <StatPill label="Avg Comments" value={formatNumber(channel.avg_comments)} info="Rolling average comments per post. The primary engagement signal used for tier classification." />
               <StatPill
                 label="Posts/Week"
                 value={
@@ -288,8 +293,9 @@ export function ChannelDetail({
                     ? "N/A"
                     : String(channel.posts_per_week)
                 }
+                info="Average number of posts or videos published per week, calculated from recent history."
               />
-              <StatPill label="Last Active" value={timeAgo(channel.last_active_date)} />
+              <StatPill label="Last Active" value={timeAgo(channel.last_active_date)} info="Date of the channel's most recent post or video upload." />
             </div>
           </div>
 
@@ -311,15 +317,28 @@ export function ChannelDetail({
       </div>
 
       {/* ─── Channel Intelligence Report ─── */}
-      {channel.ai_channel_report && (
-        <ChannelIntelligenceSection report={channel.ai_channel_report} />
-      )}
+      <div id="tour-ai-report">
+        {channel.ai_channel_report ? (
+          <ChannelIntelligenceSection report={channel.ai_channel_report} />
+        ) : (
+          <div>
+            <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
+              <Brain size={18} className="text-[#C9A84C]" />
+              Channel Intelligence Report
+            </h2>
+            <div className="rounded-xl border border-[#E8E4DC] bg-[#FAF8F4] p-5 shadow-sm">
+              <p className="text-sm text-[#6B6B6B]">AI report not yet generated for this channel.</p>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* ─── Velocity Section ─── */}
-      <div>
+      <div id="tour-velocity-section">
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
           <RefreshCw size={18} className="text-[#C9A84C]" />
           Growth Velocity
+          <InfoPopover content="Percentage change in views or comments compared to the prior equivalent period. Positive = growing, negative = declining. Requires at least two scrape snapshots to compute." />
         </h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {velocityMetrics.map((metric) => (
@@ -346,7 +365,7 @@ export function ChannelDetail({
       </div>
 
       {/* ─── Contact & Links ─── */}
-      <div>
+      <div id="tour-channel-about">
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
           <FileText size={18} className="text-[#C9A84C]" />
           Channel About
@@ -362,7 +381,7 @@ export function ChannelDetail({
         </div>
       </div>
 
-      <div>
+      <div id="tour-recent-videos">
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
           <Video size={18} className="text-[#C9A84C]" />
           Recent Videos
@@ -430,7 +449,7 @@ export function ChannelDetail({
         </div>
       </div>
 
-      <div>
+      <div id="tour-channel-links">
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
           <LinkIcon size={18} className="text-[#C9A84C]" />
           Other Channels and Links
@@ -489,10 +508,11 @@ export function ChannelDetail({
         </div>
       )}
 
-      <div>
+      <div id="tour-similar-channels">
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-[#1A1A2E]">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
             Similar Channels
+            <InfoPopover content="Channels that share a similar niche, subscriber range, or engagement profile. Powered by the lookalike algorithm using topic tags, engagement metrics, and contact overlap." />
           </h2>
           <Button
             variant="ghost"
@@ -531,10 +551,11 @@ export function ChannelDetail({
         )}
       </div>
       {/* ─── Scrape History ─── */}
-      <div>
+      <div id="tour-scrape-history">
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
           <History size={18} className="text-[#C9A84C]" />
           Scrape History
+          <InfoPopover content="Log of each time this channel was scraped. 'blocked' = Cloudflare or platform protection triggered; 'retry' = task was re-queued for another attempt." />
         </h2>
         <div className="overflow-x-auto rounded-xl border border-[#E8E4DC] bg-white shadow-sm">
           <table className="w-full text-left text-sm">
@@ -568,7 +589,7 @@ export function ChannelDetail({
                     className={idx % 2 === 0 ? "bg-white" : "bg-[#FAF8F4]"}
                   >
                     <td className="px-4 py-3 text-xs text-[#6B6B6B]">
-                      {timeAgo(log.attempted_at)}
+                      {formatScrapeTimestamp(log.attempted_at)}
                     </td>
                     <td className="px-4 py-3">
                       <Badge
@@ -588,10 +609,11 @@ export function ChannelDetail({
         </div>
       </div>
 
-      <div>
+      <div id="tour-data-cleanup">
         <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
           <Trash2 size={18} className="text-[#B22222]" />
           Data Cleanup
+          <InfoPopover content="'Delete History' removes snapshot records but keeps the channel active. 'Delete Completely' permanently removes the channel and all associated data from the database." />
         </h2>
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <div className="rounded-xl border border-[#E8E4DC] bg-white p-5 shadow-sm">
@@ -629,9 +651,12 @@ export function ChannelDetail({
 
           <div className="rounded-xl border border-[#E8E4DC] bg-[#FAF8F4] p-5 shadow-sm self-start">
             <div className="flex items-center justify-between gap-3">
-              <p className="text-xs font-semibold uppercase tracking-wide text-[#6B6B6B]">
-                Do Not Contact
-              </p>
+              <div className="flex items-center gap-1.5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-[#6B6B6B]">
+                  Do Not Contact
+                </p>
+                <InfoPopover content="Tracks the partnership status of this channel. 'Current Partner' and 'Hired and Canceled' exclude the channel from outreach workflows." />
+              </div>
               <Badge variant={doNotContactBadgeVariant}>
                 {doNotContactLabel}
               </Badge>
@@ -686,6 +711,7 @@ function ChannelIntelligenceSection({ report }: { report: string }) {
       <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
         <Brain size={18} className="text-[#C9A84C]" />
         Channel Intelligence Report
+        <InfoPopover content="AI-generated summary of the channel's content, audience, and positioning, based on scraped video titles, description, and about text." />
       </h2>
       <div className="overflow-hidden rounded-xl border border-[#E8E4DC] bg-[#FAF8F4] shadow-sm">
         <div className="flex items-center gap-2 border-b border-[#E8E4DC] px-5 py-3">
@@ -707,15 +733,31 @@ function ChannelIntelligenceSection({ report }: { report: string }) {
 }
 
 /* ─── Helper: Stat Pill ─── */
-function StatPill({ label, value }: { label: string; value: string }) {
+function StatPill({ label, value, info }: { label: string; value: string; info?: string }) {
   return (
     <div className="rounded-lg border border-[#E8E4DC] bg-[#FAF8F4] px-3 py-1.5">
-      <span className="text-[10px] font-medium uppercase tracking-wide text-[#6B6B6B]">
-        {label}
-      </span>
+      <div className="flex items-center gap-1">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-[#6B6B6B]">
+          {label}
+        </span>
+        {info && <InfoPopover content={info} />}
+      </div>
       <p className="font-mono text-sm font-medium text-[#0D0D0D]">{value}</p>
     </div>
   );
+}
+
+function formatScrapeTimestamp(dateString: string | null): string {
+  if (!dateString) return "N/A";
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return dateString;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function formatPublishedDate(dateString: string | null): string {

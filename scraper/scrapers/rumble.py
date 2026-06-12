@@ -461,16 +461,64 @@ class RumbleScraper(BaseScraper):
                 # Start about page fetch in parallel while we wait for video cards.
                 about_task = asyncio.create_task(self._fetch_about_with_retry(context, about_url))
 
+                # Wait for video content to render.
+                # Some channels still serve inline JSON (SSR); most now fetch
+                # via XHR and inject video cards into the DOM (CSR).  Try the
+                # JSON signal first (fast path), then fall back to waiting for
+                # the rendered card grid with a longer timeout.
+                json_appeared = False
                 try:
-                    await page.wait_for_selector(
-                        self.VIDEO_CARD_SELECTOR,
-                        timeout=self.CARD_SELECTOR_TIMEOUT_MS,
+                    await page.wait_for_function(
+                        "() => Array.from(document.querySelectorAll('script:not([src])')"
+                        ".some(s => (s.textContent || '').includes('\"object_type\"'))",
+                        timeout=self.CARD_SELECTOR_TIMEOUT_MS * 10,  # 5 000 ms
                     )
+                    json_appeared = True
                 except PlaywrightError:
-                    logger.warning(
-                        "Rumble: video grid did not render before parsing %s",
-                        channel_url,
-                    )
+                    pass
+
+                if not json_appeared:
+                    # CSR path: scroll to trigger intersection observers so
+                    # Rumble's JS fetches and renders the video grid.
+                    try:
+                        await human_scroll(page, direction="down", steps=2)
+                    except Exception:
+                        pass
+                    # Wait for either the known card selector OR any video href.
+                    card_appeared = False
+                    try:
+                        await page.wait_for_selector(
+                            self.VIDEO_CARD_SELECTOR,
+                            timeout=15000,  # allow up to 15 s for XHR + render
+                        )
+                        card_appeared = True
+                    except PlaywrightError:
+                        pass
+                    if not card_appeared:
+                        # Emit a diagnostic snapshot so we can see what IS in
+                        # the page when the card selector times out.
+                        try:
+                            diag_html = await page.content()
+                            diag_soup = BeautifulSoup(diag_html, "lxml")
+                            video_hrefs = [
+                                str(a.get("href", ""))
+                                for a in diag_soup.select("a[href]")
+                                if self._is_video_href(str(a.get("href", "")))
+                            ]
+                            logger.warning(
+                                "Rumble: CSR grid timeout for %s — html_len=%d "
+                                "video_hrefs=%d sample=%s",
+                                channel_url,
+                                len(diag_html),
+                                len(video_hrefs),
+                                video_hrefs[:3],
+                            )
+                        except Exception:
+                            pass
+                        logger.warning(
+                            "Rumble: video grid did not render before parsing %s",
+                            channel_url,
+                        )
 
                 html = await page.content()
                 soup = BeautifulSoup(html, "lxml")
@@ -612,6 +660,17 @@ class RumbleScraper(BaseScraper):
                     # from the card-level sample in any of these cases.
                     posts_per_week = 0.0
                 last_active_date = max(upload_dates).date() if upload_dates else None
+                # Partial-render guard: pages < 600 KB loaded but the video
+                # grid XHR never completed.  The placeholder "0 videos" stat
+                # would otherwise trigger the terminal empty-channel path below.
+                # Retry instead of marking the channel as permanently empty.
+                if not video_titles and len(html) < 600_000:
+                    raise ScraperClassifiedError(
+                        "parse_no_videos",
+                        f"Page did not fully render for {channel_base_url} (html_len={len(html)})",
+                        terminal=False,
+                        retryable=True,
+                    )
                 is_empty_channel = (
                     not video_titles and self._has_empty_channel_marker(body_text)
                 )
@@ -889,7 +948,60 @@ class RumbleScraper(BaseScraper):
                 item for item in items
                 if isinstance(item, dict) and item.get("object_type") == "video"
             ]
+            if not video_items:
+                object_types = list({
+                    item.get("object_type") for item in items
+                    if isinstance(item, dict) and item.get("object_type")
+                })
+                logger.warning(
+                    "Rumble: JSON script found but no video items (total=%d object_types=%s)",
+                    len(items), object_types,
+                )
             return video_items, followers, channel_name
+
+        all_scripts = soup.find_all("script")
+        has_json_scripts = any(
+            (s.string or "").strip().startswith(("{", "[")) for s in all_scripts
+        )
+        logger.warning(
+            "Rumble: no script tag with 'object_type' found (total_scripts=%d has_json=%s)",
+            len(all_scripts), has_json_scripts,
+        )
+        # Dump structure of every parseable JSON script so we can identify
+        # what key Rumble now uses instead of "object_type".
+        logged = 0
+        for script in all_scripts:
+            text = (script.string or "").strip()
+            if not text.startswith(("{", "[")):
+                continue
+            try:
+                data = json.loads(text)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(data, dict):
+                top_keys = list(data.keys())[:10]
+                # Probe common list-of-items keys
+                items = None
+                for k in ("items", "data", "videos", "results", "entries", "content"):
+                    if isinstance(data.get(k), list):
+                        items = data[k]
+                        break
+                first_item_keys: list[str] = []
+                if isinstance(items, list) and items and isinstance(items[0], dict):
+                    first_item_keys = list(items[0].keys())[:15]
+                logger.warning(
+                    "Rumble JSON dict script top_keys=%s first_item_keys=%s snippet=%.120s",
+                    top_keys, first_item_keys, text,
+                )
+            elif isinstance(data, list) and data and isinstance(data[0], dict):
+                first_item_keys = list(data[0].keys())[:15]
+                logger.warning(
+                    "Rumble JSON array script len=%d first_item_keys=%s snippet=%.120s",
+                    len(data), first_item_keys, text,
+                )
+            logged += 1
+            if logged >= 5:  # cap at 5 scripts per call to avoid log spam
+                break
         return [], None, None
 
     def _extract_videos(self, soup: BeautifulSoup) -> dict[str, dict[str, object]]:
@@ -898,11 +1010,14 @@ class RumbleScraper(BaseScraper):
 
         # Current Rumble format: video grid data is embedded as inline JSON.
         json_items, _, _ = self._parse_video_json_items(soup)
+        json_skipped_urls: list[str] = []
         for item in json_items:
             if len(video_map) >= self.VIDEO_COLLECTION_LIMIT:
                 break
             video_url = str(item.get("url") or "").strip()
             if not video_url or not self._is_video_href(video_url):
+                if video_url:
+                    json_skipped_urls.append(video_url)
                 continue
             video_id = urlsplit(video_url).path.rstrip("/").split("/")[-1]
             if not video_id or video_id in video_map:
@@ -922,6 +1037,11 @@ class RumbleScraper(BaseScraper):
                 "date": date_val,
                 "url": video_url,
             }
+        if json_skipped_urls:
+            logger.warning(
+                "Rumble: %d JSON video URL(s) rejected by _is_video_href — sample=%s",
+                len(json_skipped_urls), json_skipped_urls[:3],
+            )
         if video_map:
             return video_map
 
@@ -953,6 +1073,42 @@ class RumbleScraper(BaseScraper):
                 "date": date_val,
                 "url": video_url,
             }
+        if video_map:
+            return video_map
+
+        # Last-resort: scan all <a href> for canonical video URLs.
+        # Handles CSR pages where the card container class changed but the
+        # <a href="/v*.html"> links are still present in the rendered DOM.
+        # Views/dates are None here; video-page enrichment fills them in.
+        # Skip links tagged e9s=src_v1_cllr — those are Rumble's global
+        # carousel/sidebar trending videos, not this channel's own content.
+        seen_hrefs: set[str] = set()
+        for anchor in soup.select("a[href]"):
+            if len(video_map) >= self.VIDEO_COLLECTION_LIMIT:
+                break
+            href = str(anchor.get("href") or "")
+            if "e9s=src_v1_cllr" in href:
+                continue
+            if not self._is_video_href(href) or href in seen_hrefs:
+                continue
+            seen_hrefs.add(href)
+            video_url = urljoin(RUMBLE_BASE_URL, href)
+            video_id = urlsplit(video_url).path.rstrip("/").split("/")[-1]
+            if not video_id or video_id in video_map:
+                continue
+            title = anchor.get_text(" ", strip=True) or "Unknown Title"
+            video_map[video_id] = {
+                "title": title,
+                "views": None,
+                "comments": None,
+                "date": None,
+                "url": video_url,
+            }
+        if video_map:
+            logger.info(
+                "Rumble: extracted %d video(s) via href-scan fallback",
+                len(video_map),
+            )
         return video_map
 
     def _is_video_href(self, href: str) -> bool:

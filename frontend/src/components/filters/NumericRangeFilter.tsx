@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 
 interface NumericRangeFilterProps {
   label: string;
+  labelExtra?: React.ReactNode;
   minLimit: number;
   maxLimit: number;
   step?: number;
@@ -23,6 +24,7 @@ function clamp(value: number, min: number, max: number): number {
 
 export function NumericRangeFilter({
   label,
+  labelExtra,
   minLimit,
   maxLimit,
   step = 1,
@@ -78,9 +80,10 @@ export function NumericRangeFilter({
         className
       )}
     >
-      <label className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">
-        {label}
-      </label>
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs font-medium uppercase tracking-wide text-[#6B6B6B]">{label}</span>
+        {labelExtra}
+      </div>
 
       <div className="flex items-center justify-between text-[10px] font-medium text-[#6B6B6B]">
         <span>{minLimit.toLocaleString()}</span>

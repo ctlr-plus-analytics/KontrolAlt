@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useAdminTour } from "@/hooks/useTourAutoStart";
 import {
   getAdminAudit,
   getAdminCompetitors,
@@ -23,6 +24,7 @@ import {
 import { useAuth } from "@/hooks/useAuth";
 import type { AdminAuditRecord, AdminTaskKind, AdminTaskStatusResponse, CompetitorDef, KeywordTaxonomyDef, PurgeQueueResponse, WorkerInfo, WorkerLogsResponse } from "@/types";
 import { Button } from "@/components/ui/Button";
+import { InfoPopover } from "@/components/ui/InfoPopover";
 import { ChannelIntakePanel } from "@/components/channels/ChannelIntakePanel";
 
 const AUDIT_PAGE_SIZE = 20;
@@ -128,6 +130,8 @@ export function AdminControlPanel() {
   const [allowed, setAllowed] = useState<boolean>(false);
   const [audit, setAudit] = useState<AdminAuditRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+
+  useAdminTour({ enabled: allowed });
   const [message, setMessage] = useState<string>("");
   const [affiliationIdsInput, setAffiliationIdsInput] = useState<string>("");
   const [taskRuns, setTaskRuns] = useState<ManualTaskRun[]>([]);
@@ -577,8 +581,11 @@ export function AdminControlPanel() {
 
   return (
     <div className="space-y-6">
-      <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
-        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">Manual Task Triggers</h2>
+      <section id="tour-manual-tasks" className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
+          Manual Task Triggers
+          <InfoPopover content="Manually kick off backend Celery tasks on demand — useful after adding channels, debugging a stalled run, or forcing a fresh scrape outside the schedule." />
+        </h2>
         <div className="flex flex-wrap gap-2">
           <Button variant="primary" size="sm" onClick={() => void runTask("scrape")}>Trigger Full Scrape</Button>
           <Button variant="primary" size="sm" onClick={() => void runTask("discovery")}>Trigger Discovery</Button>
@@ -637,8 +644,11 @@ export function AdminControlPanel() {
         )}
       </section>
 
-      <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
-        <h2 className="mb-1 text-lg font-semibold text-[#1A1A2E]">Channel Intake</h2>
+      <section id="tour-channel-intake" className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
+        <h2 className="mb-1 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
+          Channel Intake
+          <InfoPopover content="Add channels to the database manually, bypassing automated discovery. All three methods deduplicate on URL before inserting." />
+        </h2>
         <p className="mb-4 text-xs text-[#6B6B6B]">
           Add channels to the database manually. Use <strong>Add Single Channel</strong> for one-off additions with
           optional metadata, <strong>Bulk Add URLs</strong> for large imports, or <strong>Creator Name Resolver</strong> when
@@ -648,10 +658,13 @@ export function AdminControlPanel() {
         <ChannelIntakePanel onIntakeComplete={() => { void handleIntakeComplete(); }} />
       </section>
 
-      <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
+      <section id="tour-worker-health" className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div>
-            <h2 className="text-lg font-semibold text-[#1A1A2E]">Worker Health</h2>
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
+              Worker Health
+              <InfoPopover content="Live status of all Celery worker containers. Green = online and processing tasks. Red = offline or unreachable. Auto-refreshes every 10 seconds." />
+            </h2>
             {workersCheckedAt && (
               <p className="text-xs text-[#6B6B6B]">Last checked {new Date(workersCheckedAt).toLocaleTimeString()} · auto-refreshes every 10s</p>
             )}
@@ -738,8 +751,11 @@ export function AdminControlPanel() {
         </div>
       </section>
 
-      <section className="rounded-xl border border-[#B22222] bg-[#FFF8F8] p-4 shadow-sm">
-        <h2 className="mb-1 text-lg font-semibold text-[#B22222]">Danger Zone — Purge All Tasks</h2>
+      <section id="tour-danger-zone" className="rounded-xl border border-[#B22222] bg-[#FFF8F8] p-4 shadow-sm">
+        <h2 className="mb-1 flex items-center gap-2 text-lg font-semibold text-[#B22222]">
+          Danger Zone — Purge All Tasks
+          <InfoPopover content="Sends SIGKILL to all active tasks, purges the broker queue, wipes all Redis scraper state, and restarts worker pools. Use before a fresh scrape to ensure a clean slate." />
+        </h2>
         <p className="mb-4 text-xs text-[#6B6B6B]">
           Sends SIGKILL to all active and reserved tasks in the worker containers, purges the
           broker queue, deletes all Redis scraper state (platform slots, scrape locks, proxy
@@ -808,8 +824,11 @@ export function AdminControlPanel() {
         )}
       </section>
 
-      <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
-        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">Affiliation Competitors</h2>
+      <section id="tour-affiliation-config" className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
+          Affiliation Competitors
+          <InfoPopover content="Channels that link to or promote these brand domains will be flagged as affiliated on the next affiliation task run." />
+        </h2>
         <p className="mb-3 text-xs text-[#6B6B6B]">Channels promoting these brands are flagged on the next affiliation run. Changes take effect the next time the list is evaluated.</p>
 
         {competitorsError && (
@@ -907,8 +926,11 @@ export function AdminControlPanel() {
         )}
       </section>
 
-      <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
-        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">Category Keywords</h2>
+      <section id="tour-category-keywords" className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
+          Category Keywords
+          <InfoPopover content="Defines the topic taxonomy for discovery and classification. Keywords are used by the Serper search pipeline to find new channels; categories label channels during AI classification." />
+        </h2>
         <p className="mb-3 text-xs text-[#6B6B6B]">Broad category tags and keywords are sourced from database settings. Changes take effect on subsequent discovery/scrape runs.</p>
 
         {taxonomyError && (
@@ -1006,8 +1028,11 @@ export function AdminControlPanel() {
         )}
       </section>
 
-      <section className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
-        <h2 className="mb-3 text-lg font-semibold text-[#1A1A2E]">Recent Admin Audit</h2>
+      <section id="tour-admin-audit" className="rounded-xl border border-[#E8E4DC] bg-white p-4 shadow-sm">
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-[#1A1A2E]">
+          Recent Admin Audit
+          <InfoPopover content="Log of the 20 most recent admin actions — task triggers, competitor and taxonomy edits, and channel additions. Useful for auditing who did what and when." />
+        </h2>
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm">
             <thead className="text-xs uppercase tracking-wide text-[#6B6B6B]">

@@ -1,12 +1,19 @@
-/**
- * Providers — client component wrapping children with context providers.
- */
 "use client";
+
+import { TourProvider } from "@/components/tour/TourContext";
+import { TourManager } from "@/components/tour/TourManager";
+import { WelcomeModal } from "@/components/tour/WelcomeModal";
 
 interface ProvidersProps {
   children: React.ReactNode;
 }
 
 export function Providers({ children }: ProvidersProps) {
-  return <>{children}</>;
+  return (
+    <TourProvider>
+      <TourManager />
+      <WelcomeModal />
+      {children}
+    </TourProvider>
+  );
 }

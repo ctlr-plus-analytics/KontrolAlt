@@ -10,6 +10,7 @@ import { Spinner } from "@/components/ui/Spinner";
 import { useChannels } from "@/hooks/useChannels";
 import { useAuth } from "@/hooks/useAuth";
 import { getCategoryTags } from "@/lib/api/backend";
+import { useDashboardTour } from "@/hooks/useTourAutoStart";
 
 interface ChannelTableViewProps {
   initialChannels: (Channel & { velocity?: VelocityScore | null })[];
@@ -41,6 +42,8 @@ export function ChannelTableView({
   initialChannels,
   initialTotal,
 }: ChannelTableViewProps) {
+  useDashboardTour();
+
   // Keep initial render SSR-stable; restore session state after mount.
   const [filters, setFilters] = useState<ChannelFilters>(DEFAULT_FILTERS);
   const [page, setPage] = useState<number>(1);
@@ -216,7 +219,7 @@ export function ChannelTableView({
       {/* ── Main Content ── */}
       <div ref={scrollRef} className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
         {/* Header */}
-        <div className="flex shrink-0 items-center justify-between gap-4 border-b border-[#E8E4DC] bg-white px-6 py-4">
+        <div id="tour-table-header" className="flex shrink-0 items-center justify-between gap-4 border-b border-[#E8E4DC] bg-white px-6 py-4">
           <div>
             <h1 className="text-xl font-semibold tracking-tight text-[#1A1A2E]">
               Channel Discovery
@@ -240,7 +243,7 @@ export function ChannelTableView({
 
         {/* Table */}
         <div className="flex-1 p-6">
-          <div className="relative min-h-[400px]">
+          <div id="tour-channel-table" className="relative min-h-[400px]">
             {showBlockingLoader && (
               <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-white/60 backdrop-blur-sm">
                 <Spinner size="lg" />
@@ -255,7 +258,7 @@ export function ChannelTableView({
           </div>
 
           {/* Pagination */}
-          <div className="mt-4 flex items-center justify-between">
+          <div id="tour-pagination" className="mt-4 flex items-center justify-between">
             <p className="text-sm text-[#6B6B6B]">
               Showing {displayChannels.length} of {displayTotal} channels
             </p>

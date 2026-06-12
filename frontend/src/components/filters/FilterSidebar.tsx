@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search, X, ArrowUp, ArrowDown, Check, ChevronDown } from "lucide-react";
 import type { CategoryTagOption, ChannelFilters } from "@/types";
 import { NumericRangeFilter } from "@/components/filters/NumericRangeFilter";
+import { InfoPopover } from "@/components/ui/InfoPopover";
 import { cn } from "@/lib/utils";
 
 interface FilterSidebarProps {
@@ -56,22 +57,26 @@ const SORT_OPTIONS = [
   { value: "last_active_date", label: "Last Active" },
 ] as const;
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+function SectionLabel({ children, info }: { children: React.ReactNode; info?: string }) {
   return (
     <div className="flex items-center gap-2 px-4 py-2">
       <span className="text-[10px] font-semibold uppercase tracking-widest text-[#C9A84C]/60">
         {children}
       </span>
+      {info && <InfoPopover content={info} dark />}
       <div className="h-px flex-1 bg-[#C9A84C]/15" />
     </div>
   );
 }
 
-function FilterLabel({ children }: { children: React.ReactNode }) {
+function FilterLabel({ children, info }: { children: React.ReactNode; info?: string }) {
   return (
-    <span className="text-[11px] font-medium uppercase tracking-wide text-[#F7F4EE]/40">
-      {children}
-    </span>
+    <div className="flex items-center gap-1.5">
+      <span className="text-[11px] font-medium uppercase tracking-wide text-[#F7F4EE]/40">
+        {children}
+      </span>
+      {info && <InfoPopover content={info} dark />}
+    </div>
   );
 }
 
@@ -127,7 +132,7 @@ export function FilterSidebar({
     "w-full appearance-none rounded-lg border border-[#F7F4EE]/10 bg-[#F7F4EE]/6 px-3 py-2 pr-8 text-sm text-[#F7F4EE] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/60 transition-shadow cursor-pointer";
 
   return (
-    <aside className="flex w-72 shrink-0 flex-col bg-[#1A1A2E] border-r border-[#F7F4EE]/8 overflow-y-auto scrollbar-thin">
+    <aside id="tour-filter-sidebar" className="flex w-72 shrink-0 flex-col bg-[#1A1A2E] border-r border-[#F7F4EE]/8 overflow-y-auto scrollbar-thin">
       <div className="flex h-14 shrink-0 items-center justify-between px-4">
         <div className="flex items-center gap-2">
           <span className="text-xs font-bold uppercase tracking-widest text-[#F7F4EE]/70">Filters</span>
@@ -149,7 +154,7 @@ export function FilterSidebar({
         )}
       </div>
 
-      <div className="px-4 pb-4">
+      <div id="tour-filter-search" className="px-4 pb-4">
         <div className="relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#F7F4EE]/30 pointer-events-none" />
           <input
@@ -162,8 +167,8 @@ export function FilterSidebar({
         </div>
       </div>
 
-      <SectionLabel>Platform</SectionLabel>
-      <div className="flex flex-wrap gap-1.5 px-4 pb-4">
+      <SectionLabel info="Filter channels by platform. Rumble is a video platform; Substack is newsletter and blog-based. 'All' shows both.">Platform</SectionLabel>
+      <div id="tour-filter-platform" className="flex flex-wrap gap-1.5 px-4 pb-4">
         {PLATFORMS.map((p) => (
           <button
             key={p.value}
@@ -181,8 +186,8 @@ export function FilterSidebar({
         ))}
       </div>
 
-      <SectionLabel>Comment Tier</SectionLabel>
-      <div className="flex flex-col gap-0.5 px-4 pb-4">
+      <SectionLabel info="Buckets channels by average comments per post. Sweet Spot (20–100) is the cost-efficient range for sponsorships. Whale (100+) channels command premium rates.">Comment Tier</SectionLabel>
+      <div id="tour-comment-tier-filter" className="flex flex-col gap-0.5 px-4 pb-4">
         {COMMENT_TIERS.map((t) => {
           const active = filters.comment_tier === t.value;
           return (
@@ -209,8 +214,8 @@ export function FilterSidebar({
         })}
       </div>
 
-      <SectionLabel>Sort</SectionLabel>
-      <div className="flex flex-col gap-3 px-4 pb-4">
+      <SectionLabel info="Choose how results are ordered in the main view. Default is Avg Comments — the primary engagement signal used for tier classification.">Sort</SectionLabel>
+      <div id="tour-filter-sort" className="flex flex-col gap-3 px-4 pb-4">
         <div className="flex flex-col gap-1">
           <FilterLabel>Sort By</FilterLabel>
           <div className="relative">
@@ -266,9 +271,9 @@ export function FilterSidebar({
         </div>
       </div>
 
-      <SectionLabel>Advanced</SectionLabel>
+      <SectionLabel info="Precise numeric and date filters for subscribers, views, comments, and activity date. All are optional and can be used in combination.">Advanced</SectionLabel>
       <div className="flex flex-col gap-4 px-4 pb-6">
-        <div className="flex flex-col gap-1">
+        <div id="tour-filter-category" className="flex flex-col gap-1">
             <FilterLabel>Topic Category</FilterLabel>
             <p className="text-[11px] text-[#F7F4EE]/35">
               Broad, approximate tags. Channels may span multiple categories.
@@ -380,38 +385,43 @@ export function FilterSidebar({
             </div>
           </div>
 
-        <NumericRangeFilter
-          label="Subscribers"
-          minLimit={0}
-          maxLimit={10_000_000}
-          step={1000}
-          minValue={filters.min_subscriber_count ?? null}
-          maxValue={filters.max_subscriber_count ?? null}
-          onChange={({ min, max }) => update({ min_subscriber_count: min, max_subscriber_count: max })}
-        />
+        <div id="tour-filter-ranges" className="flex flex-col gap-4">
+          <NumericRangeFilter
+            label="Subscribers"
+            labelExtra={<InfoPopover content="Total subscriber or follower count at last scrape. Use to set minimum reach requirements or cap audience size." dark />}
+            minLimit={0}
+            maxLimit={10_000_000}
+            step={1000}
+            minValue={filters.min_subscriber_count ?? null}
+            maxValue={filters.max_subscriber_count ?? null}
+            onChange={({ min, max }) => update({ min_subscriber_count: min, max_subscriber_count: max })}
+          />
 
-        <NumericRangeFilter
-          label="Avg Views"
-          minLimit={0}
-          maxLimit={5_000_000}
-          step={500}
-          minValue={filters.min_avg_views ?? null}
-          maxValue={filters.max_avg_views ?? null}
-          onChange={({ min, max }) => update({ min_avg_views: min, max_avg_views: max })}
-        />
+          <NumericRangeFilter
+            label="Avg Views"
+            labelExtra={<InfoPopover content="Rolling average views per video or post. Reflects actual content reach, independent of subscriber count." dark />}
+            minLimit={0}
+            maxLimit={5_000_000}
+            step={500}
+            minValue={filters.min_avg_views ?? null}
+            maxValue={filters.max_avg_views ?? null}
+            onChange={({ min, max }) => update({ min_avg_views: min, max_avg_views: max })}
+          />
 
-        <NumericRangeFilter
-          label="Avg Comments"
-          minLimit={0}
-          maxLimit={100_000}
-          step={10}
-          minValue={filters.min_avg_comments ?? null}
-          maxValue={filters.max_avg_comments ?? null}
-          onChange={({ min, max }) => update({ min_avg_comments: min, max_avg_comments: max })}
-        />
+          <NumericRangeFilter
+            label="Avg Comments"
+            labelExtra={<InfoPopover content="Rolling average comments per post. The primary engagement signal for tier classification and outreach prioritization." dark />}
+            minLimit={0}
+            maxLimit={100_000}
+            step={10}
+            minValue={filters.min_avg_comments ?? null}
+            maxValue={filters.max_avg_comments ?? null}
+            onChange={({ min, max }) => update({ min_avg_comments: min, max_avg_comments: max })}
+          />
+        </div>
 
-        <div className="flex flex-col gap-2">
-          <FilterLabel>Last Active</FilterLabel>
+        <div id="tour-filter-last-active" className="flex flex-col gap-2">
+          <FilterLabel info="Date of the channel's most recent post. Use to surface recently active channels or exclude dormant ones.">Last Active</FilterLabel>
           <div className="flex flex-col gap-1.5">
             <div className="flex flex-col gap-0.5">
               <span className="text-[10px] text-[#F7F4EE]/30">From</span>
@@ -434,67 +444,65 @@ export function FilterSidebar({
           </div>
         </div>
 
-        <div className="flex flex-col gap-2">
+        <div id="tour-filter-toggles" className="flex flex-col gap-2">
           <FilterLabel>Filters</FilterLabel>
-          <button
-            type="button"
-            onClick={() => update({ inactive_filter: !filters.inactive_filter })}
-            className={cn(
-              "flex w-full items-center justify-between rounded-lg border px-3 py-2 text-sm font-medium transition-all duration-150 cursor-pointer",
-              filters.inactive_filter
-                ? "border-[#B22222]/60 bg-[#B22222]/15 text-[#ff6b6b]"
-                : "border-[#F7F4EE]/15 text-[#F7F4EE]/50 hover:border-[#F7F4EE]/30 hover:text-[#F7F4EE]/80"
-            )}
-          >
-            Exclude 90d+ Inactive
-            <span
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => update({ inactive_filter: !filters.inactive_filter })}
               className={cn(
-                "h-4 w-7 rounded-full transition-all duration-200 relative shrink-0",
-                filters.inactive_filter ? "bg-[#B22222]/60" : "bg-[#F7F4EE]/15"
+                "flex flex-1 items-center justify-between rounded-lg border px-3 py-2 text-sm font-medium transition-all duration-150 cursor-pointer",
+                filters.inactive_filter
+                  ? "border-[#B22222]/60 bg-[#B22222]/15 text-[#ff6b6b]"
+                  : "border-[#F7F4EE]/15 text-[#F7F4EE]/50 hover:border-[#F7F4EE]/30 hover:text-[#F7F4EE]/80"
               )}
             >
+              Exclude 90d+ Inactive
               <span
                 className={cn(
-                  "absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-all duration-200",
-                  filters.inactive_filter ? "left-3.5" : "left-0.5"
+                  "h-4 w-7 rounded-full transition-all duration-200 relative shrink-0",
+                  filters.inactive_filter ? "bg-[#B22222]/60" : "bg-[#F7F4EE]/15"
                 )}
-              />
-            </span>
-          </button>
+              >
+                <span
+                  className={cn(
+                    "absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-all duration-200",
+                    filters.inactive_filter ? "left-3.5" : "left-0.5"
+                  )}
+                />
+              </span>
+            </button>
+            <InfoPopover content="Hides channels that haven't posted in 90+ days. On by default to keep the list actionable." dark />
+          </div>
 
-          <button
-            type="button"
-            onClick={() => update({ incomplete_only: !filters.incomplete_only })}
-            className={cn(
-              "flex w-full items-center justify-between rounded-lg border px-3 py-2 text-sm font-medium transition-all duration-150 cursor-pointer",
-              filters.incomplete_only
-                ? "border-[#C9A84C]/60 bg-[#C9A84C]/12 text-[#C9A84C]"
-                : "border-[#F7F4EE]/15 text-[#F7F4EE]/50 hover:border-[#F7F4EE]/30 hover:text-[#F7F4EE]/80"
-            )}
-          >
-            <span className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => update({ incomplete_only: !filters.incomplete_only })}
+              className={cn(
+                "flex flex-1 items-center justify-between rounded-lg border px-3 py-2 text-sm font-medium transition-all duration-150 cursor-pointer",
+                filters.incomplete_only
+                  ? "border-[#C9A84C]/60 bg-[#C9A84C]/12 text-[#C9A84C]"
+                  : "border-[#F7F4EE]/15 text-[#F7F4EE]/50 hover:border-[#F7F4EE]/30 hover:text-[#F7F4EE]/80"
+              )}
+            >
               Incomplete Only
               <span
-                title="Shows channels where dashboard data collection is incomplete — these channels failed eligibility checks and may be missing subscriber count, average views, or average comments."
-                className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-current text-[10px] font-bold opacity-60"
-              >
-                ?
-              </span>
-            </span>
-            <span
-              className={cn(
-                "h-4 w-7 rounded-full transition-all duration-200 relative shrink-0",
-                filters.incomplete_only ? "bg-[#C9A84C]/60" : "bg-[#F7F4EE]/15"
-              )}
-            >
-              <span
                 className={cn(
-                  "absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-all duration-200",
-                  filters.incomplete_only ? "left-3.5" : "left-0.5"
+                  "h-4 w-7 rounded-full transition-all duration-200 relative shrink-0",
+                  filters.incomplete_only ? "bg-[#C9A84C]/60" : "bg-[#F7F4EE]/15"
                 )}
-              />
-            </span>
-          </button>
+              >
+                <span
+                  className={cn(
+                    "absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-all duration-200",
+                    filters.incomplete_only ? "left-3.5" : "left-0.5"
+                  )}
+                />
+              </span>
+            </button>
+            <InfoPopover content="Shows channels where data collection is incomplete — missing subscriber count, average views, or average comments. Useful for auditing data coverage." dark />
+          </div>
         </div>
       </div>
     </aside>

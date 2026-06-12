@@ -1,9 +1,11 @@
 "use client";
 
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { LogOut, LayoutDashboard, Shield } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { useTour } from "@/components/tour/TourContext";
 import { cn } from "@/lib/utils";
 
 interface NavItem {
@@ -42,6 +44,18 @@ export function TopBar() {
     ? [...BASE_NAV, { label: "Admin", href: "/admin", icon: <Shield size={15} /> }]
     : BASE_NAV;
 
+  const { startTour, resetTour, resetAllTours, isAdmin: tourIsAdmin } = useTour();
+  const [helpOpen, setHelpOpen] = useState(false);
+  const helpRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (!helpRef.current?.contains(e.target as Node)) setHelpOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
   const handleSignOut = async () => {
     await signOut();
     router.push("/login");
@@ -50,7 +64,7 @@ export function TopBar() {
   const initial = user?.email?.charAt(0)?.toUpperCase() ?? "U";
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-[#E8E4DC] bg-white px-6">
+    <header id="tour-topbar" className="flex h-14 shrink-0 items-center justify-between border-b border-[#E8E4DC] bg-white px-6">
       {/* ── Left: logo + nav ── */}
       <div className="flex items-center gap-6">
         <Link
@@ -62,7 +76,7 @@ export function TopBar() {
 
         <div className="h-5 w-px bg-[#E8E4DC]" />
 
-        <nav className="flex items-center gap-1">
+        <nav id="tour-nav" className="flex items-center gap-1">
           {navItems.map((item) => {
             const active = isActive(item.href, pathname);
             return (
@@ -95,6 +109,51 @@ export function TopBar() {
         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#C9A84C] text-xs font-bold text-white shrink-0">
           {initial}
         </div>
+
+        {/* ── Tour help button ── */}
+        <div id="tour-help-button" className="relative" ref={helpRef}>
+          <button
+            onClick={() => setHelpOpen((p) => !p)}
+            className="flex h-7 w-7 items-center justify-center rounded-full border border-[#E8E4DC] text-xs font-bold text-[#6B6B6B] transition-colors hover:border-[#C9A84C] hover:text-[#C9A84C]"
+            aria-label="Tour help"
+            title="Guided tours"
+          >
+            ?
+          </button>
+          {helpOpen && (
+            <div className="absolute right-0 top-9 z-50 min-w-[210px] rounded-xl border border-[#E8E4DC] bg-white py-1 shadow-xl">
+              <button
+                onClick={() => { setHelpOpen(false); startTour("dashboard"); }}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-[#1A1A2E] hover:bg-[#F7F4EE]"
+              >
+                Dashboard tour
+              </button>
+              <button
+                onClick={() => { setHelpOpen(false); resetTour("channel-detail"); }}
+                className="flex w-full items-center justify-between gap-2 px-4 py-2 text-left text-sm text-[#1A1A2E] hover:bg-[#F7F4EE]"
+              >
+                Channel detail tour
+                <span className="text-[10px] text-[#6B6B6B]">next visit</span>
+              </button>
+              {tourIsAdmin && (
+                <button
+                  onClick={() => { setHelpOpen(false); startTour("admin"); }}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-[#1A1A2E] hover:bg-[#F7F4EE]"
+                >
+                  Admin tour
+                </button>
+              )}
+              <div className="my-1 h-px bg-[#E8E4DC]" />
+              <button
+                onClick={() => { setHelpOpen(false); resetAllTours(); }}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-[#6B6B6B] hover:bg-[#F7F4EE]"
+              >
+                Reset all tours
+              </button>
+            </div>
+          )}
+        </div>
+
         <button
           onClick={handleSignOut}
           className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[#1A1A2E]/40 transition-colors hover:bg-[#1A1A2E]/5 hover:text-[#1A1A2E] cursor-pointer"
