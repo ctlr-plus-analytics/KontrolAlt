@@ -41,9 +41,12 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 
+# "Avg Views / Likes": avg_views stores real views for Rumble but average
+# reactions/likes per post for Substack (no public view-count API) — see
+# CODEBASE_DOCUMENTATION.md. The adjacent Platform column disambiguates.
 _EXPORT_HEADERS = [
     "Name", "Platform", "URL", "Subscribers",
-    "Niche / Category", "Avg Views", "Avg Comments",
+    "Niche / Category", "Avg Views / Likes", "Avg Comments",
     "Engagement Rate (%)", "Last Active",
 ]
 

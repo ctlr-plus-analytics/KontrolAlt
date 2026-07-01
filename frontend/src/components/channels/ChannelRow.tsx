@@ -4,7 +4,7 @@
 import Link from "next/link";
 import type { Channel, VelocityScore } from "@/types";
 import { TableRow, TableCell } from "@/components/ui/Table";
-import { formatEngagementRate, formatNumber, timeAgo } from "@/lib/utils";
+import { formatEngagementRate, formatNumber, getAvgViewsOrLikesDisplay, timeAgo } from "@/lib/utils";
 
 interface ChannelRowProps {
   channel: Channel & { velocity?: VelocityScore | null };
@@ -13,8 +13,9 @@ interface ChannelRowProps {
 
 export function ChannelRow({ channel, index }: ChannelRowProps) {
   const primaryCategory = channel.category_tags?.[0] ?? channel.niche_tags?.[0] ?? "Uncategorized";
-  const avgViews = channel.platform === "rumble" ? formatNumber(channel.avg_views) : "-";
-  const likes = channel.platform === "substack" ? formatNumber(channel.avg_views) : "-";
+  const avgMetric = getAvgViewsOrLikesDisplay(channel.platform, channel.avg_views);
+  const avgViews = channel.platform === "rumble" ? avgMetric.value : "-";
+  const likes = channel.platform === "substack" ? avgMetric.value : "-";
 
   return (
     <TableRow index={index}>

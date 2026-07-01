@@ -365,6 +365,7 @@ class RumbleScraper(BaseScraper):
             stage_marks: list[tuple[str, float]] = []
             telemetry = BrowserTelemetry()
             channel_base_url = self._channel_base_url(channel_url)
+            _queued_channel_url = channel_base_url
             videos_url = self._channel_tab_url(channel_base_url, "videos")
             about_url = self._channel_tab_url(channel_base_url, "about")
             session_key = self._session_key or channel_base_url
@@ -519,6 +520,21 @@ class RumbleScraper(BaseScraper):
                             "Rumble: video grid did not render before parsing %s",
                             channel_url,
                         )
+
+                # If Rumble redirected from a numeric ID to a canonical slug, update
+                # channel_base_url so scraped data is stored under the slug URL.
+                _resolved_base = self._channel_base_url(page.url)
+                if (
+                    _resolved_base != channel_base_url
+                    and _resolved_base.startswith("https://rumble.com/")
+                    and not _resolved_base.rstrip("/").split("/")[-1].lower().startswith("c-")
+                ):
+                    logger.info(
+                        "Rumble resolved numeric ID %s → canonical slug %s",
+                        channel_base_url,
+                        _resolved_base,
+                    )
+                    channel_base_url = _resolved_base
 
                 html = await page.content()
                 soup = BeautifulSoup(html, "lxml")
@@ -763,6 +779,22 @@ class RumbleScraper(BaseScraper):
                         else None
                     )
                     await self.log_scrape_attempt(channel_id, "success", warning)
+                    if _queued_channel_url != channel_base_url:
+                        try:
+                            self.supabase.table("channels").delete().eq(
+                                "channel_url", _queued_channel_url
+                            ).execute()
+                            logger.info(
+                                "Deleted stale numeric-ID row %s after resolving to slug %s",
+                                _queued_channel_url,
+                                channel_base_url,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Failed to clean up stale numeric-ID row %s: %s",
+                                _queued_channel_url,
+                                exc,
+                            )
 
                 logger.info("Rumble scrape complete for %s (%s)", name, channel_base_url)
                 stage_marks.append(("persist", perf_counter() - stage_t0))

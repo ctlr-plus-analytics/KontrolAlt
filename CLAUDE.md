@@ -2,6 +2,23 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## LSP Usage
+
+**Always prefer LSP over grep/read for code intelligence.** Two LSP servers are active:
+
+- **Python** (Pyright) — covers `backend/` and `scraper/`. Import errors for FastAPI/httpx/etc. are expected (packages live in Docker, not a local venv) and do not indicate an LSP failure.
+- **TypeScript** (tsserver) — covers `frontend/`. Fully resolves types, JSDoc, and generics.
+
+Use LSP for:
+- `hover` — check a symbol's type or signature before calling it
+- `goToDefinition` — jump to where a function/class/type is defined instead of grep-searching
+- `findReferences` — see all call sites before renaming or deleting something
+- `documentSymbol` — get a structural overview of a file
+- `workspaceSymbol` — locate a symbol by name across the whole repo
+- `incomingCalls` / `outgoingCalls` — understand call graphs before refactoring
+
+Prefer LSP any time you would otherwise read a file just to find a type, a definition, or call sites.
+
 ## Commands
 
 ```bash

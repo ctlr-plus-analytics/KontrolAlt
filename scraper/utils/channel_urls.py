@@ -128,7 +128,7 @@ def _canonicalize_rumble(parts: list[str]) -> str | None:
     if first in {"c", "user"}:
         if len(parts) < 2 or not _is_valid_slug(parts[1]):
             return None
-        return "/" + "/".join((first, parts[1]))
+        return f"/{first}/{parts[1].lower()}"
 
     if first in _RUMBLE_SYSTEM_PATHS:
         return None

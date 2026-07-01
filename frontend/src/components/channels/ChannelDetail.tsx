@@ -28,7 +28,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { InfoPopover } from "@/components/ui/InfoPopover";
 import { VelocityBadge } from "@/components/channels/VelocityBadge";
-import { formatEngagementRate, formatNumber, timeAgo, cn } from "@/lib/utils";
+import { formatEngagementRate, formatNumber, getAvgViewsOrLikesDisplay, timeAgo, cn } from "@/lib/utils";
 import {
   deleteChannelCompletely,
   deleteChannelHistory,
@@ -281,7 +281,7 @@ export function ChannelDetail({
             {/* Stat Pills */}
             <div className="mt-4 flex flex-wrap gap-3">
               <StatPill label="Subscribers" value={formatNumber(channel.subscriber_count)} info="Total subscriber or follower count at the time of last scrape." />
-              <StatPill label="Avg Views" value={formatNumber(channel.avg_views)} info="Rolling average views per video or post. Reflects actual content reach, independent of subscriber count." />
+              <StatPill {...getAvgViewsOrLikesDisplay(channel.platform, channel.avg_views)} />
               <StatPill
                 label="Engagement Rate"
                 value={formatEngagementRate(channel.subscriber_count, channel.avg_comments)}

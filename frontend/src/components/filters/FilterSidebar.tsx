@@ -117,14 +117,37 @@ export function FilterSidebar({
     if (filters.platform !== "all") count++;
     if (filters.comment_tier !== "all") count++;
     if (filters.category_tags.length > 0) count++;
-    if (filters.min_subscriber_count != null || filters.max_subscriber_count != null) count++;
+    if (
+      filters.min_subscriber_count !== DEFAULT_FILTERS.min_subscriber_count ||
+      filters.max_subscriber_count !== DEFAULT_FILTERS.max_subscriber_count
+    )
+      count++;
     if (filters.min_avg_views != null || filters.max_avg_views != null) count++;
     if (filters.min_avg_comments != null || filters.max_avg_comments != null) count++;
     if (filters.last_active_from || filters.last_active_to) count++;
-    if (filters.inactive_filter) count++;
+    if (filters.inactive_filter !== DEFAULT_FILTERS.inactive_filter) count++;
     if (filters.incomplete_only) count++;
     return count;
   }, [filters]);
+
+  const avgMetricCopy = useMemo(() => {
+    if (filters.platform === "rumble") {
+      return {
+        label: "Avg Views",
+        info: "Rolling average views per video. Reflects actual content reach, independent of subscriber count.",
+      };
+    }
+    if (filters.platform === "substack") {
+      return {
+        label: "Avg Likes",
+        info: "Substack has no public view-count metric — this filters on rolling average reactions/likes per post (stored in the same field as Avg Views).",
+      };
+    }
+    return {
+      label: "Avg Views / Likes",
+      info: "Meaning depends on platform: real average views for Rumble, average reactions/likes for Substack (Substack has no public view-count metric). Filtering with 'All' platforms selected mixes both semantics.",
+    };
+  }, [filters.platform]);
 
   const darkInput =
     "w-full rounded-lg border border-[#F7F4EE]/10 bg-[#F7F4EE]/6 px-3 py-2 text-sm text-[#F7F4EE] placeholder:text-[#F7F4EE]/30 focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/60 transition-shadow";
@@ -399,8 +422,8 @@ export function FilterSidebar({
           />
 
           <NumericRangeFilter
-            label="Avg Views"
-            labelExtra={<InfoPopover content="Rolling average views per video or post. Reflects actual content reach, independent of subscriber count." dark />}
+            label={avgMetricCopy.label}
+            labelExtra={<InfoPopover content={avgMetricCopy.info} dark />}
             minLimit={0}
             maxLimit={5_000_000}
             step={500}

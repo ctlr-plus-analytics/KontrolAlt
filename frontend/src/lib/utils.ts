@@ -88,6 +88,29 @@ export function isInactive(
 }
 
 /**
+ * Returns the correct label/value/tooltip for the avg_views field.
+ * Substack has no public view-count metric, so avg_views stores average
+ * reactions/likes per post for Substack channels instead of real views.
+ */
+export function getAvgViewsOrLikesDisplay(
+  platform: Platform,
+  avgViews: number | null | undefined
+): { label: string; value: string; info: string } {
+  if (platform === "substack") {
+    return {
+      label: "Avg Likes",
+      value: formatNumber(avgViews),
+      info: "Substack has no public view-count metric, so this reflects rolling average reactions/likes per post.",
+    };
+  }
+  return {
+    label: "Avg Views",
+    value: formatNumber(avgViews),
+    info: "Rolling average views per video. Reflects actual content reach, independent of subscriber count.",
+  };
+}
+
+/**
  * Returns Tailwind class string for a platform.
  */
 export function getPlatformColor(platform: Platform): string {

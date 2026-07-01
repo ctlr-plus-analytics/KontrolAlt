@@ -101,6 +101,11 @@ def _ensure_channel_for_logging(
     scraper: BaseScraper, channel_url: str
 ) -> object | None:
     """Create a minimal channel row so failed scrape attempts can be logged."""
+    from utils.channel_urls import canonicalize_channel_url
+    if canonicalize_channel_url(channel_url) is None:
+        logger.warning("Skipping non-canonical channel URL for logging: %s", channel_url)
+        return None
+
     platform = _infer_platform(channel_url)
     if platform is None:
         return None

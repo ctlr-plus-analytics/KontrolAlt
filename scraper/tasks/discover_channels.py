@@ -151,6 +151,26 @@ def _existing_channel_by_url(client, channel_url: str) -> dict[str, object] | No
     return data if isinstance(data, dict) else None
 
 
+def _is_unique_violation(exc: APIError) -> bool:
+    msg = str(exc)
+    return "23505" in msg or "duplicate key" in msg.lower()
+
+
+def _alternate_rumble_channel_url(channel_url: str) -> str | None:
+    """Return the /user/ form if input is /c/, or the /c/ form if input is /user/.
+
+    Rumble exposes both forms for the same slug. Checking the alternate prevents
+    creating a second DB row for a creator already tracked under the other path.
+    """
+    if channel_url.startswith("https://rumble.com/c/"):
+        slug = channel_url[len("https://rumble.com/c/"):]
+        return f"https://rumble.com/user/{slug}"
+    if channel_url.startswith("https://rumble.com/user/"):
+        slug = channel_url[len("https://rumble.com/user/"):]
+        return f"https://rumble.com/c/{slug}"
+    return None
+
+
 def _iter_channel_rows(client, columns: str):
     """Yield channel rows in pages so discovery can scan large databases."""
     page_size = max(
@@ -191,72 +211,99 @@ def upsert_discovered_channel(
 
     Returns (inserted_or_updated, already_existed). Existing scraped rows keep
     their scraped identity; only discovery evidence is refreshed.
+
+    Two sources of duplicates are prevented here:
+    - Same-URL race: concurrent workers both attempt INSERT; the loser catches
+      the unique-constraint violation and falls through to the UPDATE path.
+    - Rumble /c/ vs /user/ divergence: before inserting, we check whether the
+      alternate URL form for the same slug already exists in the DB. If it does,
+      we update that existing row instead of creating a second one.
     """
     now = _utc_now_iso()
+
+    # Check for an existing row — exact URL first, then the alternate Rumble form.
     existing = _existing_channel_by_url(client, candidate.channel_url)
+    if existing is None and candidate.platform == "rumble":
+        alt_url = _alternate_rumble_channel_url(candidate.channel_url)
+        if alt_url:
+            existing = _existing_channel_by_url(client, alt_url)
+
+    if existing is None:
+        # No existing row found — attempt INSERT.
+        insert_payload: dict[str, object] = {
+            "platform": candidate.platform,
+            "channel_url": candidate.channel_url,
+            "name": title or _fallback_name(candidate.channel_url),
+            "description": "",
+            "is_active": True,
+            "has_been_scraped": False,
+            "discovery_source": source,
+            "last_discovery_source": source,
+            "discovery_category": category,
+            "discovery_status": "new",
+            "discovery_confidence": confidence,
+            "discovery_evidence_count": 1,
+            "discovery_last_seen_at": now,
+            "discovered_at": now,
+            "updated_at": now,
+        }
+        if source_ref:
+            insert_payload["discovered_from_channel_id"] = source_ref
+        if quality_tier:
+            insert_payload["discovery_quality_tier"] = quality_tier
+        if serp_title:
+            insert_payload["discovery_serp_title"] = serp_title[:200]
+        if serp_snippet:
+            insert_payload["discovery_serp_snippet"] = serp_snippet[:500]
+
+        try:
+            result = client.table("channels").insert(insert_payload).execute()
+            return bool(result.data), False
+        except APIError as exc:
+            if not _is_unique_violation(exc):
+                raise
+            # Exact-URL race: another worker inserted the same URL just before us.
+            existing = _existing_channel_by_url(client, candidate.channel_url)
+            if existing is None:
+                return False, True
+
+    # UPDATE existing row — works for pre-existing rows, alternate-form matches,
+    # and same-URL race-condition fallback. Always uses the stored URL so the
+    # channel_url in the DB is never changed by discovery.
+    stored_url = str(existing.get("channel_url") or candidate.channel_url)
     evidence_count = int((existing or {}).get("discovery_evidence_count") or 0) + 1
     best_confidence = max(
         float((existing or {}).get("discovery_confidence") or 0.0),
         confidence,
     )
 
-    if existing is not None:
-        payload: dict[str, object] = {
-            "discovery_confidence": best_confidence,
-            "discovery_evidence_count": evidence_count,
-            "discovery_last_seen_at": now,
-            "last_discovery_source": source,
-            "updated_at": now,
-        }
-        if source_ref:
-            payload["discovered_from_channel_id"] = source_ref
-        if category:
-            payload["discovery_category"] = category
-        if not bool(existing.get("has_been_scraped")) and title:
-            payload["name"] = title
-        if quality_tier and not existing.get("discovery_quality_tier"):
-            payload["discovery_quality_tier"] = quality_tier
-        if serp_title and not existing.get("discovery_serp_title"):
-            payload["discovery_serp_title"] = serp_title[:200]
-        if serp_snippet and not existing.get("discovery_serp_snippet"):
-            payload["discovery_serp_snippet"] = serp_snippet[:500]
-
-        result = (
-            client.table("channels")
-            .update(payload)
-            .eq("channel_url", candidate.channel_url)
-            .execute()
-        )
-        return bool(result.data), True
-
-    payload = {
-        "platform": candidate.platform,
-        "channel_url": candidate.channel_url,
-        "name": title or _fallback_name(candidate.channel_url),
-        "description": "",
-        "is_active": True,
-        "has_been_scraped": False,
-        "discovery_source": source,
-        "last_discovery_source": source,
-        "discovery_category": category,
-        "discovery_status": "new",
-        "discovery_confidence": confidence,
-        "discovery_evidence_count": 1,
+    update_payload: dict[str, object] = {
+        "discovery_confidence": best_confidence,
+        "discovery_evidence_count": evidence_count,
         "discovery_last_seen_at": now,
-        "discovered_at": now,
+        "last_discovery_source": source,
         "updated_at": now,
     }
     if source_ref:
-        payload["discovered_from_channel_id"] = source_ref
-    if quality_tier:
-        payload["discovery_quality_tier"] = quality_tier
-    if serp_title:
-        payload["discovery_serp_title"] = serp_title[:200]
-    if serp_snippet:
-        payload["discovery_serp_snippet"] = serp_snippet[:500]
+        update_payload["discovered_from_channel_id"] = source_ref
+    if category:
+        update_payload["discovery_category"] = category
+    if not bool(existing.get("has_been_scraped")) and title:
+        update_payload["name"] = title
+    if quality_tier and not existing.get("discovery_quality_tier"):
+        update_payload["discovery_quality_tier"] = quality_tier
+    if serp_title and not existing.get("discovery_serp_title"):
+        update_payload["discovery_serp_title"] = serp_title[:200]
+    if serp_snippet and not existing.get("discovery_serp_snippet"):
+        update_payload["discovery_serp_snippet"] = serp_snippet[:500]
 
-    result = client.table("channels").insert(payload).execute()
-    return bool(result.data), False
+    result = (
+        client.table("channels")
+        .update(update_payload)
+        .eq("channel_url", stored_url)
+        .execute()
+    )
+    return bool(result.data), True
 
 
 def _collect_known_channel_candidates(

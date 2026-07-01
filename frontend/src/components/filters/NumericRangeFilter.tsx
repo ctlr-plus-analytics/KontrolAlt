@@ -45,28 +45,34 @@ export function NumericRangeFilter({
   const minPercent = ((resolvedMin - minLimit) / (maxLimit - minLimit)) * 100;
   const maxPercent = ((resolvedMax - minLimit) / (maxLimit - minLimit)) * 100;
 
-  const onMinInputChange = (raw: string): void => {
-    const stripped = raw.replace(/,/g, "");
-    if (!stripped.trim()) {
+  const commitMin = (raw: string, inputElement?: HTMLInputElement | null): void => {
+    const stripped = raw.replace(/,/g, "").trim();
+    if (!stripped) {
       onChange({ min: null, max: maxValue });
       return;
     }
     const numeric = Number(stripped);
     if (!Number.isFinite(numeric)) {
+      if (inputElement) {
+        inputElement.value = minValue != null ? String(minValue) : "";
+      }
       return;
     }
     const clamped = clamp(numeric, minLimit, maxValue ?? maxLimit);
     onChange({ min: clamped, max: maxValue });
   };
 
-  const onMaxInputChange = (raw: string): void => {
-    const stripped = raw.replace(/,/g, "");
-    if (!stripped.trim()) {
+  const commitMax = (raw: string, inputElement?: HTMLInputElement | null): void => {
+    const stripped = raw.replace(/,/g, "").trim();
+    if (!stripped) {
       onChange({ min: minValue, max: null });
       return;
     }
     const numeric = Number(stripped);
     if (!Number.isFinite(numeric)) {
+      if (inputElement) {
+        inputElement.value = maxValue != null ? String(maxValue) : "";
+      }
       return;
     }
     const clamped = clamp(numeric, minValue ?? minLimit, maxLimit);
@@ -149,11 +155,18 @@ export function NumericRangeFilter({
             Min
           </span>
           <input
+            key={minValue ?? ""}
             type="text"
             inputMode="numeric"
-            value={minValue ?? ""}
+            defaultValue={minValue ?? ""}
             placeholder="Any"
-            onChange={(event) => onMinInputChange(event.target.value)}
+            onBlur={(event) => commitMin(event.currentTarget.value, event.currentTarget)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitMin(event.currentTarget.value, event.currentTarget);
+              }
+            }}
             className="rounded-md border border-[#DDD7CC] bg-white px-2.5 py-1.5 text-sm text-[#0D0D0D] placeholder:text-[#9A948A] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
           />
         </label>
@@ -162,11 +175,18 @@ export function NumericRangeFilter({
             Max
           </span>
           <input
+            key={maxValue ?? ""}
             type="text"
             inputMode="numeric"
-            value={maxValue ?? ""}
+            defaultValue={maxValue ?? ""}
             placeholder="Any"
-            onChange={(event) => onMaxInputChange(event.target.value)}
+            onBlur={(event) => commitMax(event.currentTarget.value, event.currentTarget)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitMax(event.currentTarget.value, event.currentTarget);
+              }
+            }}
             className="rounded-md border border-[#DDD7CC] bg-white px-2.5 py-1.5 text-sm text-[#0D0D0D] placeholder:text-[#9A948A] focus:outline-none focus:ring-2 focus:ring-[#C9A84C]"
           />
         </label>
