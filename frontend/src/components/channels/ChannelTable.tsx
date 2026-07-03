@@ -25,7 +25,7 @@ type SortableColumn = {
 };
 
 const COLUMNS: SortableColumn[] = [
-  { key: null, label: "Channel" },
+  { key: "name", label: "Channel" },
   { key: null, label: "Platform" },
   { key: "subscriber_count", label: "Subscribers", align: "right" },
   { key: null, label: "Niche (Category)" },

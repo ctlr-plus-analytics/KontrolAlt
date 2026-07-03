@@ -289,7 +289,8 @@ export interface ChannelFilters {
     | "engagement_rate"
     | "view_velocity_30d"
     | "view_velocity_90d"
-    | "last_active_date";
+    | "last_active_date"
+    | "name";
   sort_order: "asc" | "desc";
 }
 

@@ -56,6 +56,7 @@ const SORT_OPTIONS = [
   { value: "view_velocity_30d", label: "View Velocity 30d" },
   { value: "view_velocity_90d", label: "View Velocity 90d" },
   { value: "last_active_date", label: "Last Active" },
+  { value: "name", label: "Channel Name" },
 ] as const;
 
 function SectionLabel({ children, info }: { children: React.ReactNode; info?: string }) {
