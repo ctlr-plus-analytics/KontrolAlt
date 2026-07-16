@@ -66,12 +66,12 @@ Frontend connects to Supabase as anon (JWT-gated via Supabase Auth).
 ### Scraper (`scraper/`)
 
 - **Entry**: `worker.py` — Celery app, imports all task modules, validates proxy pool on worker startup.
-- **Beat schedule**: `schedules/beat_schedule.py` — daily scrape + weekly velocity, times read from `RuntimeSettings`.
-- **Task modules** (`tasks/`): `run_daily_scrape` orchestrates the full workflow using Celery `chord`; individual platform tasks (`scrape_rumble`, `scrape_bitchute`, `scrape_substack`) are dispatched with staggered `countdown` delays.
+- **Beat schedule**: `schedules/beat_schedule.py` builds crontab helpers for daily scrape + weekly velocity (times read from `RuntimeSettings`), but `CELERY_BEAT_SCHEDULE` is currently an empty dict — both jobs are disabled and only run via manual/admin-triggered dispatch (`backend/api/v1/admin.py`), not on a schedule.
+- **Task modules** (`tasks/`): `run_daily_scrape` orchestrates the full workflow using Celery `chain`/`chord`; platform scrape tasks (`scrape_rumble`, `scrape_substack` — only Rumble and Substack are implemented) are dispatched with staggered `countdown` delays.
 - **Runtime settings**: `core/runtime_settings.py` — frozen dataclass with all tunable operational parameters (slot limits, retry delays, CF bypass timing, discovery limits). Defaults are the live values; changes require a code deploy (no DB-driven hot-reload currently wired to the dataclass).
-- **Browser layer** (`core/browser.py`): Camoufox (stealth Playwright) + proxy injection. Heavy media URLs are blocked. CF challenge detection and two-cycle retry live in `core/cf_bypass.py`.
-- **Proxy system** (`core/proxy.py`): Redis-backed health scoring and quarantine; residential proxies for Rumble/BitChute.
-- **Discovery pipeline**: `tasks/discover_channels.py` uses Serper (Google Search API) for keyword + seed expansion → `channels` table upsert. `tasks/find_lookalikes.py` is separate from discovery.
+- **Browser layer** (`core/browser.py`): Playwright Chromium with a custom stealth init script + proxy injection (context-level, pinned per channel/platform for `cf_clearance` cookie reuse). A shared per-worker `WorkerBrowserPool` (`core/browser_pool.py`) avoids Chromium cold-starts. Heavy media URLs are blocked. CF challenge detection and two-cycle retry live in `core/cf_bypass.py`.
+- **Proxy system** (`core/proxy.py`): Redis-backed health scoring and quarantine; residential proxies for Rumble/Substack.
+- **Discovery pipeline**: `tasks/discover_channels.py` uses Serper (Google Search API) for keyword + seed expansion → `channels` table upsert. Lookalike matching is a separate feature implemented in the backend (`backend/services/lookalike_service.py`), not in the scraper.
 
 ### Frontend (`frontend/`)
 
