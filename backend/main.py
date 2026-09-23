@@ -190,3 +190,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 # ---------------------------------------------------------------------------
 app.include_router(health_router, tags=["health"])
 app.include_router(api_v1_router, prefix="/api/v1")
+
+# Also mount under /api/backend for Vercel multi-service routing
+app.include_router(health_router, prefix="/api/backend", tags=["health"])
+app.include_router(api_v1_router, prefix="/api/backend/api/v1")
