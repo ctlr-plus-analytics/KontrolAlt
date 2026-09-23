@@ -32,10 +32,10 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
 
     # Redis
-    redis_url: str
+    redis_url: str = "redis://localhost:6379/0"
 
     # CORS
-    frontend_origin: str
+    frontend_origin: str = "http://localhost:3000"
     frontend_origin_regex: str | None = None
 
     # App

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from postgrest.exceptions import APIError
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.exceptions import SupabaseError

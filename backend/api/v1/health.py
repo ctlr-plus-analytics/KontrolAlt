@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 
+import httpx
 import redis
 from fastapi import APIRouter
 from postgrest.exceptions import APIError
@@ -29,7 +30,7 @@ async def health_check() -> HealthResponse:
     try:
         supabase_admin.table("channels").select("id").limit(1).execute()
         supabase_ok = True
-    except APIError as exc:
+    except (APIError, httpx.HTTPError) as exc:
         logger.warning("Supabase health check failed: %s", exc)
 
     # Check Redis connectivity
